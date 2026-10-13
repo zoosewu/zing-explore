@@ -35,6 +35,7 @@ pub enum Msg {
     DirChanged { tab: TabId, generation: u64 },
     FileOpDone { dirs: Vec<String>, error: Option<String>, select: Option<Select> },
     Status { text: String, error: bool },
+    Icon { id: u32, pixels: Option<crate::icons::IconPixels> },
 }
 
 /// 檔案作業完成後要選取（並可能進入重新命名）的項目

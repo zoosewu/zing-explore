@@ -18,6 +18,7 @@ use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 use crate::gfx::Gfx;
+use crate::icons::Icons;
 use crate::model::{Pane, Reveal, Tab, Tree};
 use crate::perf::Perf;
 use crate::services::{self, Msg, Notifier, Pool, TabId};
@@ -30,6 +31,11 @@ pub const TIMER_REFRESH: usize = 1;
 pub const TIMER_STATUS: usize = 2;
 pub const TIMER_PERF: usize = 3;
 pub const TIMER_PERF_GPU: usize = 4;
+
+/// 右鍵選單的自訂項目
+pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
+pub const MENU_FAV_ADD: u32 = shell::EXTRA_ID_BASE + 2;
+pub const MENU_FAV_REMOVE: u32 = shell::EXTRA_ID_BASE + 3;
 
 /// 超過這個數量的排序交給背景執行緒，避免卡住 UI
 const INLINE_SORT_LIMIT: usize = 20_000;
@@ -50,7 +56,8 @@ pub enum Press {
 
 /// 有自己訊息迴圈的動作：必須在釋放 App 借用後才執行（見 window.rs）
 pub enum Modal {
-    ContextMenu { items: Vec<String>, folder: String, pt: POINT },
+    /// `extras`：放在 Shell 項目上方的自訂項目；`target`：自訂項目作用的路徑
+    ContextMenu { items: Vec<String>, folder: String, pt: POINT, extras: Vec<(u32, String)>, target: String },
     DragOut { paths: Vec<String> },
     Properties { paths: Vec<String> },
 }
@@ -86,6 +93,7 @@ pub struct App {
     pub notifier: Notifier,
     rx: Receiver<Msg>,
     pub fileops: FileOps,
+    pub icons: Icons,
     next_tab_id: TabId,
     pub status: Option<(String, bool, Instant)>,
     title: String,
@@ -114,6 +122,7 @@ impl App {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
         let pool = Pool::new(threads);
         let fileops = FileOps::new(notifier.clone());
+        let icons = Icons::new(notifier.clone());
 
         let mut favorites = config.favorites.clone();
         for f in &session.favorites {
@@ -142,6 +151,7 @@ impl App {
             notifier,
             rx,
             fileops,
+            icons,
             next_tab_id: 1,
             status: None,
             title: String::new(),
@@ -555,6 +565,7 @@ impl App {
                 }
             }
             Msg::Status { text, error } => self.set_status(text, error),
+            Msg::Icon { id, pixels } => self.icons.store(id, pixels),
         }
     }
 
@@ -714,6 +725,8 @@ impl App {
                 let pl = &self.layout.panes[p];
                 let rh = self.row_h();
                 let (items, folder) = (tab.target_paths(), tab.path.clone());
+                let (extras, target) = self.entry_menu_extras(&items, &folder);
+                let tab = self.tab();
                 let y = if items.is_empty() { pl.list.t } else { pl.list.t + (tab.focus + 1) as f32 * rh - tab.scroll };
                 let x = pl.cols[0].0 + 40.0;
                 let s = self.gfx.scale();
@@ -721,7 +734,7 @@ impl App {
                 unsafe {
                     let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd, &mut pt);
                 }
-                self.modal = Some(Modal::ContextMenu { items, folder, pt });
+                self.modal = Some(Modal::ContextMenu { items, folder, pt, extras, target });
             }
             "file.copypath" => {
                 let paths = self.tab().target_paths();
@@ -757,13 +770,7 @@ impl App {
             "sel.invert" => self.tab_mut().invert_selection(),
             "tab.new" => {
                 let target = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
-                let tab = self.new_tab(path::normalize(&target));
-                let pane = &mut self.panes[p];
-                pane.tabs.insert(pane.active + 1, tab);
-                pane.active += 1;
-                let t = pane.active;
-                self.load(p, t);
-                self.sync_tree();
+                self.open_in_new_tab(target);
             }
             "tab.close" => self.close_tab(p, self.panes[p].active),
             "tab.next" | "tab.prev" => {
@@ -828,20 +835,12 @@ impl App {
             "filter.clear" => self.set_filter(String::new()),
             "filter.set" => self.set_filter(inv.flag("text").unwrap_or_default().to_string()),
             "favorites.add" => {
-                let cur = self.tab().path.clone();
-                if cur.is_empty() || self.favorites.iter().any(|f| f.eq_ignore_ascii_case(&cur)) {
-                    return Ok(());
-                }
-                self.favorites.push(cur.clone());
-                self.session.favorites.push(cur.clone());
-                self.rebuild_tree();
-                self.set_status(format!("已加入我的最愛：{cur}"), false);
+                let target = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
+                self.add_favorite(target)?;
             }
             "favorites.remove" => {
-                let cur = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
-                self.favorites.retain(|f| !f.eq_ignore_ascii_case(&cur));
-                self.session.favorites.retain(|f| !f.eq_ignore_ascii_case(&cur));
-                self.rebuild_tree();
+                let target = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
+                self.remove_favorite(&target)?;
             }
             "theme.set" => {
                 let name = inv.flag("name").or_else(|| inv.positional().next()).ok_or("theme.set 需要 --name=")?;
@@ -864,6 +863,92 @@ impl App {
             other => return Err(format!("未知命令：{other}")),
         }
         Ok(())
+    }
+
+    pub fn is_favorite(&self, p: &str) -> bool {
+        self.favorites.iter().any(|f| f.eq_ignore_ascii_case(p))
+    }
+
+    pub fn add_favorite(&mut self, p: String) -> Result<(), String> {
+        let p = path::normalize(&p);
+        if p.is_empty() {
+            return Err("「此電腦」不能加入我的最愛".into());
+        }
+        if self.is_favorite(&p) {
+            return Ok(());
+        }
+        self.favorites.push(p.clone());
+        self.session.favorites.push(p.clone());
+        self.save_session();
+        self.rebuild_tree();
+        self.set_status(format!("已加入我的最愛：{p}"), false);
+        Ok(())
+    }
+
+    pub fn remove_favorite(&mut self, p: &str) -> Result<(), String> {
+        if self.config.favorites.iter().any(|f| f.eq_ignore_ascii_case(p)) {
+            return Err("這個項目定義在設定檔的 favorites 中，請在設定檔移除（Ctrl+,）".into());
+        }
+        self.favorites.retain(|f| !f.eq_ignore_ascii_case(p));
+        self.session.favorites.retain(|f| !f.eq_ignore_ascii_case(p));
+        self.save_session();
+        self.rebuild_tree();
+        self.set_status(format!("已從我的最愛移除：{p}"), false);
+        Ok(())
+    }
+
+    /// 清單項目右鍵選單的自訂項目：只選了一個資料夾時提供「在新分頁開啟」與我的最愛；
+    /// 沒有選取時（背景選單）提供把目前資料夾加入我的最愛
+    pub fn entry_menu_extras(&self, items: &[String], folder: &str) -> (Vec<(u32, String)>, String) {
+        let tab = self.tab();
+        let single_dir = match tab.targets().as_slice() {
+            [e] if items.len() == 1 => tab.listing.entries[*e].is_dir(),
+            _ => false,
+        };
+        if single_dir {
+            (self.folder_extras(&items[0]), items[0].clone())
+        } else if items.is_empty() && !folder.is_empty() && !self.is_favorite(folder) {
+            (vec![(MENU_FAV_ADD, "將此資料夾加入我的最愛".into())], folder.to_string())
+        } else {
+            (Vec::new(), String::new())
+        }
+    }
+
+    pub fn folder_extras(&self, p: &str) -> Vec<(u32, String)> {
+        let fav = if self.is_favorite(p) {
+            (MENU_FAV_REMOVE, "從我的最愛移除".to_string())
+        } else {
+            (MENU_FAV_ADD, "加入我的最愛".to_string())
+        };
+        vec![(MENU_NEW_TAB, "在新分頁開啟".into()), fav]
+    }
+
+    pub fn on_menu_extra(&mut self, id: u32, target: String) {
+        let result = match id {
+            MENU_NEW_TAB => {
+                self.open_in_new_tab(target);
+                Ok(())
+            }
+            MENU_FAV_ADD => self.add_favorite(target),
+            MENU_FAV_REMOVE => self.remove_favorite(&target),
+            _ => Ok(()),
+        };
+        if let Err(e) = result {
+            self.set_status(e, true);
+        }
+        self.invalidate();
+    }
+
+    /// 在目前窗格開新分頁並切換過去
+    pub fn open_in_new_tab(&mut self, target: String) {
+        let p = self.active_pane;
+        let tab = self.new_tab(path::normalize(&target));
+        let pane = &mut self.panes[p];
+        pane.tabs.insert(pane.active + 1, tab);
+        pane.active += 1;
+        let t = pane.active;
+        self.load(p, t);
+        self.sync_tree();
     }
 
     fn rebuild_tree(&mut self) {

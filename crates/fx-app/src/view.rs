@@ -10,6 +10,7 @@ use fx_core::sort::SortKey;
 
 use crate::app::{App, Focus};
 use crate::gfx::{Font, Rect, glyph};
+use crate::icons::IconKey;
 use crate::model::NodeKind;
 
 pub const SCROLLBAR_W: f32 = 10.0;
@@ -297,6 +298,9 @@ impl App {
     pub fn paint(&mut self) {
         let lay = self.compute_layout();
         let c = self.theme.color.clone();
+        if self.icons.take_evicted() {
+            self.gfx.clear_icons();
+        }
         if !self.gfx.begin(c.background) {
             return;
         }
@@ -405,7 +409,16 @@ impl App {
                 NodeKind::Drive => (glyph::DRIVE, c.text_secondary),
                 _ => (glyph::FOLDER, c.folder),
             };
-            g.text(icon, Font::Glyph, Rect::new(x + 18.0, y, x + 40.0, y + rh), icol);
+            let key = match n.kind {
+                NodeKind::Drive => Some(IconKey::Path(n.path.clone())),
+                NodeKind::Folder | NodeKind::Favorite => Some(IconKey::Folder),
+                _ => None,
+            };
+            let icon_r = Rect::new(x + 18.0, y, x + 40.0, y + rh);
+            let drawn = key.and_then(|k| self.icons.get(k)).is_some_and(|id| g.icon(id, &self.icons, icon_r, 1.0));
+            if !drawn {
+                g.text(icon, Font::Glyph, icon_r, icol);
+            }
             let font = if header { Font::Bold } else { Font::Text };
             let label = if n.loading { format!("{}…", n.name) } else { n.name.clone() };
             g.text(&label, font, Rect::new(x + 44.0, y, row.r - 4.0, y + rh), c.text);
@@ -505,7 +518,13 @@ impl App {
                     text_col = *col;
                 }
             let (nl, nr) = pl.cols[0];
-            g.text(if dir { glyph::FOLDER } else { glyph::FILE }, Font::Glyph, Rect::new(nl + 8.0, y, nl + 32.0, y + rh), if dir { c.folder } else { c.text_secondary });
+            // 系統圖示；尚未載入時先畫字型圖示
+            let icon_r = Rect::new(nl + 8.0, y, nl + 32.0, y + rh);
+            let opacity = if entry.is_hidden() { 0.5 } else { 1.0 };
+            let key = IconKey::for_entry(&tab.path, &tab.listing, e);
+            if !self.icons.get(key).is_some_and(|id| g.icon(id, &self.icons, icon_r, opacity)) {
+                g.text(if dir { glyph::FOLDER } else { glyph::FILE }, Font::Glyph, icon_r, if dir { c.folder } else { c.text_secondary });
+            }
             g.text_w(name, Font::Text, Rect::new(nl + 36.0, y, nr - 6.0, y + rh), text_col);
             let (ml, mr) = pl.cols[1];
             if mr - ml > 20.0 {

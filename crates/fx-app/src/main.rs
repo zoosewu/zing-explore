@@ -3,6 +3,7 @@
 
 mod app;
 mod gfx;
+mod icons;
 mod input;
 mod model;
 mod perf;

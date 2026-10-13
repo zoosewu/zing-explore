@@ -36,6 +36,11 @@ $tolerance = @{
     frame_p50_ms = 0.5; frame_p99_ms = 2; exe_mb = 0.05; theme_switch_ms = 2
 }
 
+# 剛安裝 rustup、尚未重開終端機時 PATH 可能還沒有 cargo
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+}
+
 if (-not $SkipBuild) {
     Push-Location $root
     cargo build --release -p fx-app

@@ -34,7 +34,7 @@ use windows::Win32::UI::Shell::{
     SHOP_FILEPATH, SHObjectProperties, SHParseDisplayName,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreatePopupMenu, DestroyMenu, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_DRAWITEM,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_DRAWITEM,
     WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR,
 };
 use windows::core::{Interface, PCSTR, PCWSTR, PSTR, Ref, Result, implement};
@@ -330,63 +330,83 @@ pub enum MenuResult {
     /// 使用者選了「重新命名」：由程式自己的就地編輯處理
     Rename,
     Invoked,
+    /// 選了程式自己加入的項目（`extras` 中的 id）
+    Extra(u32),
 }
 
-/// 顯示 Shell 右鍵選單。`items` 為空時顯示 `folder` 的背景選單（新增、貼上…）。
-pub fn context_menu(hwnd: HWND, items: &[String], folder: &str, pt: POINT) -> Result<MenuResult> {
+/// 程式自訂項目的 id 範圍，與 Shell 項目（1..0x7FFF）分開
+pub const EXTRA_ID_BASE: u32 = 0x8000;
+
+/// 顯示 Shell 右鍵選單。`items` 為空時顯示 `folder` 的背景選單（新增、貼上…）；
+/// 兩者皆空時只顯示 `extras`。`extras` 放在選單最上方，以分隔線隔開。
+pub fn context_menu(hwnd: HWND, items: &[String], folder: &str, pt: POINT, extras: &[(u32, String)]) -> Result<MenuResult> {
     unsafe {
         let mut _keep = Vec::new();
-        let cm: IContextMenu = if items.is_empty() {
+        let cm: Option<IContextMenu> = if items.is_empty() {
             if folder.is_empty() {
-                return Ok(MenuResult::None);
+                None
+            } else {
+                let pidl = Pidl::parse(folder)?;
+                let sf: IShellFolder = SHBindToObject(None, pidl.0, None)?;
+                Some(sf.CreateViewObject(hwnd)?)
             }
-            let pidl = Pidl::parse(folder)?;
-            let sf: IShellFolder = SHBindToObject(None, pidl.0, None)?;
-            sf.CreateViewObject(hwnd)?
         } else {
             let pidls = items.iter().map(|p| Pidl::parse(p)).collect::<Result<Vec<_>>>()?;
             let parent: IShellFolder = SHBindToParent(pidls[0].0, None)?;
             let children: Vec<*const ITEMIDLIST> = pidls.iter().map(|p| ILFindLastID(p.0) as *const _).collect();
             let cm = parent.GetUIObjectOf(hwnd, &children, None)?;
             _keep = pidls;
-            cm
+            Some(cm)
         };
+        if cm.is_none() && extras.is_empty() {
+            return Ok(MenuResult::None);
+        }
 
         let menu = CreatePopupMenu()?;
+        for (id, label) in extras {
+            let w = wide_z(label);
+            AppendMenuW(menu, MF_STRING, *id as usize, PCWSTR(w.as_ptr()))?;
+        }
         let extended = GetKeyState(VK_SHIFT.0 as i32) < 0;
-        let flags = CMF_NORMAL | if items.is_empty() { 0 } else { CMF_CANRENAME } | if extended { CMF_EXTENDEDVERBS } else { 0 };
-        cm.QueryContextMenu(menu, 0, 1, 0x7FFF, flags).ok()?;
-
-        ACTIVE_MENU.with(|m| *m.borrow_mut() = (cm.cast().ok(), cm.cast().ok()));
+        if let Some(cm) = &cm {
+            if !extras.is_empty() {
+                AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())?;
+            }
+            let flags = CMF_NORMAL | if items.is_empty() { 0 } else { CMF_CANRENAME } | if extended { CMF_EXTENDEDVERBS } else { 0 };
+            cm.QueryContextMenu(menu, extras.len() as u32 + 1, 1, EXTRA_ID_BASE - 1, flags).ok()?;
+            ACTIVE_MENU.with(|m| *m.borrow_mut() = (cm.cast().ok(), cm.cast().ok()));
+        }
         let cmd = TrackPopupMenuEx(menu, (TPM_RETURNCMD | TPM_RIGHTBUTTON).0, pt.x, pt.y, hwnd, None).0 as u32;
         ACTIVE_MENU.with(|m| *m.borrow_mut() = (None, None));
 
-        let result = if cmd == 0 {
-            MenuResult::None
-        } else if !items.is_empty() && verb(&cm, cmd - 1).as_deref() == Some("rename") {
-            MenuResult::Rename
-        } else {
-            let dir = wide_z(folder);
-            let mut mask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
-            if GetKeyState(VK_CONTROL.0 as i32) < 0 {
-                mask |= CMIC_MASK_CONTROL_DOWN;
+        let result = match &cm {
+            _ if cmd == 0 => MenuResult::None,
+            _ if cmd >= EXTRA_ID_BASE => MenuResult::Extra(cmd),
+            None => MenuResult::None,
+            Some(cm) if !items.is_empty() && verb(cm, cmd - 1).as_deref() == Some("rename") => MenuResult::Rename,
+            Some(cm) => {
+                let dir = wide_z(folder);
+                let mut mask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
+                if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+                    mask |= CMIC_MASK_CONTROL_DOWN;
+                }
+                if extended {
+                    mask |= CMIC_MASK_SHIFT_DOWN;
+                }
+                let info = CMINVOKECOMMANDINFOEX {
+                    cbSize: size_of::<CMINVOKECOMMANDINFOEX>() as u32,
+                    fMask: mask,
+                    hwnd,
+                    lpVerb: PCSTR((cmd - 1) as usize as *const u8),
+                    lpVerbW: PCWSTR((cmd - 1) as usize as *const u16),
+                    lpDirectoryW: if folder.is_empty() { PCWSTR::null() } else { PCWSTR(dir.as_ptr()) },
+                    nShow: SW_SHOWNORMAL.0,
+                    ptInvoke: pt,
+                    ..Default::default()
+                };
+                cm.InvokeCommand(&info as *const _ as *const CMINVOKECOMMANDINFO)?;
+                MenuResult::Invoked
             }
-            if extended {
-                mask |= CMIC_MASK_SHIFT_DOWN;
-            }
-            let info = CMINVOKECOMMANDINFOEX {
-                cbSize: size_of::<CMINVOKECOMMANDINFOEX>() as u32,
-                fMask: mask,
-                hwnd,
-                lpVerb: PCSTR((cmd - 1) as usize as *const u8),
-                lpVerbW: PCWSTR((cmd - 1) as usize as *const u16),
-                lpDirectoryW: if folder.is_empty() { PCWSTR::null() } else { PCWSTR(dir.as_ptr()) },
-                nShow: SW_SHOWNORMAL.0,
-                ptInvoke: pt,
-                ..Default::default()
-            };
-            cm.InvokeCommand(&info as *const _ as *const CMINVOKECOMMANDINFO)?;
-            MenuResult::Invoked
         };
         let _ = DestroyMenu(menu);
         Ok(result)

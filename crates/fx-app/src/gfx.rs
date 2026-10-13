@@ -6,11 +6,13 @@ use std::sync::mpsc::{Receiver, channel};
 
 use fx_core::theme::{Color, Theme};
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HMODULE, HWND, LPARAM, RECT, WPARAM};
-use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT};
+use windows::Win32::Graphics::Direct2D::Common::{
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+};
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_ALIASED, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
     D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1DeviceContext,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1DeviceContext,
     ID2D1Factory1, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
@@ -31,6 +33,8 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, PostMessageW, WM_APP};
 use windows::core::{BOOL, HSTRING, Interface, Result, w};
+
+use crate::icons::Icons;
 
 /// 背景執行緒建立好硬體繪圖裝置時送出
 pub const WM_APP_GPU_READY: u32 = WM_APP + 4;
@@ -128,6 +132,8 @@ pub struct Gfx {
     dpi: f32,
     immediate: bool,
     widths: RefCell<HashMap<(Font, String), f32>>,
+    /// 圖示點陣圖（屬於目前的裝置，換裝置時清空，再由 Icons 的像素重建）
+    icon_bitmaps: RefCell<HashMap<u32, ID2D1Bitmap1>>,
 }
 
 fn color_f(c: Color) -> D2D1_COLOR_F {
@@ -189,6 +195,7 @@ impl Gfx {
             dpi,
             immediate,
             widths: RefCell::new(HashMap::new()),
+            icon_bitmaps: RefCell::new(HashMap::new()),
         })
     }
 
@@ -267,6 +274,7 @@ impl Gfx {
         self.rt = None;
         self.brush = None;
         self.dev = None;
+        self.icon_bitmaps.borrow_mut().clear();
         match self.build_device(d3d, false) {
             Ok(d) => {
                 self.dev = Some(d);
@@ -313,6 +321,7 @@ impl Gfx {
                 None => (create_d3d(D3D_DRIVER_TYPE_WARP)?, true),
             };
             self.dev = Some(self.build_device(d3d, warp)?);
+            self.icon_bitmaps.borrow_mut().clear();
             crate::perf::mark("device");
         }
         let d = self.dev.as_mut().unwrap();
@@ -372,6 +381,7 @@ impl Gfx {
         self.rt = None;
         self.brush = None;
         self.dev = None;
+        self.icon_bitmaps.borrow_mut().clear();
         // 下一次成功呈現後重新在背景建立硬體裝置
         self.hw_rx = None;
         self.hw_started = false;
@@ -416,6 +426,40 @@ impl Gfx {
 
     pub fn vline(&self, x: f32, y0: f32, y1: f32, c: Color) {
         self.fill(Rect::new(x, y0, x + 1.0, y1), c);
+    }
+
+    pub fn clear_icons(&self) {
+        self.icon_bitmaps.borrow_mut().clear();
+    }
+
+    /// 在 `r` 中央繪製 16×16 DIP 的圖示；對齊實體像素避免模糊。回傳是否有畫出來。
+    pub fn icon(&self, id: u32, icons: &Icons, r: Rect, opacity: f32) -> bool {
+        let Some(rt) = &self.rt else { return false };
+        let mut cache = self.icon_bitmaps.borrow_mut();
+        if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(id) {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                ..Default::default()
+            };
+            let created = icons.with_pixels(id, |p| unsafe {
+                rt.CreateBitmap(D2D_SIZE_U { width: p.w, height: p.h }, Some(p.bgra.as_ptr() as *const _), p.w * 4, &props)
+            });
+            match created {
+                Some(Ok(b)) => {
+                    e.insert(b);
+                }
+                _ => return false,
+            }
+        }
+        let s = self.scale();
+        let snap = |v: f32| (v * s).round() / s;
+        let l = snap((r.l + r.r) / 2.0 - 8.0);
+        let t = snap((r.t + r.b) / 2.0 - 8.0);
+        let dest = Rect::new(l, t, l + 16.0, t + 16.0);
+        unsafe { rt.DrawBitmap(&cache[&id], Some(&dest.d2d()), opacity, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None) };
+        true
     }
 
     /// 繪製 UTF-16 文字（不需轉換，檔名直接從字串池取用）

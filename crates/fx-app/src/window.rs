@@ -301,9 +301,12 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
 
 fn run_modal(hwnd: HWND, modal: Modal) {
     match modal {
-        Modal::ContextMenu { items, folder, pt } => match shell::context_menu(hwnd, &items, &folder, pt) {
+        Modal::ContextMenu { items, folder, pt, extras, target } => match shell::context_menu(hwnd, &items, &folder, pt, &extras) {
             Ok(MenuResult::Rename) => {
                 with_app(|a| a.start_rename());
+            }
+            Ok(MenuResult::Extra(id)) => {
+                with_app(|a| a.on_menu_extra(id, target));
             }
             Ok(_) => {}
             Err(e) => {

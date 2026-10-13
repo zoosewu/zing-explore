@@ -8,7 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_NEXT, VK_PRIOR, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 
-use crate::app::{App, Focus, Modal, Press};
+use crate::app::{App, Focus, MENU_FAV_ADD, Modal, Press};
 use crate::model::NodeKind;
 use crate::view::{COLUMN_KEYS, Hit, clamp_col};
 
@@ -232,21 +232,36 @@ impl App {
                 }
                 tab.focus = i;
                 let (items, folder) = (tab.target_paths(), tab.path.clone());
+                let (extras, target) = self.entry_menu_extras(&items, &folder);
                 self.paint();
-                self.modal = Some(Modal::ContextMenu { items, folder, pt: screen });
+                self.modal = Some(Modal::ContextMenu { items, folder, pt: screen, extras, target });
             }
             Hit::ListEmpty(p) => {
                 self.activate_pane(p);
                 self.panes[p].tab_mut().clear_selection();
                 let folder = self.panes[p].tab().path.clone();
+                let (extras, target) = self.entry_menu_extras(&[], &folder);
                 self.paint();
-                self.modal = Some(Modal::ContextMenu { items: Vec::new(), folder, pt: screen });
+                self.modal = Some(Modal::ContextMenu { items: Vec::new(), folder, pt: screen, extras, target });
             }
             Hit::TreeRow(i) | Hit::TreeArrow(i) => {
                 let n = &self.tree.nodes[i];
-                if !n.path.is_empty() && !matches!(n.kind, NodeKind::FavRoot | NodeKind::Pc) {
-                    let folder = path::parent(&n.path).unwrap_or_default();
-                    self.modal = Some(Modal::ContextMenu { items: vec![n.path.clone()], folder, pt: screen });
+                match n.kind {
+                    NodeKind::FavRoot => {
+                        let cur = self.tab().path.clone();
+                        if !cur.is_empty() && !self.is_favorite(&cur) {
+                            let extras = vec![(MENU_FAV_ADD, "將目前資料夾加入我的最愛".to_string())];
+                            self.modal =
+                                Some(Modal::ContextMenu { items: Vec::new(), folder: String::new(), pt: screen, extras, target: cur });
+                        }
+                    }
+                    NodeKind::Pc => {}
+                    _ => {
+                        let target = n.path.clone();
+                        let folder = path::parent(&target).unwrap_or_default();
+                        let extras = self.folder_extras(&target);
+                        self.modal = Some(Modal::ContextMenu { items: vec![target.clone()], folder, pt: screen, extras, target });
+                    }
                 }
             }
             _ => {}
@@ -263,13 +278,13 @@ impl App {
                 if tab.listing.entries[e].is_dir() {
                     let target = tab.full_path(e);
                     self.active_pane = p;
-                    self.exec(&format!("tab.new --path=\"{}\"", target.replace('"', "\"\"")));
+                    self.open_in_new_tab(target);
                 }
             }
             Hit::TreeRow(i) => {
                 let target = self.tree.nodes[i].path.clone();
                 if !target.is_empty() {
-                    self.exec(&format!("tab.new --path=\"{}\"", target.replace('"', "\"\"")));
+                    self.open_in_new_tab(target);
                 }
             }
             _ => {}
