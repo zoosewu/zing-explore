@@ -21,7 +21,7 @@ use windows::Win32::System::Ole::{
     CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE, DROPEFFECT_NONE, IDropSource, IDropTarget,
     IDropTarget_Impl, OleGetClipboard, OleSetClipboard, ReleaseStgMedium,
 };
-use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
+use windows::Win32::System::SystemServices::{MK_RBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     BHID_DataObject, CLSID_DragDropHelper, CMF_CANRENAME, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE,
@@ -219,6 +219,39 @@ fn unique_name(dir: &str, base: &str) -> String {
 
 fn preferred_drop_effect_format() -> u16 {
     unsafe { RegisterClipboardFormatW(windows::core::w!("Preferred DropEffect")) as u16 }
+}
+
+fn performed_drop_effect_format() -> u16 {
+    unsafe { RegisterClipboardFormatW(windows::core::w!("Performed DropEffect")) as u16 }
+}
+
+fn logical_performed_drop_effect_format() -> u16 {
+    unsafe { RegisterClipboardFormatW(windows::core::w!("Logical Performed DropEffect")) as u16 }
+}
+
+/// 在資料物件上設定一個 DWORD 格式（拖放效果的回報）
+fn set_dword(obj: &IDataObject, cf: u16, value: u32) {
+    unsafe {
+        let Ok(mem) = GlobalAlloc(GMEM_MOVEABLE, 4) else { return };
+        let p = GlobalLock(mem) as *mut u32;
+        if !p.is_null() {
+            *p = value;
+            let _ = GlobalUnlock(mem);
+        }
+        let medium = STGMEDIUM {
+            tymed: TYMED_HGLOBAL.0 as u32,
+            u: STGMEDIUM_0 { hGlobal: mem },
+            pUnkForRelease: std::mem::ManuallyDrop::new(None),
+        };
+        let _ = obj.SetData(&hglobal_format(cf), &medium, true);
+    }
+}
+
+/// 一般檔案系統路徑（不含資源回收筒內部項目，那需要 Shell 的還原邏輯）
+fn is_plain_file(p: &str) -> bool {
+    let b = p.as_bytes();
+    let absolute = (b.len() >= 3 && b[1] == b':' && b[2] == b'\\') || p.starts_with(r"\\");
+    absolute && !p.to_ascii_lowercase().contains(r"\$recycle.bin\")
 }
 
 fn hglobal_format(cf: u16) -> FORMATETC {
@@ -484,12 +517,15 @@ fn shell_drop_target(hwnd: HWND, folder: &str) -> Option<IDropTarget> {
 /// 由視窗層提供：螢幕座標 → 放置目標資料夾；以及拖曳中的游標位置（None 表示離開）
 pub type ResolveFn = fn(POINT) -> Option<String>;
 pub type HoverFn = fn(Option<POINT>);
+/// 放下檔案時交給背景檔案作業：(來源, 目標資料夾, 是否移動)
+pub type TransferFn = fn(Vec<String>, String, bool);
 
 #[implement(IDropTarget)]
 pub struct DropTarget {
     hwnd: HWND,
     resolve: ResolveFn,
     hover: HoverFn,
+    transfer: TransferFn,
     state: RefCell<DropState>,
 }
 
@@ -501,12 +537,14 @@ struct DropState {
     helper: Option<IDropTargetHelper>,
     /// 這次拖曳已解析過的放置目標：游標來回移動時不重複解析路徑
     cache: std::collections::HashMap<String, Option<IDropTarget>>,
+    /// 右鍵拖曳：放下時由 Shell 顯示選單
+    right_button: bool,
 }
 
 impl DropTarget {
-    pub fn new(hwnd: HWND, resolve: ResolveFn, hover: HoverFn) -> Self {
+    pub fn new(hwnd: HWND, resolve: ResolveFn, hover: HoverFn, transfer: TransferFn) -> Self {
         let helper = unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER).ok() };
-        Self { hwnd, resolve, hover, state: RefCell::new(DropState { helper, ..Default::default() }) }
+        Self { hwnd, resolve, hover, transfer, state: RefCell::new(DropState { helper, ..Default::default() }) }
     }
 
     /// 游標移到不同資料夾時，切換轉發對象
@@ -547,6 +585,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
             st.folder = None;
             st.inner = None;
             st.cache.clear();
+            st.right_button = keys.0 & MK_RBUTTON.0 != 0;
             if let (Some(h), Some(d)) = (&st.helper, &st.data) {
                 unsafe {
                     let _ = h.DragEnter(self.hwnd, d, &POINT { x: pt.x, y: pt.y }, *effect);
@@ -598,14 +637,35 @@ impl IDropTarget_Impl for DropTarget_Impl {
             }
         }
         let inner = st.inner.take();
+        let folder = st.folder.take();
+        let right_button = st.right_button;
         st.data = None;
-        st.folder = None;
         st.cache.clear();
         drop(st);
         (self.hover)(None);
         match (inner, data.as_ref()) {
             (Some(inner), Some(d)) => {
-                // Shell 的放置目標在 Drop 中同步複製（約 120–190 ms），COM 規定必須在 UI 執行緒
+                // 一般檔案的複製／移動交給背景檔案作業：Shell 的 Drop 會在 UI 執行緒同步複製（約 120–190 ms）。
+                // 效果沿用 Shell 在最後一次 DragOver 決定的（修飾鍵、同磁碟移動／跨磁碟複製，與檔案總管相同）。
+                let chosen = unsafe { *effect };
+                let transfer = (chosen == DROPEFFECT_COPY || chosen == DROPEFFECT_MOVE) && !right_button;
+                if let Some(dest) = folder.filter(|_| transfer)
+                    && let Some(paths) = hdrop_paths(d).filter(|p| !p.is_empty() && p.iter().all(|p| is_plain_file(p)))
+                {
+                    unsafe {
+                        let _ = inner.DragLeave();
+                    }
+                    let mov = chosen == DROPEFFECT_MOVE;
+                    if mov {
+                        // 最佳化移動：已由目標搬移，告知來源不要再刪除原檔
+                        set_dword(d, performed_drop_effect_format(), DROPEFFECT_NONE.0);
+                        set_dword(d, logical_performed_drop_effect_format(), DROPEFFECT_MOVE.0);
+                        unsafe { *effect = DROPEFFECT_NONE };
+                    }
+                    (self.transfer)(paths, dest, mov);
+                    return Ok(());
+                }
+                // 其他情況（右鍵選單、建立捷徑、虛擬檔案、資源回收筒）仍交給 Shell，同步執行，COM 規定必須在 UI 執行緒
                 crate::window::exempt_stall();
                 unsafe { inner.Drop(d, keys, *pt, effect) }
             }

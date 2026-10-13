@@ -504,8 +504,8 @@ fn luma(ctx: &Ctx, name: &str) -> f64 {
 
 // ---------------------------------------------------------------- 拖放
 
-/// 對放置目標模擬一次拖曳：經過 `over` 中的各點後放在 `drop_at`（Ctrl：複製）
-fn simulate_drop(ctx: &mut Ctx, source: &str, over: &[(f32, f32)], drop_at: (f32, f32)) {
+/// 對放置目標模擬一次左鍵拖曳：經過 `over` 中的各點後放在 `drop_at`（`copy`：按住 Ctrl）
+fn simulate_drop(ctx: &mut Ctx, source: &str, over: &[(f32, f32)], drop_at: (f32, f32), copy: bool) {
     let Some(target) = crate::window::drop_target() else {
         ctx.notes.push(("drop_error", "沒有註冊放置目標".into()));
         return;
@@ -522,7 +522,7 @@ fn simulate_drop(ctx: &mut Ctx, source: &str, over: &[(f32, f32)], drop_at: (f32
             return;
         }
     };
-    let keys = MODIFIERKEYS_FLAGS(MK_LBUTTON.0 | MK_CONTROL.0);
+    let keys = MODIFIERKEYS_FLAGS(MK_LBUTTON.0 | if copy { MK_CONTROL.0 } else { 0 });
     let all = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
     let pt = |p: (f32, f32)| {
         let s = screen_point(ctx.hwnd, p);
@@ -560,6 +560,12 @@ fn simulate_drop(ctx: &mut Ctx, source: &str, over: &[(f32, f32)], drop_at: (f32
             ctx.notes.push(("drop_error", e.message()));
         }
     }
+}
+
+/// 放下一般檔案時交給背景檔案作業，Drop 本身應立即返回
+fn drop_fast(c: &Ctx) -> Result<(), String> {
+    let ms: f64 = c.note("drop_ms").and_then(|v| v.parse().ok()).unwrap_or(f64::MAX);
+    if ms > 30.0 { Err(format!("Drop 阻塞 UI 執行緒 {ms:.0} ms")) } else { Ok(()) }
 }
 
 // ---------------------------------------------------------------- 測試步驟
@@ -853,7 +859,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                         return;
                     };
                     let over: Vec<_> = (0..12).map(|i| if i % 2 == 0 { pa } else { pb }).collect();
-                    simulate_drop(c, &src, &over, pb);
+                    simulate_drop(c, &src, &over, pb, true);
                 }
             },
             {
@@ -867,15 +873,41 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                     expect("經過時標示資料夾列", c.note("hovered"), Some("11/11"))?;
                     expect("經過時的效果（複製）", c.note("over_effect"), Some("1"))?;
                     expect("放下後清除標示", a.drop_hover, None)?;
-                    // Shell 的 Drop 會同步複製（已知缺口，約 120–190 ms）；明顯變慢就失敗
-                    let drop_ms: f64 = c.note("drop_ms").and_then(|v| v.parse().ok()).unwrap_or(f64::MAX);
-                    if drop_ms > 500.0 {
-                        return Err(format!("Drop 阻塞 UI 執行緒 {drop_ms:.0} ms"));
-                    }
+                    expect("回報給來源的效果（複製）", c.note("drop_effect"), Some("1"))?;
+                    drop_fast(c)?;
                     if !exists(&copied) {
                         return Err("檔案沒有複製到資料夾B".into());
                     }
                     if exists(&src) { Ok(()) } else { Err("來源檔案不見了（應為複製）".into()) }
+                }
+            },
+        )
+        .slow(),
+    );
+
+    v.push(
+        step(
+            "拖放：同磁碟放下（移動）",
+            {
+                let src = ctx.sub("報告 9.txt");
+                move |c| match row_pos("資料夾A") {
+                    Some(pa) => simulate_drop(c, &src, &[pa, pa], pa, false),
+                    None => c.notes.push(("drop_error", "找不到資料夾列".into())),
+                }
+            },
+            {
+                let (src, moved) = (ctx.sub("報告 9.txt"), path::join(&dir_a, "報告 9.txt"));
+                move |c, a| {
+                    if let Some(e) = c.note("drop_error") {
+                        return Err(e.to_string());
+                    }
+                    // 最佳化移動：目標自己搬移，回報 DROPEFFECT_NONE，來源不會再刪除原檔
+                    expect("回報給來源的效果（無）", c.note("drop_effect"), Some("0"))?;
+                    drop_fast(c)?;
+                    if !exists(&moved) || exists(&src) {
+                        return Err("檔案沒有移到資料夾A".into());
+                    }
+                    if names(a).iter().any(|n| n == "報告 9.txt") { Err("清單沒有更新".into()) } else { Ok(()) }
                 }
             },
         )

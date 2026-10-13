@@ -359,6 +359,11 @@ fn drop_resolve(pt: POINT) -> Option<String> {
     .flatten()
 }
 
+/// 放下的檔案交給背景檔案作業佇列（完成後重新整理相關分頁）
+fn drop_transfer(sources: Vec<String>, dest: String, mov: bool) {
+    with_app(|a| a.fileops.submit(shell::FileOp::Transfer { sources, dest, mov }));
+}
+
 fn drop_hover(pt: Option<POINT>) {
     if pt.is_none() {
         with_app(|a| {
@@ -372,7 +377,7 @@ fn drop_hover(pt: Option<POINT>) {
 fn deferred_init(hwnd: HWND) {
     unsafe {
         let _ = OleInitialize(None);
-        let target: IDropTarget = DropTarget::new(hwnd, drop_resolve, drop_hover).into();
+        let target: IDropTarget = DropTarget::new(hwnd, drop_resolve, drop_hover, drop_transfer).into();
         if RegisterDragDrop(hwnd, &target).is_ok() {
             DROP_TARGET.with(|d| *d.borrow_mut() = Some(target));
         }

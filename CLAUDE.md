@@ -55,11 +55,10 @@ cargo bench -p fx-core --bench core         # 動到排序／篩選／列舉時
 
 - 拖放（拖出的資料物件、放置目標）仍在 UI 執行緒解析路徑，這是 COM 的限制；網路路徑在拖曳經過時可能短暫延遲。
   放置目標每次拖曳只解析一次（冒煙測試確認：來回經過 12 次只解析 2 次，DragOver 約 1.5 ms）。
-- 放下時轉交給 Shell 放置目標的 `Drop` 會在 UI 執行緒同步複製，冒煙測試量到約 120–190 ms（release，小檔案）。
-  已試過對資料物件開啟非同步模式（`IDataObjectAsyncCapability`，`BindToHandler` 與 `SHCreateDataObject` 兩種），
-  但 `GetAsyncMode` 仍回傳 false，沒有效果。檔案總管當拖曳來源時可能是非同步的，未以真實拖放驗證。
-  這段呼叫目前以 `window::exempt_stall()` 排除在卡頓監看外；冒煙測試在超過 500 ms 時失敗。
-  可能的解法：放下的資料含 CF_HDROP 時改由 `FileOps` 在背景複製／移動（需自行處理預設效果與「已執行的效果」回報）。
+- 放下：一般檔案（CF_HDROP）的複製／移動交給 `FileOps` 在背景執行，`Drop` 約 1 ms 返回；效果沿用 Shell 在最後一次
+  DragOver 決定的（與檔案總管規則相同），移動時以「最佳化移動」回報來源（回傳 DROPEFFECT_NONE、設定 Performed DropEffect）。
+  右鍵拖曳、建立捷徑、虛擬檔案（非 CF_HDROP）、資源回收筒內的項目仍交給 Shell 的 `Drop`，會在 UI 執行緒同步執行
+  （約 120–190 ms），以 `window::exempt_stall()` 排除在卡頓監看外。
 - 捲動時偶有一幀約 17–20 ms（約一個 60 Hz 更新週期）的停頓，p99 不受影響。已查明時間全部花在 `Present`
   （等待桌面合成器），CPU 繪製約 2 ms、EndDraw 約 0.15 ms；連續呈現約 70–100 ms 後發生、閒置後會再發生。
   是否發生取決於桌面當下的狀態（同一版本同一條件，一輪 12/12、另一輪 0/3），緩衝數量、FLIP_SEQUENTIAL、
