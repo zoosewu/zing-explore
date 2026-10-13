@@ -46,4 +46,4 @@ cmd = "run code {sel}"
 
 ## 效能
 
-每次變更都要通過 `pwsh tools/perf.ps1`（門檻與規則見 [CLAUDE.md](CLAUDE.md)）。
+每次變更都要通過 `pwsh tools/perf.ps1` 與 `pwsh tools/smoke.ps1`（門檻與規則見 [CLAUDE.md](CLAUDE.md)）。

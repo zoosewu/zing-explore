@@ -26,7 +26,7 @@ use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use crate::app::{App, Edit, EditKind, Modal, TIMER_PERF, TIMER_PERF_GPU, TIMER_REFRESH, TIMER_STATUS};
+use crate::app::{App, Edit, EditKind, Modal, TIMER_PERF, TIMER_PERF_GPU, TIMER_REFRESH, TIMER_SMOKE, TIMER_STATUS};
 use crate::input::Mods;
 use crate::services::{TabId, WM_APP_NOTIFY};
 use crate::shell::{self, DropTarget};
@@ -305,6 +305,11 @@ thread_local! {
     static IN_MODAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// 這次訊息處理中有已知會阻塞、但受 COM 限制必須在 UI 執行緒的 Shell 呼叫（見 CLAUDE.md 已知缺口）
+pub fn exempt_stall() {
+    IN_MODAL.with(|m| m.set(true));
+}
+
 /// debug build：UI 訊息處理超過 100 ms 就回報（debug 程式碼比 release 慢數倍，所以門檻放寬）。
 /// 視窗拖曳／縮放、系統選單有自己的訊息迴圈，略過。
 #[cfg(debug_assertions)]
@@ -338,6 +343,12 @@ fn screen_to_dip(hwnd: HWND, pt: POINT) -> (f32, f32) {
     }
     let s = unsafe { GetDpiForWindow(hwnd) } as f32 / 96.0;
     (p.x as f32 / s, p.y as f32 / s)
+}
+
+/// 視窗註冊的放置目標（冒煙測試直接呼叫它模擬拖放）
+#[cfg(feature = "smoke")]
+pub fn drop_target() -> Option<IDropTarget> {
+    DROP_TARGET.with(|d| d.borrow().clone())
 }
 
 fn drop_resolve(pt: POINT) -> Option<String> {
@@ -574,6 +585,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 TIMER_PERF_GPU => {
                     with_app(crate::perf::after_paint);
                 }
+                TIMER_SMOKE => crate::smoke::tick(hwnd),
                 TIMER_PERF => {
                     unsafe {
                         let _ = KillTimer(Some(hwnd), TIMER_PERF);

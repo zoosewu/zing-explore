@@ -8,6 +8,10 @@ license.workspace = true
 name = "fx"
 path = "src/main.rs"
 
+[features]
+# 自動化 UI 冒煙測試（tools/smoke.ps1）；一般建置不含
+smoke = []
+
 [dependencies]
 fx-core.workspace = true
 toml.workspace = true
@@ -32,6 +36,7 @@ features = [
     "Win32_Graphics_Imaging_D2D",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_Storage_Xps",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_DataExchange",

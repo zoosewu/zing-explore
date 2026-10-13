@@ -465,8 +465,12 @@ pub fn drag_out(hwnd: HWND, paths: &[String]) -> Result<DROPEFFECT> {
     unsafe { SHDoDragDrop(Some(hwnd), &obj, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK) }
 }
 
+/// 解析過幾次放置目標（冒煙測試用來確認每次拖曳的快取）
+pub static DROP_RESOLVES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// 取得某資料夾在 Shell 中的放置目標，讓拖放行為與檔案總管完全一致
 fn shell_drop_target(hwnd: HWND, folder: &str) -> Option<IDropTarget> {
+    DROP_RESOLVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // 放置目標的回呼由 COM 在 UI 執行緒呼叫，無法移到背景；每次拖曳已快取
     let _allow = guard::allow_io("放置目標受 COM 限制必須在 UI 執行緒");
     unsafe {
@@ -600,7 +604,11 @@ impl IDropTarget_Impl for DropTarget_Impl {
         drop(st);
         (self.hover)(None);
         match (inner, data.as_ref()) {
-            (Some(inner), Some(d)) => unsafe { inner.Drop(d, keys, *pt, effect) },
+            (Some(inner), Some(d)) => {
+                // Shell 的放置目標在 Drop 中同步複製（約 120–190 ms），COM 規定必須在 UI 執行緒
+                crate::window::exempt_stall();
+                unsafe { inner.Drop(d, keys, *pt, effect) }
+            }
             _ => {
                 unsafe { *effect = DROPEFFECT_NONE };
                 Ok(())

@@ -23,10 +23,14 @@ Rust + 原生 Win32（`windows-rs`）+ Direct2D/DirectWrite 自繪 UI，腳本�
 cargo test --workspace
 cargo clippy --workspace --all-targets      # 必須 0 警告
 pwsh tools/perf.ps1                         # 建置 release 並檢查全部指標，失敗時結束代碼 1
+pwsh tools/smoke.ps1                        # 自動化 UI 冒煙測試（debug build，含 I/O 防呆與卡頓監看）
 cargo bench -p fx-core --bench core         # 動到排序／篩選／列舉時
 ```
 
 - 把 `tools/perf.ps1` 的結果表貼進 commit / PR 說明。
+- `tools/smoke.ps1` 在程序內送出鍵盤、滑鼠、拖放訊息（`--smoke-*` 模式，見 `smoke.rs`），不動真實游標、不搶前景，
+  使用者操作電腦時也能跑；截圖存在 `target\smoke\`。新增會改變操作行為的功能時，在 `smoke.rs` 加上對應步驟。
+  不涵蓋右鍵選單、剪貼簿、刪除（會搶前景、覆蓋剪貼簿、留東西在資源回收筒），這些仍需手動測試。
 - 只有在確認是改善（或刻意接受的取捨）時才執行 `pwsh tools/perf.ps1 -UpdateBaseline` 更新 `perf/baseline.json`，並在說明中寫明原因。
 - 效能模式的視窗固定在 (100, 100)、1280×800，結果才可重現。
 - frame_p99 受 OS/GPU 偶發停頓影響，同一版本重跑約有 ±1.5 ms 差異，因此退步容差為 2 ms；繪製成本的實際退步由 frame_p50（容差 0.5 ms）把關。
@@ -50,6 +54,12 @@ cargo bench -p fx-core --bench core         # 動到排序／篩選／列舉時
 ### 已知的效能缺口（待處理）
 
 - 拖放（拖出的資料物件、放置目標）仍在 UI 執行緒解析路徑，這是 COM 的限制；網路路徑在拖曳經過時可能短暫延遲。
+  放置目標每次拖曳只解析一次（冒煙測試確認：來回經過 12 次只解析 2 次，DragOver 約 1.5 ms）。
+- 放下時轉交給 Shell 放置目標的 `Drop` 會在 UI 執行緒同步複製，冒煙測試量到約 120–190 ms（release，小檔案）。
+  已試過對資料物件開啟非同步模式（`IDataObjectAsyncCapability`，`BindToHandler` 與 `SHCreateDataObject` 兩種），
+  但 `GetAsyncMode` 仍回傳 false，沒有效果。檔案總管當拖曳來源時可能是非同步的，未以真實拖放驗證。
+  這段呼叫目前以 `window::exempt_stall()` 排除在卡頓監看外；冒煙測試在超過 500 ms 時失敗。
+  可能的解法：放下的資料含 CF_HDROP 時改由 `FileOps` 在背景複製／移動（需自行處理預設效果與「已執行的效果」回報）。
 - 捲動時偶有一幀約 17–20 ms（約一個 60 Hz 更新週期）的停頓，p99 不受影響。已查明時間全部花在 `Present`
   （等待桌面合成器），CPU 繪製約 2 ms、EndDraw 約 0.15 ms；連續呈現約 70–100 ms 後發生、閒置後會再發生。
   是否發生取決於桌面當下的狀態（同一版本同一條件，一輪 12/12、另一輪 0/3），緩衝數量、FLIP_SEQUENTIAL、

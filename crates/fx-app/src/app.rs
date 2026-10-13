@@ -32,6 +32,7 @@ pub const TIMER_REFRESH: usize = 1;
 pub const TIMER_STATUS: usize = 2;
 pub const TIMER_PERF: usize = 3;
 pub const TIMER_PERF_GPU: usize = 4;
+pub const TIMER_SMOKE: usize = 5;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -106,16 +107,23 @@ pub struct App {
     /// 按鍵已觸發命令時，吃掉緊接著的 WM_CHAR
     pub suppress_char: bool,
     pub perf: Option<Perf>,
+    /// 效能或冒煙測試：使用預設設定、不讀寫使用者的工作階段
+    pub isolated: bool,
     session: Session,
 }
 
 impl App {
-    pub fn new(hwnd: HWND, dpi: f32, perf: Option<Perf>) -> windows::core::Result<Self> {
+    /// `smoke_dir`：冒煙測試的起始資料夾（使用預設設定與深色主題，結果才可重現）
+    pub fn new(hwnd: HWND, dpi: f32, perf: Option<Perf>, smoke_dir: Option<String>) -> windows::core::Result<Self> {
+        let isolated = perf.is_some() || smoke_dir.is_some();
         // 第一幀之前必須知道設定與主題；檔案很小且在本機，屬於明確的例外
-        let (config, warnings, session, theme, theme_warning) = {
+        let (config, warnings, session, theme, theme_warning) = if smoke_dir.is_some() {
+            let (config, warnings) = Config::load(None);
+            (config, warnings, Session::default(), Theme::dark(), None)
+        } else {
             let _allow = fx_core::guard::allow_io("啟動時讀取設定、主題與工作階段");
             let (config, warnings) = settings::load_config();
-            let session = if perf.is_some() { Session::default() } else { Session::load() };
+            let session = if isolated { Session::default() } else { Session::load() };
             let (theme, theme_warning) = settings::resolve_theme(&config.theme);
             (config, warnings, session, theme, theme_warning)
         };
@@ -171,11 +179,14 @@ impl App {
             layout: Layout::default(),
             suppress_char: false,
             perf,
+            isolated,
             session,
         };
 
         // 起始分頁：效能測試固定從「此電腦」開始；否則依設定或上次的工作階段
-        let start_tabs: Vec<Vec<String>> = if app.perf.is_some() {
+        let start_tabs: Vec<Vec<String>> = if let Some(d) = smoke_dir {
+            vec![vec![d]]
+        } else if app.perf.is_some() {
             vec![vec![String::new()]]
         } else if !app.config.start_path.is_empty() {
             vec![vec![path::normalize(&app.config.start_path)]]
@@ -224,14 +235,14 @@ impl App {
 
     /// 結束時同步儲存（之後程序即結束，不能交給背景）
     pub fn save_session(&self) {
-        if self.perf.is_none() {
+        if !self.isolated {
             let _ = self.session_snapshot().save();
         }
     }
 
     /// 執行中的儲存交給背景執行緒
     fn save_session_async(&self) {
-        if self.perf.is_none() {
+        if !self.isolated {
             let snapshot = self.session_snapshot();
             self.pool.spawn(move || {
                 let _ = snapshot.save();
