@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/fx-core", "crates/fx-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+fx-core = { path = "crates/fx-core" }
+serde = { version = "1", features = ["derive"] }
+toml = { version = "1", default-features = false, features = ["parse", "serde", "display"] }
+windows = "0.62"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# 保留符號的 release，供 WPR/Tracy 效能分析使用
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = "line-tables-only"

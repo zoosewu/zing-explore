@@ -1,0 +1,13 @@
+{
+  "exe_mb": 0.973,
+  "startup_ms": 49.68,
+  "private_working_set_mb": 15.75,
+  "first_screen_ms": 29.48,
+  "load_all_ms": 141.82,
+  "frame_p50_ms": 2.42,
+  "frame_p99_ms": 4.05,
+  "frame_max_ms": 32.46,
+  "theme_switch_ms": 3.04,
+  "listing_mb": 10.0,
+  "scroll_warp": 0.0
+}
