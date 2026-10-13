@@ -36,6 +36,12 @@ pub enum Msg {
     FileOpDone { dirs: Vec<String>, error: Option<String>, select: Option<Select> },
     Status { text: String, error: bool },
     Icon { id: u32, pixels: Option<crate::icons::IconPixels> },
+    /// 右鍵選單選了「重新命名」
+    MenuRename,
+    /// 右鍵選單選了程式自訂的項目
+    MenuExtra { id: u32, target: String },
+    /// 剪貼簿上的檔案已讀出，交給檔案作業佇列
+    Paste { sources: Vec<String>, dest: String, cut: bool },
 }
 
 /// 檔案作業完成後要選取（並可能進入重新命名）的項目

@@ -24,6 +24,7 @@ use crate::perf::Perf;
 use crate::services::{self, Msg, Notifier, Pool, TabId};
 use crate::settings::{self, Session};
 use crate::shell::{self, FileOp, FileOps};
+use crate::shellhost::{ShellHost, ShellJob};
 use crate::view::{Hit, Layout};
 use crate::window;
 
@@ -56,10 +57,7 @@ pub enum Press {
 
 /// 有自己訊息迴圈的動作：必須在釋放 App 借用後才執行（見 window.rs）
 pub enum Modal {
-    /// `extras`：放在 Shell 項目上方的自訂項目；`target`：自訂項目作用的路徑
-    ContextMenu { items: Vec<String>, folder: String, pt: POINT, extras: Vec<(u32, String)>, target: String },
     DragOut { paths: Vec<String> },
-    Properties { paths: Vec<String> },
 }
 
 pub enum EditKind {
@@ -94,6 +92,7 @@ pub struct App {
     rx: Receiver<Msg>,
     pub fileops: FileOps,
     pub icons: Icons,
+    pub shell_host: ShellHost,
     next_tab_id: TabId,
     pub status: Option<(String, bool, Instant)>,
     title: String,
@@ -123,6 +122,7 @@ impl App {
         let pool = Pool::new(threads);
         let fileops = FileOps::new(notifier.clone());
         let icons = Icons::new(notifier.clone());
+        let shell_host = ShellHost::new(notifier.clone(), hwnd);
 
         let mut favorites = config.favorites.clone();
         for f in &session.favorites {
@@ -152,6 +152,7 @@ impl App {
             rx,
             fileops,
             icons,
+            shell_host,
             next_tab_id: 1,
             status: None,
             title: String::new(),
@@ -566,6 +567,9 @@ impl App {
             }
             Msg::Status { text, error } => self.set_status(text, error),
             Msg::Icon { id, pixels } => self.icons.store(id, pixels),
+            Msg::MenuRename => self.start_rename(),
+            Msg::MenuExtra { id, target } => self.on_menu_extra(id, target),
+            Msg::Paste { sources, dest, cut } => self.fileops.submit(FileOp::Transfer { sources, dest, mov: cut }),
         }
     }
 
@@ -685,19 +689,14 @@ impl App {
                     return Ok(());
                 }
                 let cut = inv.name == "file.cut";
-                shell::set_clipboard(&paths, cut).map_err(|e| format!("無法存取剪貼簿：{}", e.message()))?;
-                self.set_status(format!("已{} {} 個項目", if cut { "剪下" } else { "複製" }, paths.len()), false);
+                self.shell_host.submit(ShellJob::SetClipboard { paths, cut });
             }
             "file.paste" => {
                 let dest = self.tab().path.clone();
                 if dest.is_empty() {
                     return Err("無法貼到「此電腦」".into());
                 }
-                let (sources, cut) = shell::read_clipboard().ok_or("剪貼簿上沒有檔案")?;
-                if cut {
-                    shell::clear_clipboard();
-                }
-                self.fileops.submit(FileOp::Transfer { sources, dest, mov: cut });
+                self.shell_host.submit(ShellJob::Paste { dest });
             }
             "file.delete" => {
                 let paths = self.tab().target_paths();
@@ -716,7 +715,7 @@ impl App {
             "file.properties" => {
                 let paths = self.tab().target_paths();
                 let paths = if paths.is_empty() { vec![self.tab().path.clone()] } else { paths };
-                self.modal = Some(Modal::Properties { paths });
+                self.shell_host.submit(ShellJob::Properties { paths });
             }
             "menu.context" => {
                 // 鍵盤開啟右鍵選單：顯示在焦點項目下方
@@ -734,7 +733,7 @@ impl App {
                 unsafe {
                     let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd, &mut pt);
                 }
-                self.modal = Some(Modal::ContextMenu { items, folder, pt, extras, target });
+                self.show_context_menu(items, folder, pt, extras, target);
             }
             "file.copypath" => {
                 let paths = self.tab().target_paths();
@@ -863,6 +862,12 @@ impl App {
             other => return Err(format!("未知命令：{other}")),
         }
         Ok(())
+    }
+
+    /// 交給 Shell 主機顯示右鍵選單（不等待結果，選擇的項目以訊息送回）
+    pub fn show_context_menu(&mut self, items: Vec<String>, folder: String, pt: POINT, extras: Vec<(u32, String)>, target: String) {
+        let mods = crate::input::Mods::current();
+        self.shell_host.submit(ShellJob::ContextMenu { items, folder, pt, extras, target, extended: mods.shift, ctrl: mods.ctrl });
     }
 
     pub fn is_favorite(&self, p: &str) -> bool {

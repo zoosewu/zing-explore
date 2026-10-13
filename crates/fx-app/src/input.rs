@@ -234,7 +234,7 @@ impl App {
                 let (items, folder) = (tab.target_paths(), tab.path.clone());
                 let (extras, target) = self.entry_menu_extras(&items, &folder);
                 self.paint();
-                self.modal = Some(Modal::ContextMenu { items, folder, pt: screen, extras, target });
+                self.show_context_menu(items, folder, screen, extras, target);
             }
             Hit::ListEmpty(p) => {
                 self.activate_pane(p);
@@ -242,7 +242,7 @@ impl App {
                 let folder = self.panes[p].tab().path.clone();
                 let (extras, target) = self.entry_menu_extras(&[], &folder);
                 self.paint();
-                self.modal = Some(Modal::ContextMenu { items: Vec::new(), folder, pt: screen, extras, target });
+                self.show_context_menu(Vec::new(), folder, screen, extras, target);
             }
             Hit::TreeRow(i) | Hit::TreeArrow(i) => {
                 let n = &self.tree.nodes[i];
@@ -251,8 +251,7 @@ impl App {
                         let cur = self.tab().path.clone();
                         if !cur.is_empty() && !self.is_favorite(&cur) {
                             let extras = vec![(MENU_FAV_ADD, "將目前資料夾加入我的最愛".to_string())];
-                            self.modal =
-                                Some(Modal::ContextMenu { items: Vec::new(), folder: String::new(), pt: screen, extras, target: cur });
+                            self.show_context_menu(Vec::new(), String::new(), screen, extras, cur);
                         }
                     }
                     NodeKind::Pc => {}
@@ -260,7 +259,7 @@ impl App {
                         let target = n.path.clone();
                         let folder = path::parent(&target).unwrap_or_default();
                         let extras = self.folder_extras(&target);
-                        self.modal = Some(Modal::ContextMenu { items: vec![target.clone()], folder, pt: screen, extras, target });
+                        self.show_context_menu(vec![target.clone()], folder, screen, extras, target);
                     }
                 }
             }

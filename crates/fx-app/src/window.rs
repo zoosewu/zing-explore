@@ -29,7 +29,7 @@ use windows::core::{PCWSTR, w};
 use crate::app::{App, Edit, EditKind, Modal, TIMER_PERF, TIMER_PERF_GPU, TIMER_REFRESH, TIMER_STATUS};
 use crate::input::Mods;
 use crate::services::{TabId, WM_APP_NOTIFY};
-use crate::shell::{self, DropTarget, MenuResult};
+use crate::shell::{self, DropTarget};
 
 pub const WM_APP_EDIT_DONE: u32 = WM_APP + 2;
 pub const WM_APP_DEFERRED_INIT: u32 = WM_APP + 3;
@@ -301,18 +301,6 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
 
 fn run_modal(hwnd: HWND, modal: Modal) {
     match modal {
-        Modal::ContextMenu { items, folder, pt, extras, target } => match shell::context_menu(hwnd, &items, &folder, pt, &extras) {
-            Ok(MenuResult::Rename) => {
-                with_app(|a| a.start_rename());
-            }
-            Ok(MenuResult::Extra(id)) => {
-                with_app(|a| a.on_menu_extra(id, target));
-            }
-            Ok(_) => {}
-            Err(e) => {
-                with_app(|a| a.set_status(format!("無法顯示選單：{}", e.message()), true));
-            }
-        },
         Modal::DragOut { paths } => {
             let _ = shell::drag_out(hwnd, &paths);
             with_app(|a| {
@@ -320,7 +308,6 @@ fn run_modal(hwnd: HWND, modal: Modal) {
                 a.invalidate();
             });
         }
-        Modal::Properties { paths } => shell::properties(hwnd, &paths),
     }
 }
 
@@ -618,6 +605,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             Some(LRESULT(0))
         }
         WM_DESTROY => {
+            with_app(|a| a.shell_host.shutdown());
             unsafe {
                 let _ = RevokeDragDrop(hwnd);
             }

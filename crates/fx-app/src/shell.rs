@@ -22,7 +22,6 @@ use windows::Win32::System::Ole::{
     IDropTarget_Impl, OleGetClipboard, OleSetClipboard, ReleaseStgMedium,
 };
 use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_SHIFT};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     BHID_DataObject, CLSID_DragDropHelper, CMF_CANRENAME, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE,
@@ -339,7 +338,22 @@ pub const EXTRA_ID_BASE: u32 = 0x8000;
 
 /// 顯示 Shell 右鍵選單。`items` 為空時顯示 `folder` 的背景選單（新增、貼上…）；
 /// 兩者皆空時只顯示 `extras`。`extras` 放在選單最上方，以分隔線隔開。
-pub fn context_menu(hwnd: HWND, items: &[String], folder: &str, pt: POINT, extras: &[(u32, String)]) -> Result<MenuResult> {
+///
+/// 在 Shell 主機執行緒呼叫（見 shellhost.rs）：`hwnd` 是該執行緒的 message-only 視窗，
+/// 作為 Shell 物件與叫用命令的擁有者。`before_show` 在選單出現前呼叫，回傳選單的擁有者視窗
+/// （None 表示取消）；`after_close` 在選單關閉、叫用命令前呼叫。
+#[allow(clippy::too_many_arguments)]
+pub fn context_menu(
+    hwnd: HWND,
+    items: &[String],
+    folder: &str,
+    pt: POINT,
+    extras: &[(u32, String)],
+    extended: bool,
+    ctrl: bool,
+    before_show: &mut dyn FnMut() -> Option<HWND>,
+    after_close: &dyn Fn(),
+) -> Result<MenuResult> {
     unsafe {
         let mut _keep = Vec::new();
         let cm: Option<IContextMenu> = if items.is_empty() {
@@ -367,7 +381,6 @@ pub fn context_menu(hwnd: HWND, items: &[String], folder: &str, pt: POINT, extra
             let w = wide_z(label);
             AppendMenuW(menu, MF_STRING, *id as usize, PCWSTR(w.as_ptr()))?;
         }
-        let extended = GetKeyState(VK_SHIFT.0 as i32) < 0;
         if let Some(cm) = &cm {
             if !extras.is_empty() {
                 AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())?;
@@ -376,8 +389,14 @@ pub fn context_menu(hwnd: HWND, items: &[String], folder: &str, pt: POINT, extra
             cm.QueryContextMenu(menu, extras.len() as u32 + 1, 1, EXTRA_ID_BASE - 1, flags).ok()?;
             ACTIVE_MENU.with(|m| *m.borrow_mut() = (cm.cast().ok(), cm.cast().ok()));
         }
-        let cmd = TrackPopupMenuEx(menu, (TPM_RETURNCMD | TPM_RIGHTBUTTON).0, pt.x, pt.y, hwnd, None).0 as u32;
+        let Some(owner) = before_show() else {
+            ACTIVE_MENU.with(|m| *m.borrow_mut() = (None, None));
+            let _ = DestroyMenu(menu);
+            return Ok(MenuResult::None);
+        };
+        let cmd = TrackPopupMenuEx(menu, (TPM_RETURNCMD | TPM_RIGHTBUTTON).0, pt.x, pt.y, owner, None).0 as u32;
         ACTIVE_MENU.with(|m| *m.borrow_mut() = (None, None));
+        after_close();
 
         let result = match &cm {
             _ if cmd == 0 => MenuResult::None,
@@ -387,7 +406,7 @@ pub fn context_menu(hwnd: HWND, items: &[String], folder: &str, pt: POINT, extra
             Some(cm) => {
                 let dir = wide_z(folder);
                 let mut mask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
-                if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+                if ctrl {
                     mask |= CMIC_MASK_CONTROL_DOWN;
                 }
                 if extended {
@@ -469,6 +488,8 @@ struct DropState {
     folder: Option<String>,
     inner: Option<IDropTarget>,
     helper: Option<IDropTargetHelper>,
+    /// 這次拖曳已解析過的放置目標：游標來回移動時不重複解析路徑
+    cache: std::collections::HashMap<String, Option<IDropTarget>>,
 }
 
 impl DropTarget {
@@ -489,7 +510,10 @@ impl DropTarget {
                 }
             }
             st.folder = folder.clone();
-            st.inner = folder.and_then(|f| shell_drop_target(self.hwnd, &f));
+            st.inner = folder.and_then(|f| {
+                let hwnd = self.hwnd;
+                st.cache.entry(f).or_insert_with_key(|f| shell_drop_target(hwnd, f)).clone()
+            });
             if let (Some(inner), Some(data)) = (&st.inner, &st.data) {
                 unsafe { inner.DragEnter(data, keys, *pt, effect)? };
             } else {
@@ -511,6 +535,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
             st.data = data.cloned();
             st.folder = None;
             st.inner = None;
+            st.cache.clear();
             if let (Some(h), Some(d)) = (&st.helper, &st.data) {
                 unsafe {
                     let _ = h.DragEnter(self.hwnd, d, &POINT { x: pt.x, y: pt.y }, *effect);
@@ -547,6 +572,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
         }
         st.data = None;
         st.folder = None;
+        st.cache.clear();
         drop(st);
         (self.hover)(None);
         Ok(())
@@ -563,6 +589,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
         let inner = st.inner.take();
         st.data = None;
         st.folder = None;
+        st.cache.clear();
         drop(st);
         (self.hover)(None);
         match (inner, data.as_ref()) {

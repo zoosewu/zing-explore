@@ -10,6 +10,7 @@ mod perf;
 mod services;
 mod settings;
 mod shell;
+mod shellhost;
 mod view;
 mod window;
 
