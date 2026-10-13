@@ -12,6 +12,10 @@ favorites = []
 # left | right | hidden
 tree = "left"
 
+[palette]
+# 命令面板（Ctrl+Shift+P）的位置：top（視窗上方）| center（視窗正中央）
+position = "top"
+
 # ---- 導覽 ----
 [[key]]
 key = "Alt+Left"
@@ -147,6 +151,10 @@ cmd = "theme.toggle"
 [[key]]
 key = "Ctrl+Comma"
 cmd = "config.edit"
+[[key]]
+key = "Ctrl+Shift+P"
+cmd = "palette.open"
+
 [[key]]
 key = "Ctrl+Shift+R"
 cmd = "config.reload"

@@ -195,6 +195,9 @@ pub fn refresh_edit_style(app: &App) {
     }
 }
 
+/// 編輯框子類別資料：命令面板的輸入框（方向鍵轉給面板、失去焦點時取消）
+const EDIT_PALETTE: usize = 1;
+
 /// 建立編輯框。`rect` 為 DIP；`sel_end` 為預設選取的結尾（UTF-16 單位）
 fn create_edit(app: &mut App, rect: crate::gfx::Rect, text: &str, sel_end: usize, kind: EditKind) {
     if let Some(old) = app.edit.take() {
@@ -227,7 +230,8 @@ fn create_edit(app: &mut App, rect: crate::gfx::Rect, text: &str, sel_end: usize
             SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(f.0 as usize)), Some(LPARAM(0)));
         }
         SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(sel_end as isize)));
-        let _ = SetWindowSubclass(hwnd, Some(edit_proc), 1, 0);
+        let data = if matches!(kind, EditKind::Palette) { EDIT_PALETTE } else { 0 };
+        let _ = SetWindowSubclass(hwnd, Some(edit_proc), 1, data);
         let _ = SetFocus(Some(hwnd));
     }
     app.edit = Some(Edit { hwnd, kind });
@@ -261,6 +265,10 @@ pub fn begin_address_edit(app: &mut App) {
     app.invalidate();
 }
 
+pub fn begin_palette_edit(app: &mut App, rect: crate::gfx::Rect) {
+    create_edit(app, rect, "", 0, EditKind::Palette);
+}
+
 pub fn edit_text(hwnd: HWND) -> String {
     let mut buf = vec![0u16; 32 * 1024];
     let n = unsafe { GetWindowTextW(hwnd, &mut buf) } as usize;
@@ -273,14 +281,27 @@ pub fn destroy_edit(hwnd: HWND) {
     }
 }
 
-unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
     unsafe {
         let parent = GetParent(hwnd).unwrap_or_default();
+        let done = |commit: bool| {
+            let _ = PostMessageW(Some(parent), WM_APP_EDIT_DONE, WPARAM(commit as usize), LPARAM(hwnd.0 as isize));
+        };
         match msg {
             WM_GETDLGCODE => return LRESULT(DLGC_WANTALLKEYS as isize),
             WM_KEYDOWN if wparam.0 == 0x0D || wparam.0 == 0x1B => {
-                let commit = (wparam.0 == 0x0D) as usize;
-                let _ = PostMessageW(Some(parent), WM_APP_EDIT_DONE, WPARAM(commit), LPARAM(0));
+                done(wparam.0 == 0x0D);
+                return LRESULT(0);
+            }
+            // 命令面板：上下鍵、PageUp/PageDown 移動清單選取
+            WM_KEYDOWN if data == EDIT_PALETTE && matches!(wparam.0, 0x21 | 0x22 | 0x26 | 0x28) => {
+                let delta = match wparam.0 {
+                    0x26 => -1,
+                    0x28 => 1,
+                    0x21 => -(crate::palette::MAX_ROWS as isize),
+                    _ => crate::palette::MAX_ROWS as isize,
+                };
+                with_app(|a| a.palette_move(delta));
                 return LRESULT(0);
             }
             // Ctrl+A 全選（舊版 EDIT 控制項不支援）
@@ -289,9 +310,8 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 return LRESULT(0);
             }
             WM_CHAR if wparam.0 == 0x0D || wparam.0 == 0x1B || wparam.0 == 0x01 => return LRESULT(0),
-            WM_KILLFOCUS => {
-                let _ = PostMessageW(Some(parent), WM_APP_EDIT_DONE, WPARAM(1), LPARAM(0));
-            }
+            // 失去焦點：重新命名、網址列視為確認；命令面板視為取消
+            WM_KILLFOCUS => done(data != EDIT_PALETTE),
             _ => {}
         }
         DefSubclassProc(hwnd, msg, wparam, lparam)
@@ -431,6 +451,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 if let Some(e) = a.edit.take() {
                     destroy_edit(e.hwnd);
                 }
+                a.palette = None;
                 a.paint();
             });
             Some(LRESULT(0))
@@ -468,7 +489,10 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         }
         WM_LBUTTONDOWN => {
             let (x, y) = dip(lparam);
-            focus_main(hwnd);
+            // 點命令面板內部時保留輸入框的焦點
+            if !with_app(|a| a.palette_contains(x, y)).unwrap_or(false) {
+                focus_main(hwnd);
+            }
             with_app(|a| a.on_lbutton_down(x, y));
             Some(LRESULT(0))
         }
@@ -559,8 +583,18 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             with_app(|a| a.process_notifications());
             Some(LRESULT(0))
         }
+        // 命令面板輸入框內容改變
+        WM_COMMAND if (wparam.0 >> 16) & 0xFFFF == EN_CHANGE as usize => {
+            let edit = HWND(lparam.0 as _);
+            let is_palette = with_app(|a| a.edit.as_ref().is_some_and(|e| e.hwnd == edit && matches!(e.kind, EditKind::Palette)));
+            if is_palette == Some(true) {
+                let text = edit_text(edit);
+                with_app(|a| a.palette_query(text));
+            }
+            Some(LRESULT(0))
+        }
         WM_APP_EDIT_DONE => {
-            with_app(|a| a.finish_edit(wparam.0 == 1));
+            with_app(|a| a.finish_edit(wparam.0 == 1, HWND(lparam.0 as _)));
             Some(LRESULT(0))
         }
         WM_APP_DEFERRED_INIT => {

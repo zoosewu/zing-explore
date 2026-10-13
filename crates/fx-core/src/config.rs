@@ -21,6 +21,23 @@ pub struct Layout {
     pub tree: TreeSide,
 }
 
+/// 命令面板的位置
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PalettePosition {
+    /// 視窗上方
+    #[default]
+    Top,
+    /// 視窗正中央
+    Center,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaletteConfig {
+    pub position: PalettePosition,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyBinding {
     pub key: String,
@@ -41,6 +58,7 @@ pub struct RawConfig {
     pub start_path: Option<String>,
     pub favorites: Option<Vec<String>>,
     pub layout: Option<Layout>,
+    pub palette: Option<PaletteConfig>,
     pub key: Vec<KeyBinding>,
     pub button: Option<Vec<Button>>,
 }
@@ -52,6 +70,7 @@ pub struct Config {
     pub start_path: String,
     pub favorites: Vec<String>,
     pub layout: Layout,
+    pub palette: PaletteConfig,
     /// 解析後的快速鍵；後定義者優先
     pub keys: Vec<(KeyChord, String)>,
     pub buttons: Vec<Button>,
@@ -90,6 +109,7 @@ impl Config {
             start_path: user.start_path.or(base.start_path).unwrap_or_default(),
             favorites: user.favorites.or(base.favorites).unwrap_or_default(),
             layout: user.layout.or(base.layout).unwrap_or_default(),
+            palette: user.palette.or(base.palette).unwrap_or_default(),
             keys,
             buttons: user.button.or(base.button).unwrap_or_default(),
         };
@@ -116,6 +136,16 @@ mod tests {
         let k = KeyChord::parse("Ctrl+C").unwrap();
         assert_eq!(cfg.command_for(k), Some("file.copy"));
         assert!(!cfg.buttons.is_empty());
+        assert_eq!(cfg.palette.position, PalettePosition::Top);
+    }
+
+    #[test]
+    fn palette_position() {
+        let (cfg, warn) = Config::load(Some("[palette]\nposition = \"center\"\n"));
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(cfg.palette.position, PalettePosition::Center);
+        let (_, warn) = Config::load(Some("[palette]\nposition = \"left\"\n"));
+        assert_eq!(warn.len(), 1, "不合法的值要警告並改用預設");
     }
 
     #[test]

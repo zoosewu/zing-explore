@@ -20,6 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use crate::gfx::Gfx;
 use crate::icons::Icons;
 use crate::model::{Pane, Reveal, Tab, Tree};
+use crate::palette::Palette;
 use crate::perf::Perf;
 use crate::services::{self, Msg, Notifier, Pool, TabId};
 use crate::settings::{self, Session};
@@ -64,6 +65,7 @@ pub enum Modal {
 pub enum EditKind {
     Rename { tab: TabId, path: String },
     Address,
+    Palette,
 }
 
 pub struct Edit {
@@ -103,6 +105,8 @@ pub struct App {
     pub drop_hover: Option<(usize, Option<usize>)>,
     pub edit: Option<Edit>,
     pub modal: Option<Modal>,
+    pub palette: Option<Palette>,
+    pub palette_recent: Vec<String>,
     pub layout: Layout,
     /// 按鍵已觸發命令時，吃掉緊接著的 WM_CHAR
     pub suppress_char: bool,
@@ -176,6 +180,8 @@ impl App {
             drop_hover: None,
             edit: None,
             modal: None,
+            palette: None,
+            palette_recent: session.palette_recent.clone(),
             layout: Layout::default(),
             suppress_char: false,
             perf,
@@ -230,6 +236,7 @@ impl App {
             tree_width: Some(self.tree_width),
             columns: Some(self.cols),
             favorites: self.session.favorites.clone(),
+            palette_recent: self.palette_recent.clone(),
         }
     }
 
@@ -730,6 +737,7 @@ impl App {
                 self.navigate(p, target.to_string(), true);
             }
             "address.edit" => window::begin_address_edit(self),
+            "palette.open" => self.open_palette(),
             "file.copy" | "file.cut" => {
                 let paths = self.tab().target_paths();
                 if paths.is_empty() {
@@ -1048,8 +1056,20 @@ impl App {
         }
     }
 
-    /// 編輯框結束（Enter / 失去焦點為確認，Esc 為取消）
-    pub fn finish_edit(&mut self, commit: bool) {
+    /// 編輯框結束（Enter / 失去焦點為確認，Esc 為取消）。`hwnd` 為送出通知的編輯框：
+    /// 通知是 post 的，抵達前編輯框可能已關閉、甚至換成另一個，這時忽略
+    pub fn finish_edit(&mut self, commit: bool, hwnd: HWND) {
+        if self.edit.as_ref().is_none_or(|e| e.hwnd != hwnd) {
+            return;
+        }
+        if matches!(self.edit.as_ref().map(|e| &e.kind), Some(EditKind::Palette)) {
+            if commit {
+                self.run_palette(None);
+            } else {
+                self.close_palette();
+            }
+            return;
+        }
         let Some(edit) = self.edit.take() else { return };
         let text = window::edit_text(edit.hwnd);
         window::destroy_edit(edit.hwnd);
@@ -1079,6 +1099,8 @@ impl App {
                         });
                     }
                 }
+                // 命令面板在函式開頭已處理
+                EditKind::Palette => {}
             }
         }
         window::focus_main(self.hwnd);

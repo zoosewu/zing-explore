@@ -71,6 +71,10 @@ pub enum Hit {
     Row(usize, usize),
     ListEmpty(usize),
     Scrollbar(usize),
+    /// 命令面板的第幾個符合項目
+    PaletteRow(usize),
+    /// 命令面板內其他位置
+    Palette,
 }
 
 impl App {
@@ -213,6 +217,9 @@ impl App {
     // ------------------------------------------------------------ 點擊判定
 
     pub fn hit_test(&self, lay: &Layout, x: f32, y: f32) -> Hit {
+        if let Some(h) = self.palette_hit(x, y) {
+            return h;
+        }
         if lay.toolbar.contains(x, y) {
             if let Some(i) = lay.nav.iter().position(|r| r.contains(x, y)) {
                 return Hit::Nav(i);
@@ -321,6 +328,7 @@ impl App {
             self.gfx.vline(x, tr.t, tr.b, c.border);
         }
         self.paint_status(&lay);
+        self.paint_palette();
         self.gfx.end();
         self.layout = lay;
         self.update_title();

@@ -91,6 +91,15 @@ impl App {
     pub fn on_lbutton_down(&mut self, x: f32, y: f32) {
         let mods = Mods::current();
         let hit = self.fresh_hit(x, y);
+        // 命令面板開啟時：點項目執行，點面板外關閉（不傳給底下的元件）
+        if self.palette.is_some() {
+            match hit {
+                Hit::PaletteRow(i) => self.run_palette(Some(i)),
+                Hit::Palette => {}
+                _ => self.close_palette(),
+            }
+            return;
+        }
         match hit {
             Hit::Nav(i) => self.exec(NAV_COMMANDS[i]),
             Hit::Crumb(p) => {
@@ -173,7 +182,7 @@ impl App {
                 self.press = Some(Press::Scroll { pane: p, grab });
                 self.on_mouse_move(x, y);
             }
-            Hit::None => {}
+            Hit::None | Hit::PaletteRow(_) | Hit::Palette => {}
         }
         if self.press.is_some() {
             unsafe { SetCapture(self.hwnd) };
@@ -292,6 +301,10 @@ impl App {
 
     /// `delta`：WHEEL_DELTA（120）的倍數，正值往上
     pub fn on_wheel(&mut self, x: f32, y: f32, delta: i16) {
+        if self.palette_contains(x, y) {
+            self.palette_move(-3 * delta as isize / 120);
+            return;
+        }
         let lines = 3.0 * delta as f32 / 120.0;
         let step = lines * self.row_h();
         if let Some(tr) = self.layout.tree.filter(|r| r.contains(x, y)) {

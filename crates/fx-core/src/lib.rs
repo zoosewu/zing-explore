@@ -7,6 +7,7 @@ pub mod format;
 pub mod guard;
 pub mod keymap;
 pub mod listing;
+pub mod palette;
 pub mod path;
 pub mod sort;
 pub mod text;

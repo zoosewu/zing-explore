@@ -6,6 +6,7 @@ mod gfx;
 mod icons;
 mod input;
 mod model;
+mod palette;
 mod perf;
 mod services;
 mod settings;

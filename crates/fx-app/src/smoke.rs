@@ -376,6 +376,49 @@ fn header_pos(col: usize) -> Option<(f32, f32)> {
     })
 }
 
+/// 命令面板第 `i` 個可見列的中心
+fn palette_row_pos(i: usize) -> Option<(f32, f32)> {
+    with_app(|a| a.palette_layout().and_then(|l| l.rows.get(i).map(|r| (r.l + 40.0, (r.t + r.b) / 2.0)))).flatten()
+}
+
+/// 命令面板目前排第一的命令
+fn palette_top(a: &App) -> Option<String> {
+    let p = a.palette.as_ref()?;
+    p.matches.first().map(|&k| p.entries[k].cmd.clone())
+}
+
+fn palette_open(a: &App) -> Result<(), String> {
+    match (&a.palette, &a.edit) {
+        (Some(_), Some(e)) if matches!(e.kind, EditKind::Palette) => Ok(()),
+        _ => Err("命令面板沒有開啟".into()),
+    }
+}
+
+fn palette_closed(a: &App) -> Result<(), String> {
+    if a.palette.is_some() || a.edit.is_some() { Err("命令面板沒有關閉".into()) } else { Ok(()) }
+}
+
+/// 在命令面板的輸入框按鍵
+fn palette_key(vk: VIRTUAL_KEY) {
+    if let Some(e) = edit_hwnd() {
+        key_to(e, "", vk);
+    }
+}
+
+fn palette_type(text: &str) {
+    if let Some(e) = edit_hwnd() {
+        type_to(e, text);
+    }
+}
+
+fn list_bottom() -> Option<(f32, f32)> {
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let pl = &a.layout.panes[a.active_pane];
+        ((pl.list.l + pl.list.r) / 2.0, pl.list.b - 10.0)
+    })
+}
+
 fn list_center() -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
@@ -846,6 +889,145 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         if light > dark + 60.0 { Ok(()) } else { Err(format!("淺色畫面的亮度 {light:.0} 沒有明顯高於深色 {dark:.0}")) }
     }));
     v.push(step("主題：切回深色", |c| key(c, "cs", letter('t')), |_, a| expect("模式", a.theme.mode, Mode::Dark)));
+
+    // ------------------------------------------------ 命令面板
+    v.push(step("命令面板：Ctrl+Shift+P 開啟", |c| key(c, "cs", letter('p')), |_, a| {
+        palette_open(a)?;
+        let n = a.palette.as_ref().map_or(0, |p| p.matches.len());
+        if n >= fx_core::palette::BUILTIN.len() { Ok(()) } else { Err(format!("只列出 {n} 個命令")) }
+    }));
+    v.push(step("命令面板：輸入文字篩選", |_| palette_type("隱藏檔"), |_, a| {
+        expect("第一項", palette_top(a).as_deref(), Some("view.togglehidden"))
+    }));
+    v.push(step("截圖：命令面板", |_| {}, |c, _| screenshot(c, "04-命令面板")));
+    v.push(step("命令面板：Enter 執行並關閉", |_| palette_key(VK_RETURN), |_, a| {
+        palette_closed(a)?;
+        expect("顯示隱藏檔", a.show_hidden, true)
+    }));
+    v.push(step("命令面板：最近使用的排第一", |c| key(c, "cs", letter('p')), |_, a| {
+        palette_open(a)?;
+        expect("第一項", palette_top(a).as_deref(), Some("view.togglehidden"))
+    }));
+    v.push(step("命令面板：再執行一次", |_| palette_key(VK_RETURN), |_, a| {
+        palette_closed(a)?;
+        expect("顯示隱藏檔", a.show_hidden, false)
+    }));
+    v.push(step(
+        "命令面板：↓↓ 移動選取",
+        |c| {
+            key(c, "cs", letter('p'));
+            palette_key(VK_DOWN);
+            palette_key(VK_DOWN);
+        },
+        |_, a| expect("選取", a.palette.as_ref().map(|p| p.sel), Some(2)),
+    ));
+    v.push(step("命令面板：Esc 關閉", |_| palette_key(VK_ESCAPE), |_, a| palette_closed(a)));
+    v.push(step(
+        "命令面板：> 直接執行命令腳本",
+        {
+            let dir_a = dir_a.clone();
+            move |c| {
+                key(c, "cs", letter('p'));
+                palette_type(&format!(">nav.goto \"{dir_a}\""));
+                palette_key(VK_RETURN);
+            }
+        },
+        {
+            let dir_a = dir_a.clone();
+            move |_, a| {
+                palette_closed(a)?;
+                at(a, &dir_a)
+            }
+        },
+    ));
+    v.push(step("命令面板：回到測試資料夾", |c| key(c, "a", VK_LEFT), {
+        let d = d.clone();
+        move |_, a| at(a, &d)
+    }));
+    v.push(step(
+        "命令面板：滑鼠點選項目執行",
+        |c| {
+            key(c, "cs", letter('p'));
+            palette_type("新增分頁");
+            click(c, "", palette_row_pos(0));
+        },
+        |_, a| {
+            palette_closed(a)?;
+            expect("分頁數", a.panes[a.active_pane].tabs.len(), 2)
+        },
+    ));
+    v.push(step("命令面板：關閉新分頁", |c| key(c, "c", letter('w')), |_, a| expect("分頁數", a.panes[a.active_pane].tabs.len(), 1)));
+    v.push(step("滑鼠：點選一列（命令面板測試前置）", |c| click(c, "", row_pos("b.txt")), |_, a| {
+        expect("選取", selected(a), vec!["b.txt".to_string()])
+    }));
+    v.push(step(
+        "命令面板：點面板外關閉，不影響底下",
+        |c| {
+            key(c, "cs", letter('p'));
+            // 清單底部的空白處（面板下方）：沒有面板時點這裡會取消選取
+            click(c, "", list_bottom());
+        },
+        |_, a| {
+            palette_closed(a)?;
+            expect("選取", selected(a), vec!["b.txt".to_string()])
+        },
+    ));
+    // 命令開啟自己的編輯框時，面板輸入框失去焦點的通知不可把它取消
+    v.push(step(
+        "命令面板：執行重新命名，編輯框保持開啟",
+        |c| {
+            key(c, "cs", letter('p'));
+            palette_type("重新命名");
+            palette_key(VK_RETURN);
+        },
+        |c, a| {
+            if c.started.elapsed() < Duration::from_millis(300) {
+                return Err("等待".into());
+            }
+            match &a.edit {
+                Some(e) if matches!(&e.kind, EditKind::Rename { path, .. } if path.ends_with("b.txt")) => Ok(()),
+                _ => Err("重新命名框沒有開啟或被取消".into()),
+            }
+        },
+    ));
+    v.push(step("命令面板：取消重新命名", |_| palette_key(VK_ESCAPE), |_, a| {
+        if a.edit.is_none() { Ok(()) } else { Err("編輯框沒有關閉".into()) }
+    }));
+
+    v.push(step(
+        "命令面板：設定 position = center 時置中",
+        |c| {
+            with_app(|a| a.config.palette.position = fx_core::config::PalettePosition::Center);
+            key(c, "cs", letter('p'));
+        },
+        |c, a| {
+            palette_open(a)?;
+            let lay = a.palette_layout().ok_or("沒有版面")?;
+            let (_, h) = a.gfx.size();
+            // 以填滿時的高度置中：輸入框在視窗上半部、面板（滿版時）上下留白相同
+            let full_b = lay.input.b + 6.0 + crate::palette::MAX_ROWS as f32 * a.row_h() + 8.0;
+            let (top_gap, bottom_gap) = (lay.card.t, h - full_b);
+            if (top_gap - bottom_gap).abs() > 2.0 {
+                return Err(format!("上方留白 {top_gap:.0}，下方 {bottom_gap:.0}"));
+            }
+            c.notes.push(("palette_input_t", lay.input.t.to_string()));
+            Ok(())
+        },
+    ));
+    v.push(step("命令面板：篩選後輸入框不移動", |_| palette_type("重新整理"), |c, a| {
+        let lay = a.palette_layout().ok_or("沒有版面")?;
+        expect("輸入框位置", Some(lay.input.t.to_string()).as_deref(), c.note("palette_input_t"))?;
+        expect("結果列數", lay.rows.len(), 1)
+    }));
+    v.push(step("截圖：命令面板（置中）", |_| {}, |c, _| screenshot(c, "05-命令面板-置中")));
+    v.push(step(
+        "命令面板：關閉並還原設定",
+        |_| {
+            palette_key(VK_ESCAPE);
+            with_app(|a| a.config.palette.position = fx_core::config::PalettePosition::Top);
+        },
+        |_, a| palette_closed(a),
+    ));
 
     // ------------------------------------------------ 拖放（直接呼叫視窗的 IDropTarget）
     v.push(
