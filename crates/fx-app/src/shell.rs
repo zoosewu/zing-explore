@@ -1,11 +1,15 @@
 //! Windows Shell 整合：檔案作業、剪貼簿、右鍵選單、拖放、內容對話方塊。
 //!
-//! 檔案作業（IFileOperation）在專用的 STA 執行緒依序執行，等於一條作業佇列；
+//! 檔案作業（IFileOperation）在專用的 STA 執行緒執行：複製／移動／刪除排成一條佇列依序執行
+//! （進度、暫停、取消見 jobs.rs），重新命名與新增資料夾走另一條，不會被大量複製擋住；
 //! 右鍵選單與拖放必須在 UI 執行緒（它們有自己的模態訊息迴圈），
 //! 呼叫端要在不持有 App 借用的狀態下呼叫，讓重入的視窗訊息能正常處理。
 
 use std::cell::RefCell;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Sender, channel};
+use std::time::{Duration, Instant};
 
 use fx_core::{guard, path};
 use fx_core::text::wide_z;
@@ -13,7 +17,7 @@ use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, POINTL, 
 use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
 use windows::Win32::System::Com::{
     CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
-    CoInitializeEx, DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
+    CoInitializeEx, CoTaskMemFree, DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
 };
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
@@ -26,8 +30,9 @@ use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     BHID_DataObject, CLSID_DragDropHelper, CMF_CANRENAME, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE,
     CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, DragQueryFileW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
-    FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION, FOF_WANTNUKEWARNING, FOFX_RECYCLEONDELETE, FileOperation, GCS_VERBW, HDROP, IContextMenu,
-    IContextMenu2, IContextMenu3, IDropTargetHelper, IFileOperation, IFileOperationProgressSink, IShellFolder,
+    FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION, FOF_SILENT, FOF_WANTNUKEWARNING, FOFX_RECYCLEONDELETE, FileOperation, GCS_VERBW, HDROP, IContextMenu,
+    IContextMenu2, IContextMenu3, IDropTargetHelper, IFileOperation, IFileOperationProgressSink,
+    IFileOperationProgressSink_Impl, IShellFolder, SIGDN_NORMALDISPLAY,
     IShellItem, IShellItemArray, ILFindLastID, ILFree, SHBindToObject, SHBindToParent,
     SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDoDragDrop, SHMultiFileProperties,
     SHOP_FILEPATH, SHObjectProperties, SHParseDisplayName,
@@ -36,7 +41,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_DRAWITEM,
     WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR,
 };
-use windows::core::{Interface, PCSTR, PCWSTR, PSTR, Ref, Result, implement};
+use windows::core::{HRESULT, Interface, PCSTR, PCWSTR, PSTR, Ref, Result, implement};
+
+use crate::jobs::{JobCtl, JobEvent, JobId};
 
 use crate::services::{Msg, Notifier, Select};
 
@@ -91,36 +98,231 @@ pub enum FileOp {
     NewFolder { dir: String },
 }
 
+impl FileOp {
+    /// 可能耗時、要顯示在作業佇列的作業
+    pub fn is_long(&self) -> bool {
+        matches!(self, FileOp::Transfer { .. } | FileOp::Delete { .. })
+    }
+}
+
+type Queued = (FileOp, Option<(JobId, Arc<JobCtl>)>);
+
 pub struct FileOps {
-    tx: Sender<FileOp>,
+    /// 複製、移動、刪除：依序執行
+    queue: Sender<Queued>,
+    /// 重新命名、新增資料夾：不排在大量複製後面
+    quick: Sender<Queued>,
+    next_id: JobId,
 }
 
 impl FileOps {
     pub fn new(n: Notifier) -> Self {
-        let (tx, rx) = channel::<FileOp>();
-        std::thread::Builder::new()
-            .name("fx-fileops".into())
-            .spawn(move || {
-                unsafe {
-                    let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-                }
-                for op in rx {
-                    let (dirs, select) = affected(&op);
-                    let (error, select) = match perform(n.hwnd(), op) {
-                        Ok(Some(name)) => (None, select.map(|s| Select { name, ..s })),
-                        Ok(None) => (None, select),
-                        Err(e) if e.code().0 == ERROR_CANCELLED_HR => (None, None),
-                        Err(e) => (Some(e.message()), None),
-                    };
-                    n.send(Msg::FileOpDone { dirs, error, select });
-                }
-            })
-            .expect("無法建立檔案作業執行緒");
-        Self { tx }
+        Self { queue: spawn_worker("fx-fileops", n.clone()), quick: spawn_worker("fx-fileops-quick", n), next_id: 1 }
     }
 
-    pub fn submit(&self, op: FileOp) {
-        let _ = self.tx.send(op);
+    /// 送出作業。耗時的作業回傳工作編號與控制旗標，交給作業佇列介面顯示
+    pub fn submit(&mut self, op: FileOp) -> Option<(JobId, Arc<JobCtl>)> {
+        if !op.is_long() {
+            let _ = self.quick.send((op, None));
+            return None;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let ctl = Arc::new(JobCtl::default());
+        let _ = self.queue.send((op, Some((id, ctl.clone()))));
+        Some((id, ctl))
+    }
+}
+
+fn spawn_worker(name: &str, n: Notifier) -> Sender<Queued> {
+    let (tx, rx) = channel::<Queued>();
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            }
+            for (op, job) in rx {
+                if let Some((id, ctl)) = &job
+                    && ctl.cancel.load(Ordering::Relaxed)
+                {
+                    // 排隊中就取消了
+                    n.send(Msg::Job { id: *id, event: JobEvent::Finished { error: None, cancelled: true } });
+                    continue;
+                }
+                let (dirs, select) = affected(&op);
+                let sink: Option<IFileOperationProgressSink> =
+                    job.as_ref().map(|(id, ctl)| Progress::new(*id, ctl.clone(), n.clone()).into());
+                if let Some((id, _)) = &job {
+                    n.send(Msg::Job { id: *id, event: JobEvent::Running });
+                }
+                let result = perform(n.hwnd(), op, sink.as_ref());
+                // 使用者取消時 Shell 回傳的錯誤碼不一定（ERROR_CANCELLED、E_ABORT、COPYENGINE_E_USER_CANCELLED）
+                let user_cancelled = job.as_ref().is_some_and(|(_, ctl)| ctl.cancel.load(Ordering::Relaxed));
+                let cancelled = matches!(&result, Err(e) if user_cancelled || is_cancel_code(e.code()));
+                let (error, select) = match result {
+                    Ok(Some(name)) => (None, select.map(|s| Select { name, ..s })),
+                    Ok(None) => (None, select),
+                    Err(_) if cancelled => (None, None),
+                    Err(e) => (Some(e.message()), None),
+                };
+                if let Some((id, _)) = &job {
+                    n.send(Msg::Job { id: *id, event: JobEvent::Finished { error: error.clone(), cancelled } });
+                }
+                // 作業佇列介面會顯示錯誤，狀態列不再重複
+                let error = if job.is_some() { None } else { error };
+                n.send(Msg::FileOpDone { dirs, error, select });
+            }
+        })
+        .expect("無法建立檔案作業執行緒");
+    tx
+}
+
+// ---------------------------------------------------------------- 進度、暫停、取消
+
+fn is_cancel_code(hr: HRESULT) -> bool {
+    const E_ABORT: i32 = 0x80004004_u32 as i32;
+    const COPYENGINE_E_USER_CANCELLED: i32 = 0x80270000_u32 as i32;
+    matches!(hr.0, ERROR_CANCELLED_HR | E_ABORT | COPYENGINE_E_USER_CANCELLED)
+}
+
+/// 進度回呼：Shell 在執行作業的執行緒上同步呼叫。暫停時在回呼中等待，取消時回傳錯誤讓 Shell 中止作業
+#[implement(IFileOperationProgressSink)]
+struct Progress {
+    id: JobId,
+    ctl: Arc<JobCtl>,
+    n: Notifier,
+    state: RefCell<ProgressState>,
+}
+
+struct ProgressState {
+    last_sent: Instant,
+    fraction: f32,
+    current: String,
+    done: u32,
+}
+
+/// 進度訊息的最短間隔
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// 冒煙測試：每次進度回呼延遲幾毫秒，讓複製慢到可以在中途取消
+#[cfg(feature = "smoke")]
+pub static TEST_PROGRESS_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl Progress {
+    fn new(id: JobId, ctl: Arc<JobCtl>, n: Notifier) -> Self {
+        let state = ProgressState { last_sent: Instant::now() - PROGRESS_INTERVAL, fraction: 0.0, current: String::new(), done: 0 };
+        Self { id, ctl, n, state: RefCell::new(state) }
+    }
+
+    fn send(&self, event: JobEvent) {
+        self.n.send(Msg::Job { id: self.id, event });
+    }
+
+    /// 暫停就等到繼續或取消；取消回傳 ERROR_CANCELLED
+    fn gate(&self) -> Result<()> {
+        if self.ctl.pause.load(Ordering::Relaxed) && !self.ctl.cancel.load(Ordering::Relaxed) {
+            self.send(JobEvent::Paused);
+            while self.ctl.pause.load(Ordering::Relaxed) && !self.ctl.cancel.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            self.send(JobEvent::Running);
+        }
+        if self.ctl.cancel.load(Ordering::Relaxed) {
+            return Err(HRESULT(ERROR_CANCELLED_HR).into());
+        }
+        Ok(())
+    }
+
+    fn report(&self, force: bool) {
+        let mut st = self.state.borrow_mut();
+        if !force && st.last_sent.elapsed() < PROGRESS_INTERVAL {
+            return;
+        }
+        st.last_sent = Instant::now();
+        self.send(JobEvent::Progress { fraction: st.fraction, current: st.current.clone(), done: st.done });
+    }
+
+    fn begin_item(&self, item: Ref<IShellItem>) -> Result<()> {
+        if let Some(name) = item.as_ref().and_then(display_name) {
+            self.state.borrow_mut().current = name;
+        }
+        self.report(false);
+        self.gate()
+    }
+
+    fn end_item(&self) -> Result<()> {
+        self.state.borrow_mut().done += 1;
+        self.report(false);
+        Ok(())
+    }
+}
+
+fn display_name(item: &IShellItem) -> Option<String> {
+    unsafe {
+        let p = item.GetDisplayName(SIGDN_NORMALDISPLAY).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const _));
+        s
+    }
+}
+
+impl IFileOperationProgressSink_Impl for Progress_Impl {
+    fn StartOperations(&self) -> Result<()> {
+        self.gate()
+    }
+    fn FinishOperations(&self, _hr: HRESULT) -> Result<()> {
+        self.state.borrow_mut().fraction = 1.0;
+        self.report(true);
+        Ok(())
+    }
+    fn PreRenameItem(&self, _f: u32, _item: Ref<IShellItem>, _name: &PCWSTR) -> Result<()> {
+        self.gate()
+    }
+    fn PostRenameItem(&self, _f: u32, _item: Ref<IShellItem>, _name: &PCWSTR, _hr: HRESULT, _new: Ref<IShellItem>) -> Result<()> {
+        Ok(())
+    }
+    fn PreMoveItem(&self, _f: u32, item: Ref<IShellItem>, _dest: Ref<IShellItem>, _name: &PCWSTR) -> Result<()> {
+        self.begin_item(item)
+    }
+    fn PostMoveItem(&self, _f: u32, _item: Ref<IShellItem>, _dest: Ref<IShellItem>, _name: &PCWSTR, _hr: HRESULT, _new: Ref<IShellItem>) -> Result<()> {
+        self.end_item()
+    }
+    fn PreCopyItem(&self, _f: u32, item: Ref<IShellItem>, _dest: Ref<IShellItem>, _name: &PCWSTR) -> Result<()> {
+        self.begin_item(item)
+    }
+    fn PostCopyItem(&self, _f: u32, _item: Ref<IShellItem>, _dest: Ref<IShellItem>, _name: &PCWSTR, _hr: HRESULT, _new: Ref<IShellItem>) -> Result<()> {
+        self.end_item()
+    }
+    fn PreDeleteItem(&self, _f: u32, item: Ref<IShellItem>) -> Result<()> {
+        self.begin_item(item)
+    }
+    fn PostDeleteItem(&self, _f: u32, _item: Ref<IShellItem>, _hr: HRESULT, _new: Ref<IShellItem>) -> Result<()> {
+        self.end_item()
+    }
+    fn PreNewItem(&self, _f: u32, _dest: Ref<IShellItem>, _name: &PCWSTR) -> Result<()> {
+        Ok(())
+    }
+    fn PostNewItem(&self, _f: u32, _dest: Ref<IShellItem>, _name: &PCWSTR, _tpl: &PCWSTR, _attrs: u32, _hr: HRESULT, _new: Ref<IShellItem>) -> Result<()> {
+        Ok(())
+    }
+    fn UpdateProgress(&self, total: u32, so_far: u32) -> Result<()> {
+        #[cfg(feature = "smoke")]
+        std::thread::sleep(Duration::from_millis(TEST_PROGRESS_DELAY_MS.load(Ordering::Relaxed)));
+        if total > 0 {
+            self.state.borrow_mut().fraction = (so_far as f32 / total as f32).clamp(0.0, 1.0);
+        }
+        self.report(false);
+        self.gate()
+    }
+    fn ResetTimer(&self) -> Result<()> {
+        Ok(())
+    }
+    fn PauseTimer(&self) -> Result<()> {
+        Ok(())
+    }
+    fn ResumeTimer(&self) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -145,11 +347,16 @@ fn affected(op: &FileOp) -> (Vec<String>, Option<Select>) {
     }
 }
 
-/// 執行一個作業。新資料夾回傳實際建立的名稱。
-fn perform(hwnd: isize, op: FileOp) -> Result<Option<String>> {
+/// 執行一個作業。新資料夾回傳實際建立的名稱。`sink` 為進度回呼（作業佇列的工作才有）
+fn perform(hwnd: isize, op: FileOp, sink: Option<&IFileOperationProgressSink>) -> Result<Option<String>> {
     unsafe {
         let fo: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
         fo.SetOwnerWindow(HWND(hwnd as _))?;
+        // 有自己的進度介面時，不顯示 Shell 的進度視窗（衝突、確認對話框仍由 Shell 顯示）
+        let silent = if sink.is_some() { FOF_SILENT } else { Default::default() };
+        if let Some(s) = sink {
+            fo.Advise(s)?;
+        }
         let none_sink = None::<&IFileOperationProgressSink>;
         let mut created = None;
         match op {
@@ -161,7 +368,7 @@ fn perform(hwnd: isize, op: FileOp) -> Result<Option<String>> {
                     return Ok(None);
                 }
                 // 複製到同一個資料夾時自動改名（「名稱 - 複製」），與檔案總管相同
-                let mut flags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR;
+                let mut flags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | silent;
                 if !mov && sources.iter().any(|s| same_dir(s)) {
                     flags |= FOF_RENAMEONCOLLISION;
                 }
@@ -177,7 +384,7 @@ fn perform(hwnd: isize, op: FileOp) -> Result<Option<String>> {
                 }
             }
             FileOp::Delete { paths, permanent } => {
-                fo.SetOperationFlags(if permanent {
+                fo.SetOperationFlags(silent | if permanent {
                     FOF_WANTNUKEWARNING
                 } else {
                     FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NOCONFIRMATION

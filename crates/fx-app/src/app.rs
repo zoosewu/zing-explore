@@ -19,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 use crate::gfx::Gfx;
 use crate::icons::Icons;
+use crate::jobs::Jobs;
 use crate::model::{Pane, Reveal, Tab, Tree};
 use crate::palette::Palette;
 use crate::perf::Perf;
@@ -34,6 +35,9 @@ pub const TIMER_STATUS: usize = 2;
 pub const TIMER_PERF: usize = 3;
 pub const TIMER_PERF_GPU: usize = 4;
 pub const TIMER_SMOKE: usize = 5;
+pub const TIMER_JOBS: usize = 6;
+/// 結束時等待檔案作業取消完成的上限
+pub const TIMER_EXIT: usize = 7;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -94,6 +98,9 @@ pub struct App {
     pub notifier: Notifier,
     rx: Receiver<Msg>,
     pub fileops: FileOps,
+    pub jobs: Jobs,
+    /// 已確認結束，等待檔案作業取消完成後關閉視窗
+    pub pending_exit: bool,
     pub icons: Icons,
     pub shell_host: ShellHost,
     next_tab_id: TabId,
@@ -170,6 +177,8 @@ impl App {
             notifier,
             rx,
             fileops,
+            jobs: Jobs::default(),
+            pending_exit: false,
             icons,
             shell_host,
             next_tab_id: 1,
@@ -605,7 +614,8 @@ impl App {
             Msg::Icon { id, pixels } => self.icons.store(id, pixels),
             Msg::MenuRename => self.start_rename(),
             Msg::MenuExtra { id, target } => self.on_menu_extra(id, target),
-            Msg::Paste { sources, dest, cut } => self.fileops.submit(FileOp::Transfer { sources, dest, mov: cut }),
+            Msg::Job { id, event } => self.on_job_event(id, event),
+            Msg::Paste { sources, dest, cut } => self.submit_op(FileOp::Transfer { sources, dest, mov: cut }),
             Msg::ConfigLoaded { config, theme, warnings } => {
                 self.config = config;
                 self.tree_side = self.config.layout.tree;
@@ -738,6 +748,8 @@ impl App {
             }
             "address.edit" => window::begin_address_edit(self),
             "palette.open" => self.open_palette(),
+            "jobs.toggle" => self.jobs_toggle(),
+            "jobs.clear" => self.jobs_clear(),
             "file.copy" | "file.cut" => {
                 let paths = self.tab().target_paths();
                 if paths.is_empty() {
@@ -756,7 +768,7 @@ impl App {
             "file.delete" => {
                 let paths = self.tab().target_paths();
                 if !paths.is_empty() && !self.tab().path.is_empty() {
-                    self.fileops.submit(FileOp::Delete { paths, permanent: inv.has("permanent") });
+                    self.submit_op(FileOp::Delete { paths, permanent: inv.has("permanent") });
                 }
             }
             "file.rename" => self.start_rename(),
@@ -765,7 +777,7 @@ impl App {
                 if dir.is_empty() {
                     return Err("無法在「此電腦」建立資料夾".into());
                 }
-                self.fileops.submit(FileOp::NewFolder { dir });
+                self.submit_op(FileOp::NewFolder { dir });
             }
             "file.properties" => {
                 let paths = self.tab().target_paths();
@@ -804,7 +816,7 @@ impl App {
                 if sources.is_empty() {
                     return Err("沒有選取任何項目".into());
                 }
-                self.fileops.submit(FileOp::Transfer { sources, dest: dest.to_string(), mov: inv.has("move") });
+                self.submit_op(FileOp::Transfer { sources, dest: dest.to_string(), mov: inv.has("move") });
             }
             "run" => {
                 let mut args = inv.positional();
@@ -1079,7 +1091,7 @@ impl App {
                     let new_name = text.trim().to_string();
                     let old_name = path::file_name(&full).to_string();
                     if !new_name.is_empty() && new_name != old_name && self.find_tab(tab).is_some() {
-                        self.fileops.submit(FileOp::Rename { path: full, new_name });
+                        self.submit_op(FileOp::Rename { path: full, new_name });
                     }
                 }
                 EditKind::Address => {

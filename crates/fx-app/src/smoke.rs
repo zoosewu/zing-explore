@@ -615,9 +615,28 @@ fn drop_fast(c: &Ctx) -> Result<(), String> {
 
 /// 測試資料夾的內容（tools/smoke.ps1 建立）：
 /// 資料夾A\內層.txt、資料夾B\項目 001–200.txt、a.txt、b.txt、報告 9.txt、報告 10.txt、
-/// 拖放來源.txt、.hidden.txt（隱藏）
+/// 拖放來源.txt、.hidden.txt（隱藏）、.jobs\大檔案.bin（隱藏資料夾，384 MB）
 const VISIBLE: usize = 7;
 const B_FILES: usize = 200;
+const BIG_BYTES: u64 = 384 * 1024 * 1024;
+
+fn last_job(a: &App) -> Option<&crate::jobs::Job> {
+    a.jobs.list.last()
+}
+
+fn job_status(a: &App) -> Option<crate::jobs::JobStatus> {
+    last_job(a).map(|j| j.status.clone())
+}
+
+fn file_size(p: &str) -> Option<u64> {
+    std::fs::metadata(p).ok().map(|m| m.len())
+}
+
+/// 點最後一個工作的暫停（`cancel` 為 false）或取消按鈕
+fn click_job_button(c: &Ctx, cancel: bool) {
+    let pos = with_app(|a| last_job(a).map(|j| j.id).and_then(|id| a.job_button_pos(id, cancel))).flatten();
+    click(c, "", pos);
+}
 
 fn steps(ctx: &Ctx) -> Vec<Step> {
     let d = ctx.dir.clone();
@@ -993,6 +1012,113 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("命令面板：取消重新命名", |_| palette_key(VK_ESCAPE), |_, a| {
         if a.edit.is_none() { Ok(()) } else { Err("編輯框沒有關閉".into()) }
     }));
+
+    // ------------------------------------------------ 檔案作業佇列
+    let big = ctx.sub(".jobs\\大檔案.bin");
+    v.push(step(
+        "檔案作業：小作業完成且不顯示面板",
+        {
+            let (src, dir_b) = (ctx.sub("a2.txt"), dir_b.clone());
+            move |_| {
+                with_app(|a| a.exec(&format!("copy \"{src}\" --to=\"{dir_b}\"")));
+            }
+        },
+        {
+            let copied = path::join(&dir_b, "a2.txt");
+            move |_, a| {
+                expect("狀態", job_status(a), Some(crate::jobs::JobStatus::Done))?;
+                expect("面板", a.jobs.visible, false)?;
+                if exists(&copied) { Ok(()) } else { Err("沒有複製".into()) }
+            }
+        },
+    ));
+    v.push(
+        step(
+            "檔案作業：複製大檔案並暫停",
+            {
+                let (big, dir_a) = (big.clone(), dir_a.clone());
+                move |c| {
+                    with_app(|a| a.exec(&format!("copy \"{big}\" --to=\"{dir_a}\"")));
+                    key(c, "c", letter('j'));
+                    click_job_button(c, false);
+                }
+            },
+            |_, a| {
+                expect("面板", a.jobs.visible, true)?;
+                expect("狀態", job_status(a), Some(crate::jobs::JobStatus::Paused))?;
+                let f = last_job(a).map_or(1.0, |j| j.fraction);
+                if f < 1.0 { Ok(()) } else { Err("暫停前就完成了".into()) }
+            },
+        )
+        .slow(),
+    );
+    v.push(step("截圖：檔案作業（暫停）", |_| {}, |c, _| screenshot(c, "06-檔案作業")));
+    v.push(
+        step(
+            "檔案作業：暫停時仍可重新命名（不排在後面）",
+            |c| {
+                click(c, "", row_pos("b.txt"));
+                key(c, "", VK_F2);
+                edit_commit("b2");
+            },
+            {
+                let (old, new) = (ctx.sub("b.txt"), ctx.sub("b2.txt"));
+                move |_, a| {
+                    if !exists(&new) || exists(&old) {
+                        return Err("沒有改名".into());
+                    }
+                    expect("大檔案的工作", job_status(a), Some(crate::jobs::JobStatus::Paused))
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step("檔案作業：繼續後完成", |c| click_job_button(c, false), {
+            let copied = path::join(&dir_a, "大檔案.bin");
+            move |_, a| {
+                expect("狀態", job_status(a), Some(crate::jobs::JobStatus::Done))?;
+                expect("大小", file_size(&copied), Some(BIG_BYTES))
+            }
+        })
+        .slow(),
+    );
+    v.push(
+        step(
+            "檔案作業：開始複製第二個",
+            {
+                let (big, dir_b) = (big.clone(), dir_b.clone());
+                move |_| {
+                    // 放慢複製，才能確定在中途取消
+                    crate::shell::TEST_PROGRESS_DELAY_MS.store(20, std::sync::atomic::Ordering::Relaxed);
+                    with_app(|a| a.exec(&format!("copy \"{big}\" --to=\"{dir_b}\"")));
+                }
+            },
+            |_, a| {
+                let j = last_job(a).ok_or("沒有工作")?;
+                if j.fraction > 0.02 && j.fraction < 0.9 { Ok(()) } else { Err(format!("進度 {:.2}", j.fraction)) }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step("檔案作業：取消進行中的複製", |c| click_job_button(c, true), {
+            let copied = path::join(&dir_b, "大檔案.bin");
+            move |_, a| {
+                expect("狀態", job_status(a), Some(crate::jobs::JobStatus::Cancelled))?;
+                crate::shell::TEST_PROGRESS_DELAY_MS.store(0, std::sync::atomic::Ordering::Relaxed);
+                // 取消後 Shell 會刪掉複製到一半的檔案
+                if exists(&copied) { Err("留下複製到一半的檔案".into()) } else { Ok(()) }
+            }
+        })
+        .slow(),
+    );
+    v.push(
+        step("檔案作業：全部結束後自動收起", |_| {}, |_, a| {
+            if a.jobs.list.is_empty() && !a.jobs.visible { Ok(()) } else { Err(format!("還有 {} 個工作", a.jobs.list.len())) }
+        })
+        .slow(),
+    );
 
     v.push(step(
         "命令面板：設定 position = center 時置中",

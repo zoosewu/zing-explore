@@ -26,7 +26,9 @@ use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use crate::app::{App, Edit, EditKind, Modal, TIMER_PERF, TIMER_PERF_GPU, TIMER_REFRESH, TIMER_SMOKE, TIMER_STATUS};
+use crate::app::{
+    App, Edit, EditKind, Modal, TIMER_EXIT, TIMER_JOBS, TIMER_PERF, TIMER_PERF_GPU, TIMER_REFRESH, TIMER_SMOKE, TIMER_STATUS,
+};
 use crate::input::Mods;
 use crate::services::{TabId, WM_APP_NOTIFY};
 use crate::shell::{self, DropTarget};
@@ -381,7 +383,7 @@ fn drop_resolve(pt: POINT) -> Option<String> {
 
 /// 放下的檔案交給背景檔案作業佇列（完成後重新整理相關分頁）
 fn drop_transfer(sources: Vec<String>, dest: String, mov: bool) {
-    with_app(|a| a.fileops.submit(shell::FileOp::Transfer { sources, dest, mov }));
+    with_app(|a| a.submit_op(shell::FileOp::Transfer { sources, dest, mov }));
 }
 
 fn drop_hover(pt: Option<POINT>) {
@@ -625,6 +627,13 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                     with_app(crate::perf::after_paint);
                 }
                 TIMER_SMOKE => crate::smoke::tick(hwnd),
+                TIMER_JOBS => {
+                    with_app(|a| a.jobs_tick());
+                }
+                // 等待檔案作業取消逾時：直接結束
+                TIMER_EXIT => unsafe {
+                    let _ = DestroyWindow(hwnd);
+                },
                 TIMER_PERF => {
                     unsafe {
                         let _ = KillTimer(Some(hwnd), TIMER_PERF);
@@ -669,6 +678,32 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             None
         }
         WM_CLOSE => {
+            // 還有檔案作業：確認後取消它們，隱藏視窗，等作業停止（最多 5 秒）再結束
+            let active = with_app(|a| if a.pending_exit { 0 } else { a.jobs.active() }).unwrap_or(0);
+            if active > 0 {
+                exempt_stall();
+                let text = wide_z(&format!("還有 {active} 個檔案作業尚未完成，結束 fx 會取消這些作業。\n\n要結束嗎？"));
+                let answer = unsafe { MessageBoxW(Some(hwnd), PCWSTR(text.as_ptr()), w!("fx"), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) };
+                if answer == IDYES {
+                    let _allow = fx_core::guard::allow_io("結束時儲存工作階段（之後程序即結束）");
+                    with_app(|a| {
+                        a.save_session();
+                        a.cancel_all_jobs();
+                        a.pending_exit = true;
+                    });
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                        SetTimer(Some(hwnd), TIMER_EXIT, 5000, None);
+                    }
+                }
+                return Some(LRESULT(0));
+            }
+            if with_app(|a| a.pending_exit).unwrap_or(false) {
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+                return Some(LRESULT(0));
+            }
             let _allow = fx_core::guard::allow_io("結束時儲存工作階段（之後程序即結束）");
             with_app(|a| a.save_session());
             unsafe {

@@ -45,6 +45,12 @@ foreach ($n in 'a.txt', 'b.txt', '報告 9.txt', '報告 10.txt') { Set-Content 
 Set-Content (Join-Path $dir '拖放來源.txt') '拖放測試'
 $hidden = New-Item -ItemType File (Join-Path $dir '.hidden.txt')
 $hidden.Attributes = 'Hidden'
+# 檔案作業佇列測試用的大檔案（放在隱藏資料夾，不影響清單的項目數）；SetLength 立即完成
+$jobs = New-Item -ItemType Directory (Join-Path $dir '.jobs')
+$jobs.Attributes = 'Hidden, Directory'
+$fs = [IO.File]::Create((Join-Path $jobs '大檔案.bin'))
+$fs.SetLength(384MB)
+$fs.Dispose()
 
 if (Test-Path $shots) { Remove-Item -Recurse -Force $shots }
 $out = Join-Path $env:TEMP ("fx-smoke-{0}.json" -f [guid]::NewGuid())

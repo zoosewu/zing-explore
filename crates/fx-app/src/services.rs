@@ -48,6 +48,8 @@ pub enum Msg {
     ThemeLoaded(Result<fx_core::theme::Theme, String>),
     /// 網址列輸入已在背景確認是否為資料夾
     AddressResolved { pane: usize, target: String, normalized: String, is_dir: bool, cwd: String },
+    /// 作業佇列中某個工作的狀態或進度
+    Job { id: crate::jobs::JobId, event: crate::jobs::JobEvent },
 }
 
 /// 檔案作業完成後要選取（並可能進入重新命名）的項目

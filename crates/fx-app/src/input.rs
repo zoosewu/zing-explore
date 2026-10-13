@@ -182,7 +182,11 @@ impl App {
                 self.press = Some(Press::Scroll { pane: p, grab });
                 self.on_mouse_move(x, y);
             }
-            Hit::None | Hit::PaletteRow(_) | Hit::Palette => {}
+            Hit::JobPause(id) => self.job_toggle_pause(id),
+            Hit::JobCancel(id) => self.job_cancel(id),
+            Hit::JobsClear => self.jobs_clear(),
+            Hit::JobsClose | Hit::JobsIndicator => self.jobs_toggle(),
+            Hit::None | Hit::PaletteRow(_) | Hit::Palette | Hit::JobsPanel => {}
         }
         if self.press.is_some() {
             unsafe { SetCapture(self.hwnd) };

@@ -156,6 +156,10 @@ key = "Ctrl+Shift+P"
 cmd = "palette.open"
 
 [[key]]
+key = "Ctrl+J"
+cmd = "jobs.toggle"
+
+[[key]]
 key = "Ctrl+Shift+R"
 cmd = "config.reload"
 

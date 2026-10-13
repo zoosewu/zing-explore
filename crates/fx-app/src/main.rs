@@ -5,6 +5,7 @@ mod app;
 mod gfx;
 mod icons;
 mod input;
+mod jobs;
 mod model;
 mod palette;
 mod perf;

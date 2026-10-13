@@ -41,6 +41,9 @@ cargo bench -p fx-core --bench core         # 動到排序／篩選／列舉時
 - 會阻塞的操作開頭呼叫 `fx_core::guard::io("說明")`。debug build 在 UI 執行緒呼叫時，狀態列會顯示錯誤與程式位置；確有必要的例外用 `let _allow = guard::allow_io("原因")` 包住並寫明原因。debug build 另有卡頓監看：UI 訊息處理超過 100 ms 會回報。
 - 不必模擬輸入也能測命令：`fx --perf-out=結果.json --perf-dir=資料夾 --perf-idle-ms=2000 --perf-exec="命令"`，debug build 的防呆回報會寫進結果的 `guard_violations`（應為空陣列）。注意 `--perf-exec` 會真的執行命令，不要拿有外部副作用的命令（如 `config.edit`、檔案作業）在真實資料上測。
 - 所有背景任務都必須可取消（換資料夾時中止舊任務），結果分批送回 UI；以 generation 丟棄過時結果。
+- 檔案作業一律經 `App::submit_op`：複製／移動／刪除進作業佇列（依序執行、顯示進度，可暫停／取消），
+  重新命名與新增資料夾走另一條執行緒，不會被大量複製擋住。UI 只透過 `JobCtl` 的 atomic 旗標控制工作，不等待鎖；
+  暫停／取消在 Shell 的進度回呼（`shell.rs` 的 `Progress`）中生效。冒煙測試用 `shell::TEST_PROGRESS_DELAY_MS` 放慢複製。
 - 清單一律虛擬化：只處理可見的列；昂貴的欄位（圖示、縮圖、屬性）延遲到捲到才計算。
 - 右鍵選單、內容對話方塊、剪貼簿一律交給 `ShellHost`（shellhost.rs）：獨立的 STA 執行緒，UI 只送請求不等待，結果以訊息送回。主機忙碌超過 3 秒時下一個請求會改用新主機。
 - `ShellHost` 的視窗必須是 message-only，執行緒上不可留下頂層視窗：系統啟用視窗時會同步送 WM_ACTIVATEAPP 給程序內所有頂層視窗，主機卡住會連帶卡住 UI。選單的擁有者視窗只在選單顯示期間存在。

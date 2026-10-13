@@ -41,6 +41,8 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("view.sort --by=size", "依大小排序"),
     ("view.togglehidden", "顯示／隱藏隱藏檔案"),
     ("filter.clear", "清除篩選"),
+    ("jobs.toggle", "顯示／隱藏檔案作業"),
+    ("jobs.clear", "清除已完成的檔案作業"),
     ("favorites.add", "加入我的最愛"),
     ("favorites.remove", "從我的最愛移除"),
     ("theme.toggle", "切換深色／淺色主題"),

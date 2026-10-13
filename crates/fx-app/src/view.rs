@@ -48,6 +48,10 @@ pub struct Layout {
     pub tree: Option<Rect>,
     pub tree_splitter: Option<Rect>,
     pub panes: Vec<PaneLayout>,
+    /// 檔案作業面板（狀態列上方）
+    pub jobs: Option<Rect>,
+    /// 狀態列上的檔案作業進度（面板收起時）
+    pub jobs_indicator: Option<Rect>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +79,14 @@ pub enum Hit {
     PaletteRow(usize),
     /// 命令面板內其他位置
     Palette,
+    JobPause(crate::jobs::JobId),
+    JobCancel(crate::jobs::JobId),
+    JobsClear,
+    JobsClose,
+    /// 檔案作業面板內其他位置
+    JobsPanel,
+    /// 狀態列上的檔案作業進度
+    JobsIndicator,
 }
 
 impl App {
@@ -115,8 +127,18 @@ impl App {
         lay.address = Rect::new(x + 6.0, cy - 15.0, right.max(x + 120.0), cy + 15.0);
         self.layout_crumbs(&mut lay);
 
+        // 檔案作業面板與狀態列上的進度
+        let jobs_h = self.jobs_panel_height();
+        if jobs_h > 0.0 {
+            lay.jobs = Some(Rect::new(0.0, lay.status.t - jobs_h, w, lay.status.t));
+        }
+        if let Some(text) = self.jobs_indicator_text() {
+            let tw = self.gfx.measure(&text, Font::Small) + 16.0;
+            lay.jobs_indicator = Some(Rect::new(w - 8.0 - tw, lay.status.t, w - 4.0, lay.status.b));
+        }
+
         // 主體：樹狀列 + 窗格
-        let body = Rect::new(0.0, tb.b, w, lay.status.t);
+        let body = Rect::new(0.0, tb.b, w, lay.status.t - jobs_h);
         let mut panes_area = body;
         let tree_visible = self.tree_visible && self.tree_side != TreeSide::Hidden;
         if tree_visible {
@@ -218,6 +240,9 @@ impl App {
 
     pub fn hit_test(&self, lay: &Layout, x: f32, y: f32) -> Hit {
         if let Some(h) = self.palette_hit(x, y) {
+            return h;
+        }
+        if let Some(h) = self.jobs_hit(lay, x, y) {
             return h;
         }
         if lay.toolbar.contains(x, y) {
@@ -327,6 +352,7 @@ impl App {
             let x = if self.tree_side == TreeSide::Right { tr.l - 1.0 } else { tr.r };
             self.gfx.vline(x, tr.t, tr.b, c.border);
         }
+        self.paint_jobs(&lay);
         self.paint_status(&lay);
         self.paint_palette();
         self.gfx.end();
@@ -603,7 +629,12 @@ impl App {
             left.push_str("　載入中…");
         }
         g.text(&left, Font::Small, Rect::new(12.0, s.t, s.r * 0.5, s.b), c.text_secondary);
-        if let Some((msg, err, _)) = &self.status {
+        if let (Some(r), Some(text)) = (lay.jobs_indicator, self.jobs_indicator_text()) {
+            if self.hover == Hit::JobsIndicator {
+                g.fill_round(r.inset(0.0, 3.0), self.theme.metrics.radius, c.hover);
+            }
+            g.text(&text, Font::Small, Rect::new(r.l + 8.0, r.t, r.r, r.b), c.accent);
+        } else if let Some((msg, err, _)) = &self.status {
             g.text(msg, Font::SmallRight, Rect::new(s.r * 0.35, s.t, s.r - 12.0, s.b), if *err { c.error } else { c.text });
         } else {
             let mut right = Vec::new();
