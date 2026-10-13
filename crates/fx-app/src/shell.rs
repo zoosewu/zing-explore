@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::sync::mpsc::{Sender, channel};
 
-use fx_core::path;
+use fx_core::{guard, path};
 use fx_core::text::wide_z;
 use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, POINTL, WPARAM};
 use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
@@ -52,6 +52,7 @@ struct Pidl(*mut ITEMIDLIST);
 
 impl Pidl {
     fn parse(p: &str) -> Result<Self> {
+        guard::io("解析 Shell 路徑");
         let w = wide_z(p);
         let mut pidl = std::ptr::null_mut();
         unsafe { SHParseDisplayName(PCWSTR(w.as_ptr()), None, &mut pidl, 0, None)? };
@@ -66,6 +67,7 @@ impl Drop for Pidl {
 }
 
 fn shell_item(p: &str) -> Result<IShellItem> {
+    guard::io("建立 Shell 項目");
     let w = wide_z(p);
     unsafe { SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None) }
 }
@@ -252,6 +254,7 @@ pub fn clear_clipboard() {
 
 /// 讀取剪貼簿上的檔案清單與是否為剪下
 pub fn read_clipboard() -> Option<(Vec<String>, bool)> {
+    guard::io("讀取剪貼簿");
     unsafe {
         let obj = OleGetClipboard().ok()?;
         let paths = hdrop_paths(&obj)?;
@@ -456,12 +459,16 @@ pub fn properties(hwnd: HWND, paths: &[String]) {
 
 /// 從程式拖出檔案（模態，直到放開滑鼠）
 pub fn drag_out(hwnd: HWND, paths: &[String]) -> Result<DROPEFFECT> {
+    // COM 規定拖曳來源必須在視窗所屬的 UI 執行緒
+    let _allow = guard::allow_io("拖曳來源受 COM 限制必須在 UI 執行緒");
     let obj = data_object(paths)?;
     unsafe { SHDoDragDrop(Some(hwnd), &obj, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK) }
 }
 
 /// 取得某資料夾在 Shell 中的放置目標，讓拖放行為與檔案總管完全一致
 fn shell_drop_target(hwnd: HWND, folder: &str) -> Option<IDropTarget> {
+    // 放置目標的回呼由 COM 在 UI 執行緒呼叫，無法移到背景；每次拖曳已快取
+    let _allow = guard::allow_io("放置目標受 COM 限制必須在 UI 執行緒");
     unsafe {
         let pidl = Pidl::parse(folder).ok()?;
         let mut last = std::ptr::null_mut();

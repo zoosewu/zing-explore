@@ -128,6 +128,7 @@ pub fn focus_main(hwnd: HWND) {
 }
 
 pub fn set_clipboard_text(hwnd: HWND, text: &str) -> windows::core::Result<()> {
+    fx_core::guard::io("寫入剪貼簿");
     const CF_UNICODETEXT: u32 = 13;
     let w = wide_z(text);
     unsafe {
@@ -299,7 +300,26 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
 
 // ---------------------------------------------------------------- 模態動作
 
+thread_local! {
+    /// 這次訊息處理中執行過模態動作（拖放）：時間長是正常的，卡頓監看略過
+    static IN_MODAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// debug build：UI 訊息處理超過 100 ms 就回報（debug 程式碼比 release 慢數倍，所以門檻放寬）。
+/// 視窗拖曳／縮放、系統選單有自己的訊息迴圈，略過。
+#[cfg(debug_assertions)]
+pub fn check_stall(msg: &MSG, elapsed: std::time::Duration) {
+    let modal = IN_MODAL.with(|m| m.replace(false));
+    if modal || matches!(msg.message, WM_NCLBUTTONDOWN | WM_NCRBUTTONDOWN | WM_SYSCOMMAND | WM_NCLBUTTONDBLCLK) {
+        return;
+    }
+    if elapsed.as_millis() > 100 {
+        fx_core::guard::report(format!("UI 訊息 0x{:04X} 處理了 {} ms", msg.message, elapsed.as_millis()));
+    }
+}
+
 fn run_modal(hwnd: HWND, modal: Modal) {
+    IN_MODAL.with(|m| m.set(true));
     match modal {
         Modal::DragOut { paths } => {
             let _ = shell::drag_out(hwnd, &paths);
@@ -598,6 +618,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             None
         }
         WM_CLOSE => {
+            let _allow = fx_core::guard::allow_io("結束時儲存工作階段（之後程序即結束）");
             with_app(|a| a.save_session());
             unsafe {
                 let _ = DestroyWindow(hwnd);

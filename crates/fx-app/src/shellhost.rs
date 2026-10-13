@@ -44,6 +44,8 @@ pub enum ShellJob {
         ctrl: bool,
     },
     SetClipboard { paths: Vec<String>, cut: bool },
+    /// 純文字（例如複製路徑）
+    SetText { text: String, status: String },
     Paste { dest: String },
     Properties { paths: Vec<String> },
     /// 結束前把剪貼簿資料實際寫入，關閉程式後仍可貼上
@@ -291,6 +293,10 @@ fn run_job(job: ShellJob) {
         }
         ShellJob::SetClipboard { paths, cut } => match shell::set_clipboard(&paths, cut) {
             Ok(()) => n.status(format!("已{} {} 個項目", if cut { "剪下" } else { "複製" }, paths.len()), false),
+            Err(e) => n.status(format!("無法存取剪貼簿：{}", e.message()), true),
+        },
+        ShellJob::SetText { text, status } => match crate::window::set_clipboard_text(host, &text) {
+            Ok(()) => n.status(status, false),
             Err(e) => n.status(format!("無法存取剪貼簿：{}", e.message()), true),
         },
         ShellJob::Paste { dest } => match shell::read_clipboard() {

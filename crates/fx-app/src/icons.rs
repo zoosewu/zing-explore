@@ -164,6 +164,7 @@ fn spawn_workers(n: Notifier) -> Sender<(u32, IconKey)> {
 }
 
 fn load(key: &IconKey) -> Option<IconPixels> {
+    fx_core::guard::io("讀取檔案圖示");
     let (p, attrs, extra) = match key {
         IconKey::Folder => ("folder".to_string(), FILE_ATTRIBUTE_DIRECTORY, SHGFI_USEFILEATTRIBUTES),
         IconKey::Ext(e) => (format!("x.{e}"), FILE_ATTRIBUTE_NORMAL, SHGFI_USEFILEATTRIBUTES),

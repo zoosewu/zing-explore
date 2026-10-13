@@ -42,6 +42,12 @@ pub enum Msg {
     MenuExtra { id: u32, target: String },
     /// 剪貼簿上的檔案已讀出，交給檔案作業佇列
     Paste { sources: Vec<String>, dest: String, cut: bool },
+    /// 背景重新讀取的設定與主題
+    ConfigLoaded { config: fx_core::config::Config, theme: fx_core::theme::Theme, warnings: Vec<String> },
+    /// 背景讀取的主題（theme.set）
+    ThemeLoaded(Result<fx_core::theme::Theme, String>),
+    /// 網址列輸入已在背景確認是否為資料夾
+    AddressResolved { pane: usize, target: String, normalized: String, is_dir: bool, cwd: String },
 }
 
 /// 檔案作業完成後要選取（並可能進入重新命名）的項目

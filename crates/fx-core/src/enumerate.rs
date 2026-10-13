@@ -52,6 +52,7 @@ pub fn enumerate(
     if dir.is_empty() {
         return Ok(drives());
     }
+    crate::guard::io("列舉資料夾");
     let pattern = path::to_wide_z(&path::join(&path::long_form(dir), "*"));
     let mut data = WIN32_FIND_DATAW::default();
     let op = if dirs_only { FindExSearchLimitToDirectories } else { FindExSearchNameMatch };

@@ -111,13 +111,20 @@ pub struct App {
 
 impl App {
     pub fn new(hwnd: HWND, dpi: f32, perf: Option<Perf>) -> windows::core::Result<Self> {
-        let (config, warnings) = settings::load_config();
-        let session = if perf.is_some() { Session::default() } else { Session::load() };
-        let (theme, theme_warning) = settings::resolve_theme(&config.theme);
+        // 第一幀之前必須知道設定與主題；檔案很小且在本機，屬於明確的例外
+        let (config, warnings, session, theme, theme_warning) = {
+            let _allow = fx_core::guard::allow_io("啟動時讀取設定、主題與工作階段");
+            let (config, warnings) = settings::load_config();
+            let session = if perf.is_some() { Session::default() } else { Session::load() };
+            let (theme, theme_warning) = settings::resolve_theme(&config.theme);
+            (config, warnings, session, theme, theme_warning)
+        };
         crate::perf::mark("config");
         let gfx = Gfx::new(hwnd, dpi, &theme, perf.is_some())?;
         crate::perf::mark("gfx");
         let (notifier, rx) = Notifier::new(hwnd);
+        let reporter = notifier.clone();
+        fx_core::guard::set_reporter(move |m| reporter.status(m, true));
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
         let pool = Pool::new(threads);
         let fileops = FileOps::new(notifier.clone());
@@ -215,9 +222,20 @@ impl App {
         }
     }
 
+    /// 結束時同步儲存（之後程序即結束，不能交給背景）
     pub fn save_session(&self) {
         if self.perf.is_none() {
             let _ = self.session_snapshot().save();
+        }
+    }
+
+    /// 執行中的儲存交給背景執行緒
+    fn save_session_async(&self) {
+        if self.perf.is_none() {
+            let snapshot = self.session_snapshot();
+            self.pool.spawn(move || {
+                let _ = snapshot.save();
+            });
         }
     }
 
@@ -570,6 +588,25 @@ impl App {
             Msg::MenuRename => self.start_rename(),
             Msg::MenuExtra { id, target } => self.on_menu_extra(id, target),
             Msg::Paste { sources, dest, cut } => self.fileops.submit(FileOp::Transfer { sources, dest, mov: cut }),
+            Msg::ConfigLoaded { config, theme, warnings } => {
+                self.config = config;
+                self.tree_side = self.config.layout.tree;
+                self.apply_theme(theme);
+                match warnings.into_iter().next() {
+                    Some(w) => self.set_status(w, true),
+                    None => self.set_status("已重新載入設定", false),
+                }
+            }
+            Msg::ThemeLoaded(Ok(theme)) => self.apply_theme(theme),
+            Msg::ThemeLoaded(Err(e)) => self.set_status(e, true),
+            Msg::AddressResolved { pane, target, normalized, is_dir, cwd } => {
+                if is_dir && pane < self.panes.len() {
+                    self.navigate(pane, normalized, true);
+                } else {
+                    // 不是資料夾：交給系統開啟（檔案、網址、程式名稱都可以）
+                    services::launch(&self.notifier, target, None, Some(cwd), None);
+                }
+            }
         }
     }
 
@@ -597,16 +634,15 @@ impl App {
         self.invalidate();
     }
 
+    /// 在背景重新讀取設定與主題，完成後以 Msg::ConfigLoaded 套用
     pub fn reload_config(&mut self) {
-        let (config, warnings) = settings::load_config();
-        self.config = config;
-        self.tree_side = self.config.layout.tree;
-        let (theme, warn) = settings::resolve_theme(&self.config.theme);
-        self.apply_theme(theme);
-        match warnings.into_iter().chain(warn).next() {
-            Some(w) => self.set_status(w, true),
-            None => self.set_status("已重新載入設定", false),
-        }
+        let n = self.notifier.clone();
+        self.pool.spawn(move || {
+            let (config, mut warnings) = settings::load_config();
+            let (theme, warn) = settings::resolve_theme(&config.theme);
+            warnings.extend(warn);
+            n.send(Msg::ConfigLoaded { config, theme, warnings });
+        });
     }
 
     // ------------------------------------------------------------ 命令
@@ -738,8 +774,7 @@ impl App {
             "file.copypath" => {
                 let paths = self.tab().target_paths();
                 let text = if paths.is_empty() { self.tab().path.clone() } else { paths.join("\r\n") };
-                window::set_clipboard_text(self.hwnd, &text).map_err(|e| format!("無法存取剪貼簿：{}", e.message()))?;
-                self.set_status("已複製路徑", false);
+                self.shell_host.submit(ShellJob::SetText { text, status: "已複製路徑".into() });
             }
             "copy" => {
                 let dest = inv.flag("to").filter(|d| !d.is_empty()).ok_or("copy 需要 --to=目的地")?;
@@ -842,20 +877,26 @@ impl App {
                 self.remove_favorite(&target)?;
             }
             "theme.set" => {
-                let name = inv.flag("name").or_else(|| inv.positional().next()).ok_or("theme.set 需要 --name=")?;
-                let (theme, warn) = settings::resolve_theme(name);
-                if let Some(w) = warn {
-                    return Err(w);
-                }
-                self.apply_theme(theme);
+                let name = inv.flag("name").or_else(|| inv.positional().next()).ok_or("theme.set 需要 --name=")?.to_string();
+                let n = self.notifier.clone();
+                self.pool.spawn(move || {
+                    let (theme, warn) = settings::resolve_theme(&name);
+                    n.send(Msg::ThemeLoaded(match warn {
+                        Some(w) => Err(w),
+                        None => Ok(theme),
+                    }));
+                });
             }
             "theme.toggle" => {
                 let theme = if self.theme.mode == Mode::Dark { Theme::light() } else { Theme::dark() };
                 self.apply_theme(theme);
             }
             "config.edit" => {
-                let p = settings::ensure_user_config().map_err(|e| format!("無法建立設定檔：{e}"))?;
-                services::launch(&self.notifier, "notepad.exe".into(), Some(quote_arg(&p.to_string_lossy())), None, None);
+                let n = self.notifier.clone();
+                self.pool.spawn(move || match settings::ensure_user_config() {
+                    Ok(p) => services::launch(&n, "notepad.exe".into(), Some(quote_arg(&p.to_string_lossy())), None, None),
+                    Err(e) => n.status(format!("無法建立設定檔：{e}"), true),
+                });
             }
             "config.reload" => self.reload_config(),
             "app.exit" => window::close(self.hwnd),
@@ -884,7 +925,7 @@ impl App {
         }
         self.favorites.push(p.clone());
         self.session.favorites.push(p.clone());
-        self.save_session();
+        self.save_session_async();
         self.rebuild_tree();
         self.set_status(format!("已加入我的最愛：{p}"), false);
         Ok(())
@@ -896,7 +937,7 @@ impl App {
         }
         self.favorites.retain(|f| !f.eq_ignore_ascii_case(p));
         self.session.favorites.retain(|f| !f.eq_ignore_ascii_case(p));
-        self.save_session();
+        self.save_session_async();
         self.rebuild_tree();
         self.set_status(format!("已從我的最愛移除：{p}"), false);
         Ok(())
@@ -1012,16 +1053,19 @@ impl App {
                 }
                 EditKind::Address => {
                     let target = text.trim().to_string();
-                    let p = self.active_pane;
-                    let normalized = path::normalize(&target);
+                    let pane = self.active_pane;
                     if target.is_empty() || target == "此電腦" {
-                        self.navigate(p, String::new(), true);
-                    } else if std::path::Path::new(&normalized).is_dir() {
-                        self.navigate(p, normalized, true);
+                        self.navigate(pane, String::new(), true);
                     } else {
-                        // 不是資料夾：交給系統開啟（檔案、網址、程式名稱都可以）
-                        let dir = self.tab().path.clone();
-                        services::launch(&self.notifier, target, None, Some(dir), None);
+                        // 檢查是否為資料夾會碰磁碟（網路路徑可能很慢），交給背景
+                        let normalized = path::normalize(&target);
+                        let cwd = self.tab().path.clone();
+                        let n = self.notifier.clone();
+                        self.pool.spawn(move || {
+                            fx_core::guard::io("檢查網址列路徑");
+                            let is_dir = std::path::Path::new(&normalized).is_dir();
+                            n.send(Msg::AddressResolved { pane, target, normalized, is_dir, cwd });
+                        });
                     }
                 }
             }

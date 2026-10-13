@@ -1,6 +1,9 @@
 //! 效能量測模式（tools/perf.ps1 使用）。
 //!
-//! `fx --perf-out=結果.json [--perf-dir=資料夾] [--perf-scroll-frames=N] [--perf-theme] [--perf-idle-ms=N]`
+//! `fx --perf-out=結果.json [--perf-dir=資料夾] [--perf-scroll-frames=N] [--perf-theme] [--perf-idle-ms=N] [--perf-exec=命令]`
+//!
+//! `--perf-exec`：資料夾載入後執行的命令腳本（不需模擬輸入即可測試命令）。debug build 的
+//! UI 執行緒 I/O 防呆回報會寫進結果的 `guard_violations`。
 //!
 //! 依序量測：冷啟動到第一幀、開啟資料夾的首屏與全部載入時間、捲動每幀時間、
 //! 主題切換時間、閒置記憶體，寫成 JSON 後自動關閉。
@@ -26,6 +29,7 @@ pub struct Perf {
     scroll_frames: u32,
     theme: bool,
     idle_ms: u32,
+    exec: Option<String>,
     results: Vec<(String, f64)>,
     started: bool,
     nav_start: Option<Instant>,
@@ -47,6 +51,7 @@ impl Perf {
             scroll_frames: get("perf-scroll-frames").and_then(|v| v.parse().ok()).unwrap_or(0),
             theme: args.iter().any(|a| a == "--perf-theme"),
             idle_ms: get("perf-idle-ms").and_then(|v| v.parse().ok()).unwrap_or(0),
+            exec: get("perf-exec"),
             ..Default::default()
         })
     }
@@ -145,6 +150,9 @@ pub fn after_paint(app: &mut App) {
         perf.record("listing_mb", bytes as f64 / 1_048_576.0);
         let frames = perf.scroll_frames;
         let theme = perf.theme;
+        if let Some(script) = perf.exec.take() {
+            app.exec(&script);
+        }
         if frames > 0 {
             scroll_test(app, frames);
         }
@@ -161,13 +169,21 @@ fn scroll_test(app: &mut App, frames: u32) {
     let list_h = app.layout.panes.first().map_or(600.0, |pl| pl.list.h());
     let max = app.max_scroll(p, list_h);
     let mut times = Vec::with_capacity(frames as usize);
-    for _ in 0..frames {
+    // 最慢一幀的組成：(總計, CPU 繪製, EndDraw, Present, 第幾幀)
+    let mut worst = (0.0, 0.0, 0.0, 0.0, 0usize);
+    for i in 0..frames as usize {
         let tab = app.tab_mut();
         tab.scroll = if tab.scroll + step > max { 0.0 } else { tab.scroll + step };
         let t = Instant::now();
         app.paint();
-        times.push(t.elapsed().as_secs_f64() * 1000.0);
+        let total = t.elapsed().as_secs_f64() * 1000.0;
+        let (end, present) = app.gfx.last_end_ms;
+        if total > worst.0 {
+            worst = (total, total - end - present, end, present, i);
+        }
+        times.push(total);
     }
+    let over_8 = times.iter().filter(|&&t| t > 8.0).count();
     times.sort_by(f64::total_cmp);
     let pct = |q: f64| times[((times.len() - 1) as f64 * q).round() as usize];
     let warp = app.gfx.is_warp();
@@ -176,6 +192,11 @@ fn scroll_test(app: &mut App, frames: u32) {
     perf.record("frame_p50_ms", pct(0.5));
     perf.record("frame_p99_ms", pct(0.99));
     perf.record("frame_max_ms", *times.last().unwrap());
+    perf.record("frames_over_8ms", over_8 as f64);
+    perf.record("worst_cpu_ms", worst.1);
+    perf.record("worst_enddraw_ms", worst.2);
+    perf.record("worst_present_ms", worst.3);
+    perf.record("worst_index", worst.4 as f64);
 }
 
 fn theme_test(app: &mut App) {
@@ -210,7 +231,10 @@ pub fn finish(app: &mut App) {
     }
     perf.record("private_working_set_mb", pmc.PrivateWorkingSetSize as f64 / 1_048_576.0);
     perf.record("private_bytes_mb", pmc.PrivateUsage as f64 / 1_048_576.0);
-    let body: Vec<String> = perf.results.iter().map(|(k, v)| format!("  \"{k}\": {v:.3}")).collect();
+    let mut body: Vec<String> = perf.results.iter().map(|(k, v)| format!("  \"{k}\": {v:.3}")).collect();
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let violations: Vec<String> = fx_core::guard::take_violations().iter().map(|v| format!("\"{}\"", esc(v))).collect();
+    body.push(format!("  \"guard_violations\": [{}]", violations.join(", ")));
     let json = format!("{{\n{}\n}}\n", body.join(",\n"));
     let _ = std::fs::write(&perf.out, json);
     crate::window::close(app.hwnd);

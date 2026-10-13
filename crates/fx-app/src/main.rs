@@ -24,6 +24,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let perf = perf::Perf::from_args(&args);
     perf::mark("main");
+    fx_core::guard::mark_ui_thread();
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
@@ -35,8 +36,18 @@ fn main() {
 fn run(perf: Option<perf::Perf>) -> windows::core::Result<()> {
     let is_perf = perf.is_some();
     window::register_class()?;
-    let saved = if is_perf { None } else { settings::Session::load().window };
-    let rect = saved.as_ref().filter(|w| w.w > 200 && w.h > 150).map(|w| (w.x, w.y, w.w, w.h));
+    let saved = if is_perf {
+        None
+    } else {
+        let _allow = fx_core::guard::allow_io("啟動時讀取工作階段（第一幀之前必須知道視窗位置）");
+        settings::Session::load().window
+    };
+    // 效能模式固定視窗位置與大小，量測結果才可重現
+    let rect = if is_perf {
+        Some((100, 100, 1280, 800))
+    } else {
+        saved.as_ref().filter(|w| w.w > 200 && w.h > 150).map(|w| (w.x, w.y, w.w, w.h))
+    };
     let hwnd = window::create_window(rect)?;
     perf::mark("window");
     let dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
@@ -59,7 +70,11 @@ fn run(perf: Option<perf::Perf>) -> windows::core::Result<()> {
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);
+            #[cfg(debug_assertions)]
+            let started = std::time::Instant::now();
             DispatchMessageW(&msg);
+            #[cfg(debug_assertions)]
+            window::check_stall(&msg, started.elapsed());
         }
     }
     window::APP.with(|a| a.borrow_mut().take());

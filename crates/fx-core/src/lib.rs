@@ -4,6 +4,7 @@ pub mod command;
 pub mod config;
 pub mod enumerate;
 pub mod format;
+pub mod guard;
 pub mod keymap;
 pub mod listing;
 pub mod path;

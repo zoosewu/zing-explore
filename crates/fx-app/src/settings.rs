@@ -26,6 +26,7 @@ fn session_path() -> PathBuf {
 
 /// 讀取設定。回傳設定與警告訊息（顯示在狀態列）。
 pub fn load_config() -> (Config, Vec<String>) {
+    fx_core::guard::io("讀取設定檔");
     let user = std::fs::read_to_string(config_path()).ok();
     Config::load(user.as_deref())
 }
@@ -57,6 +58,7 @@ pub fn resolve_theme(name: &str) -> (Theme, Option<String>) {
     if let Some(t) = Theme::builtin(&name.to_ascii_lowercase()) {
         return (t, None);
     }
+    fx_core::guard::io("讀取主題檔");
     let file = themes_dir().join(format!("{name}.toml"));
     match std::fs::read_to_string(&file) {
         Ok(src) => match Theme::from_toml(&src) {
@@ -113,10 +115,12 @@ impl Default for Session {
 
 impl Session {
     pub fn load() -> Self {
+        fx_core::guard::io("讀取工作階段");
         std::fs::read_to_string(session_path()).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()
     }
 
     pub fn save(&self) -> std::io::Result<()> {
+        fx_core::guard::io("儲存工作階段");
         std::fs::create_dir_all(app_dir())?;
         let text = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
         // 先寫暫存檔再改名，避免寫到一半當機留下損壞的檔案
@@ -128,6 +132,7 @@ impl Session {
 
 /// 使用者設定檔不存在時，以預設設定為範本建立
 pub fn ensure_user_config() -> std::io::Result<PathBuf> {
+    fx_core::guard::io("建立設定檔");
     let p = config_path();
     if !p.exists() {
         std::fs::create_dir_all(app_dir())?;

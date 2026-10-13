@@ -89,7 +89,7 @@ $results.private_working_set_mb = [math]::Round((Invoke-Fx @('--perf-idle-ms=500
 # 單次的 p99 雜訊大，跑 3 次取各指標的中位數
 Write-Host "量測開啟 $Files 個項目的資料夾、捲動與主題切換（3 次）..."
 $folderRuns = 1..3 | ForEach-Object { Invoke-Fx @("--perf-dir=$benchDir", '--perf-scroll-frames=300', '--perf-theme') }
-foreach ($k in 'first_screen_ms', 'load_all_ms', 'frame_p50_ms', 'frame_p99_ms', 'frame_max_ms', 'theme_switch_ms', 'listing_mb', 'scroll_warp') {
+foreach ($k in 'first_screen_ms', 'load_all_ms', 'frame_p50_ms', 'frame_p99_ms', 'frame_max_ms', 'frames_over_8ms', 'theme_switch_ms', 'listing_mb', 'scroll_warp') {
     $vals = @($folderRuns | ForEach-Object { $_.$k } | Where-Object { $null -ne $_ } | Sort-Object)
     if ($vals.Count -gt 0) { $results[$k] = [math]::Round($vals[[int][math]::Floor(($vals.Count - 1) / 2)], 2) }
 }

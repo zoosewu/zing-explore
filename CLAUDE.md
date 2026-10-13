@@ -28,11 +28,14 @@ cargo bench -p fx-core --bench core         # 動到排序／篩選／列舉時
 
 - 把 `tools/perf.ps1` 的結果表貼進 commit / PR 說明。
 - 只有在確認是改善（或刻意接受的取捨）時才執行 `pwsh tools/perf.ps1 -UpdateBaseline` 更新 `perf/baseline.json`，並在說明中寫明原因。
+- 效能模式的視窗固定在 (100, 100)、1280×800，結果才可重現。
 - frame_p99 受 OS/GPU 偶發停頓影響，同一版本重跑約有 ±1.5 ms 差異，因此退步容差為 2 ms；繪製成本的實際退步由 frame_p50（容差 0.5 ms）把關。
 
 ### 規則
 
 - UI 執行緒禁止：檔案 I/O、網路、等待鎖、會阻塞的 Shell 呼叫。工作交給 `services::Pool`，結果經 `Notifier` 送回。
+- 會阻塞的操作開頭呼叫 `fx_core::guard::io("說明")`。debug build 在 UI 執行緒呼叫時，狀態列會顯示錯誤與程式位置；確有必要的例外用 `let _allow = guard::allow_io("原因")` 包住並寫明原因。debug build 另有卡頓監看：UI 訊息處理超過 100 ms 會回報。
+- 不必模擬輸入也能測命令：`fx --perf-out=結果.json --perf-dir=資料夾 --perf-idle-ms=2000 --perf-exec="命令"`，debug build 的防呆回報會寫進結果的 `guard_violations`（應為空陣列）。注意 `--perf-exec` 會真的執行命令，不要拿有外部副作用的命令（如 `config.edit`、檔案作業）在真實資料上測。
 - 所有背景任務都必須可取消（換資料夾時中止舊任務），結果分批送回 UI；以 generation 丟棄過時結果。
 - 清單一律虛擬化：只處理可見的列；昂貴的欄位（圖示、縮圖、屬性）延遲到捲到才計算。
 - 右鍵選單、內容對話方塊、剪貼簿一律交給 `ShellHost`（shellhost.rs）：獨立的 STA 執行緒，UI 只送請求不等待，結果以訊息送回。主機忙碌超過 3 秒時下一個請求會改用新主機。
@@ -47,8 +50,11 @@ cargo bench -p fx-core --bench core         # 動到排序／篩選／列舉時
 ### 已知的效能缺口（待處理）
 
 - 拖放（拖出的資料物件、放置目標）仍在 UI 執行緒解析路徑，這是 COM 的限制；網路路徑在拖曳經過時可能短暫延遲。
-- 捲動測試偶有 20–35 ms 的單幀停頓（frame_max），p99 不受影響，原因未查明。
-- 尚未有 debug build 的「UI 執行緒 I/O」防呆檢查。
+- 捲動時偶有一幀約 17–20 ms（約一個 60 Hz 更新週期）的停頓，p99 不受影響。已查明時間全部花在 `Present`
+  （等待桌面合成器），CPU 繪製約 2 ms、EndDraw 約 0.15 ms；連續呈現約 70–100 ms 後發生、閒置後會再發生。
+  是否發生取決於桌面當下的狀態（同一版本同一條件，一輪 12/12、另一輪 0/3），緩衝數量、FLIP_SEQUENTIAL、
+  blt 模式都無法穩定消除，所以沒有修改。下一步：用 PresentMon／ETW 確認是否為呈現模式切換（independent flip）。
+  效能報告的 `frames_over_8ms` 與結果 JSON 的 `worst_*` 欄位會顯示每次的狀況。
 
 ## 專案結構
 

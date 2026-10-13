@@ -134,6 +134,8 @@ pub struct Gfx {
     widths: RefCell<HashMap<(Font, String), f32>>,
     /// 圖示點陣圖（屬於目前的裝置，換裝置時清空，再由 Icons 的像素重建）
     icon_bitmaps: RefCell<HashMap<u32, ID2D1Bitmap1>>,
+    /// 上一幀 EndDraw（GPU 清空）與 Present 的耗時（毫秒），供效能測試拆解幀時間
+    pub last_end_ms: (f64, f64),
 }
 
 fn color_f(c: Color) -> D2D1_COLOR_F {
@@ -196,6 +198,7 @@ impl Gfx {
             immediate,
             widths: RefCell::new(HashMap::new()),
             icon_bitmaps: RefCell::new(HashMap::new()),
+            last_end_ms: (0.0, 0.0),
         })
     }
 
@@ -306,6 +309,7 @@ impl Gfx {
                 AlphaMode: DXGI_ALPHA_MODE_IGNORE,
                 ..Default::default()
             };
+
             let swap = factory.CreateSwapChainForHwnd(&d3d, self.hwnd, &desc, None, None)?;
             let _ = factory.MakeWindowAssociation(self.hwnd, DXGI_MWA_NO_ALT_ENTER);
             ctx.SetDpi(self.dpi, self.dpi);
@@ -361,10 +365,13 @@ impl Gfx {
 
     pub fn end(&mut self) {
         let Some(d) = &self.dev else { return };
+        let t0 = std::time::Instant::now();
         let drawn = unsafe { d.ctx.EndDraw(None, None) };
+        let t1 = std::time::Instant::now();
         // 效能模式：不等垂直同步、交換鏈忙碌時直接略過這幀，量到的是純繪製成本
         let (sync, flags) = if self.immediate { (0, DXGI_PRESENT_DO_NOT_WAIT) } else { (1, DXGI_PRESENT(0)) };
         let presented = unsafe { d.swap.Present(sync, flags) };
+        self.last_end_ms = ((t1 - t0).as_secs_f64() * 1000.0, t1.elapsed().as_secs_f64() * 1000.0);
         let lost = matches!(&drawn, Err(e) if e.code() == D2DERR_RECREATE_TARGET)
             || presented == DXGI_ERROR_DEVICE_REMOVED
             || presented == DXGI_ERROR_DEVICE_RESET;
