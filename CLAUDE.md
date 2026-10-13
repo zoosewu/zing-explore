@@ -1,4 +1,4 @@
-# 專案：Windows 11 檔案總管（fx）
+# 專案：Windows 11 檔案總管 zing-explore（執行檔 zing.exe）
 
 Rust + 原生 Win32（`windows-rs`）+ Direct2D/DirectWrite 自繪 UI，腳本使用 Lua（尚未實作）。
 規格文件：https://claude.ai/code/artifact/335464a0-428e-4b77-b122-94f641201d9f
@@ -24,7 +24,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets      # 必須 0 警告
 pwsh tools/perf.ps1                         # 建置 release 並檢查全部指標，失敗時結束代碼 1
 pwsh tools/smoke.ps1                        # 自動化 UI 冒煙測試（debug build，含 I/O 防呆與卡頓監看）
-cargo bench -p fx-core --bench core         # 動到排序／篩選／列舉時
+cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉時
 ```
 
 - 把 `tools/perf.ps1` 的結果表貼進 commit / PR 說明。
@@ -38,8 +38,8 @@ cargo bench -p fx-core --bench core         # 動到排序／篩選／列舉時
 ### 規則
 
 - UI 執行緒禁止：檔案 I/O、網路、等待鎖、會阻塞的 Shell 呼叫。工作交給 `services::Pool`，結果經 `Notifier` 送回。
-- 會阻塞的操作開頭呼叫 `fx_core::guard::io("說明")`。debug build 在 UI 執行緒呼叫時，狀態列會顯示錯誤與程式位置；確有必要的例外用 `let _allow = guard::allow_io("原因")` 包住並寫明原因。debug build 另有卡頓監看：UI 訊息處理超過 100 ms 會回報。
-- 不必模擬輸入也能測命令：`fx --perf-out=結果.json --perf-dir=資料夾 --perf-idle-ms=2000 --perf-exec="命令"`，debug build 的防呆回報會寫進結果的 `guard_violations`（應為空陣列）。注意 `--perf-exec` 會真的執行命令，不要拿有外部副作用的命令（如 `config.edit`、檔案作業）在真實資料上測。
+- 會阻塞的操作開頭呼叫 `zing_core::guard::io("說明")`。debug build 在 UI 執行緒呼叫時，狀態列會顯示錯誤與程式位置；確有必要的例外用 `let _allow = guard::allow_io("原因")` 包住並寫明原因。debug build 另有卡頓監看：UI 訊息處理超過 100 ms 會回報。
+- 不必模擬輸入也能測命令：`zing --perf-out=結果.json --perf-dir=資料夾 --perf-idle-ms=2000 --perf-exec="命令"`，debug build 的防呆回報會寫進結果的 `guard_violations`（應為空陣列）。注意 `--perf-exec` 會真的執行命令，不要拿有外部副作用的命令（如 `config.edit`、檔案作業）在真實資料上測。
 - 所有背景任務都必須可取消（換資料夾時中止舊任務），結果分批送回 UI；以 generation 丟棄過時結果。
 - 檔案作業一律經 `App::submit_op`：複製／移動／刪除進作業佇列（依序執行、顯示進度，可暫停／取消），
   重新命名與新增資料夾走另一條執行緒，不會被大量複製擋住。UI 只透過 `JobCtl` 的 atomic 旗標控制工作，不等待鎖；
@@ -48,7 +48,7 @@ cargo bench -p fx-core --bench core         # 動到排序／篩選／列舉時
 - 右鍵選單、內容對話方塊、剪貼簿一律交給 `ShellHost`（shellhost.rs）：獨立的 STA 執行緒，UI 只送請求不等待，結果以訊息送回。主機忙碌超過 3 秒時下一個請求會改用新主機。
 - `ShellHost` 的視窗必須是 message-only，執行緒上不可留下頂層視窗：系統啟用視窗時會同步送 WM_ACTIVATEAPP 給程序內所有頂層視窗，主機卡住會連帶卡住 UI。選單的擁有者視窗只在選單顯示期間存在。
 - 拖曳出去與放置目標受 COM 限制必須在 UI 執行緒，透過 `App::modal` 在釋放 App 借用後執行；放置目標每次拖曳只解析一次路徑（快取）。
-- 測試卡住的 Shell 擴充功能：debug build 設定 `FX_TEST_SHELL_DELAY_MS=8000`，第一個右鍵選單會延遲；UI 必須仍可操作，3 秒後再按右鍵會改用新主機。
+- 測試卡住的 Shell 擴充功能：debug build 設定 `ZING_TEST_SHELL_DELAY_MS=8000`，第一個右鍵選單會延遲；UI 必須仍可操作，3 秒後再按右鍵會改用新主機。
 - 新增相依套件前，評估對執行檔大小與啟動時間的影響。
 - 啟動路徑上不放非必要初始化，能延後的就延後（OLE、拖放在第一幀之後初始化）。
 - 第一幀用 WARP 繪製，硬體 GPU 裝置在第一幀呈現後於背景建立再切換；不要在第一幀前碰硬體裝置（驅動初始化約 130 ms，且會鎖住 DXGI）。
@@ -70,9 +70,17 @@ cargo bench -p fx-core --bench core         # 動到排序／篩選／列舉時
 
 ## 專案結構
 
-- `crates/fx-core`：與 UI 無關、可測試的核心（列舉、排序／篩選、命令語言、快速鍵、主題、設定）。
-- `crates/fx-app`：Win32 視窗、繪製（`gfx`、`view`）、輸入、Shell 整合（`shell`）、背景服務（`services`）、效能模式（`perf`）。
-- 使用者資料：`%APPDATA%\fx\config.toml`（設定）、`themes\*.toml`（主題）、`session.toml`（上次的視窗與分頁）。
+- `crates/zing-core`：與 UI 無關、可測試的核心（列舉、排序／篩選、命令語言、快速鍵、主題、設定）。
+- `crates/zing-app`：Win32 視窗、繪製（`gfx`、`view`）、輸入、Shell 整合（`shell`）、背景服務（`services`）、效能模式（`perf`）。
+  圖示的原始檔是 `assets/zing.svg`（24 px 以下用 `zing-small.svg`），修改後執行 `pwsh tools/make-icon.ps1` 重新產生 `zing.ico`；
+  圖示與版本資訊由 `build.rs` 以 Windows SDK 的 `rc.exe` 編譯進執行檔。
+- 資料存放位置：
+  - 使用者的設定與習慣放在 `zing.exe` 所在的資料夾（可攜式，重灌系統不受影響）：`config.toml`（設定）、
+    `themes\*.toml`（主題）、`session.toml`（視窗、分頁、我的最愛、命令面板最近使用）。路徑一律經 `settings::app_dir()`。
+  - 系統產生、可重建的資料（資料夾大小快取、縮圖快取…）放在 `%LOCALAPPDATA%\zing-explore\`（只屬於這台電腦、不漫遊，
+    刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。
+  - 不要把 `zing.exe` 放在使用者無法寫入的位置（如 Program Files）；開發時從 `target\release` 執行，設定會在
+    `cargo clean` 時一起被刪除。
 
 ## 已確認的決策
 

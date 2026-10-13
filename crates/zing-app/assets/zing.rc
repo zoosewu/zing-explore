@@ -1,0 +1,31 @@
+// zing.exe 的資源：圖示與版本資訊（應用程式資訊清單由連結器嵌入，見 build.rs）
+// 不引用 SDK 標頭，常數直接寫數值
+
+1 ICON "zing.ico"
+
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEFLAGSMASK 0x3F
+FILEFLAGS 0x0
+FILEOS 0x40004
+FILETYPE 0x1
+FILESUBTYPE 0x0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "zing-explore"
+            VALUE "FileVersion", "0.1.0"
+            VALUE "InternalName", "zing"
+            VALUE "OriginalFilename", "zing.exe"
+            VALUE "ProductName", "zing-explore"
+            VALUE "ProductVersion", "0.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

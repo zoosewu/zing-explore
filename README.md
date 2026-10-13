@@ -1,6 +1,6 @@
-# fx
+# zing-explore
 
-輕量、快速、可自訂的 Windows 11 檔案總管。Rust + Win32 + Direct2D，執行檔約 1 MB。
+輕量、快速、可自訂的 Windows 11 檔案總管（執行檔 `zing.exe`）。Rust + Win32 + Direct2D，執行檔約 1 MB。
 
 ## 建置與執行
 
@@ -8,7 +8,7 @@
 
 ```powershell
 cargo build --release
-.\target\release\fx.exe
+.\target\release\zing.exe
 ```
 
 ## 目前功能（MVP）
@@ -29,8 +29,9 @@ cargo build --release
 
 ## 自訂
 
-設定檔：`%APPDATA%\fx\config.toml`（`Ctrl+,` 開啟，`Ctrl+Shift+R` 重新載入）。
-範本見 [`crates/fx-core/src/default_config.toml`](crates/fx-core/src/default_config.toml)。
+設定檔：`zing.exe` 旁的 `config.toml`（`Ctrl+,` 開啟，`Ctrl+Shift+R` 重新載入）。設定、主題與工作階段都放在程式所在的資料夾（可攜式），
+重灌系統或換電腦時連同程式一起複製即可；請放在一般使用者可寫入的位置（不要放在 Program Files）。
+範本見 [`crates/zing-core/src/default_config.toml`](crates/zing-core/src/default_config.toml)。
 
 ```toml
 theme = "dark"          # dark | light | system | 自訂主題名稱
@@ -44,7 +45,7 @@ label = "用 VS Code 開啟"
 cmd = "run code {sel}"
 ```
 
-主題檔放在 `%APPDATA%\fx\themes\<名稱>.toml`，只需寫要改的欄位，其餘沿用內建值。
+主題檔放在 `zing.exe` 旁的 `themes\<名稱>.toml`，只需寫要改的欄位，其餘沿用內建值。
 
 ## 效能
 

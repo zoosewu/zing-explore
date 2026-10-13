@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>zing-explore（24 px 以下：去掉速度線、加粗筆畫）</title>
+  <rect width="256" height="256" rx="60" fill="#15171C"/>
+  <path fill="#FFD23F" d="M64 56h128v36l-80 72h80v36H64v-36l80-72H64z"/>
+</svg>

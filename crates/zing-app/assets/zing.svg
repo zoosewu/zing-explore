@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>zing-explore</title>
+  <rect width="256" height="256" rx="60" fill="#15171C"/>
+  <path fill="#FFD23F" d="M100 68h100v26l-66 68h66v26H100v-26l66-68h-66z"/>
+  <rect x="36" y="100" width="48" height="16" rx="8" fill="#FFD23F"/>
+  <rect x="52" y="132" width="32" height="16" rx="8" fill="#FFD23F"/>
+</svg>

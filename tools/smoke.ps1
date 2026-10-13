@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    fx 自動化 UI 冒煙測試。建立暫存測試資料夾，以 --smoke 模式執行 fx（debug build，含 UI 執行緒 I/O 防呆），
+    zing-explore 自動化 UI 冒煙測試。建立暫存測試資料夾，以 --smoke 模式執行 zing（debug build，含 UI 執行緒 I/O 防呆），
     印出每一步的結果；任一步失敗、狀態列出現錯誤或防呆有回報時結束代碼為 1。
 
     測試在程序內送出視窗訊息，不移動真實游標、視窗不搶前景，使用電腦時也可以執行。
@@ -21,7 +21,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $profileDir = if ($Release) { 'release' } else { 'debug' }
-$exe = Join-Path $root "target\$profileDir\fx.exe"
+$exe = Join-Path $root "target\$profileDir\zing.exe"
 $shots = Join-Path $root 'target\smoke'
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
@@ -29,13 +29,13 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 }
 if (-not $SkipBuild) {
     Push-Location $root
-    if ($Release) { cargo build --release -p fx-app --features smoke } else { cargo build -p fx-app --features smoke }
+    if ($Release) { cargo build --release -p zing-app --features smoke } else { cargo build -p zing-app --features smoke }
     if ($LASTEXITCODE -ne 0) { throw 'cargo build 失敗' }
     Pop-Location
 }
 
-# 測試資料夾（內容必須與 crates/fx-app/src/smoke.rs 的步驟一致）
-$dir = Join-Path $env:TEMP ("fx-smoke-{0}" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+# 測試資料夾（內容必須與 crates/zing-app/src/smoke.rs 的步驟一致）
+$dir = Join-Path $env:TEMP ("zing-smoke-{0}" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory $dir | Out-Null
 $a = New-Item -ItemType Directory (Join-Path $dir '資料夾A')
 $b = New-Item -ItemType Directory (Join-Path $dir '資料夾B')
@@ -53,7 +53,7 @@ $fs.SetLength(384MB)
 $fs.Dispose()
 
 if (Test-Path $shots) { Remove-Item -Recurse -Force $shots }
-$out = Join-Path $env:TEMP ("fx-smoke-{0}.json" -f [guid]::NewGuid())
+$out = Join-Path $env:TEMP ("zing-smoke-{0}.json" -f [guid]::NewGuid())
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $p = Start-Process -FilePath $exe -ArgumentList "--smoke-out=`"$out`"", "--smoke-dir=`"$dir`"", "--smoke-shots=`"$shots`"" -PassThru
 $timedOut = -not $p.WaitForExit($TimeoutSec * 1000)
@@ -62,9 +62,9 @@ $sw.Stop()
 
 try {
     if (-not (Test-Path $out)) {
-        $why = if ($timedOut) { "fx 逾時（$TimeoutSec 秒）" }
-               elseif ($p.ExitCode -eq 2) { 'fx 不含冒煙測試功能：請不要加 -SkipBuild，或先以 --features smoke 建置' }
-               else { "fx 沒有輸出結果（結束代碼 $($p.ExitCode)）" }
+        $why = if ($timedOut) { "zing 逾時（$TimeoutSec 秒）" }
+               elseif ($p.ExitCode -eq 2) { 'zing 不含冒煙測試功能：請不要加 -SkipBuild，或先以 --features smoke 建置' }
+               else { "zing 沒有輸出結果（結束代碼 $($p.ExitCode)）" }
         throw $why
     }
     $r = Get-Content $out -Raw | ConvertFrom-Json

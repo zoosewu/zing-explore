@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/fx-core", "crates/fx-app"]
+members = ["crates/zing-core", "crates/zing-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,7 +8,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-fx-core = { path = "crates/fx-core" }
+zing-core = { path = "crates/zing-core" }
 serde = { version = "1", features = ["derive"] }
 toml = { version = "1", default-features = false, features = ["parse", "serde", "display"] }
 windows = "0.62"

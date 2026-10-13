@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    fx 效能門檻檢查。每次變更後執行；任一指標超標或相對基準退步 >5% 即失敗（結束代碼 1）。
+    zing-explore 效能門檻檢查。每次變更後執行；任一指標超標或相對基準退步 >5% 即失敗（結束代碼 1）。
 
 .EXAMPLE
     pwsh tools/perf.ps1                 # 建置 release 並量測
@@ -15,7 +15,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $root 'target\release\fx.exe'
+$exe = Join-Path $root 'target\release\zing.exe'
 $baselinePath = Join-Path $root 'perf\baseline.json'
 $resultsDir = Join-Path $root 'perf\results'
 New-Item -ItemType Directory -Force $resultsDir | Out-Null
@@ -43,23 +43,23 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 
 if (-not $SkipBuild) {
     Push-Location $root
-    cargo build --release -p fx-app
+    cargo build --release -p zing-app
     if ($LASTEXITCODE -ne 0) { throw 'cargo build 失敗' }
     Pop-Location
 }
 
-function Invoke-Fx([string[]]$fxArgs, [int]$timeoutMs = 60000) {
-    $out = Join-Path $env:TEMP ("fx-perf-{0}.json" -f [guid]::NewGuid())
-    $p = Start-Process -FilePath $exe -ArgumentList (@("--perf-out=$out") + $fxArgs) -PassThru
-    if (-not $p.WaitForExit($timeoutMs)) { $p.Kill(); throw "fx 逾時：$fxArgs" }
-    if (-not (Test-Path $out)) { throw "fx 沒有輸出結果：$fxArgs" }
+function Invoke-Zing([string[]]$zingArgs, [int]$timeoutMs = 60000) {
+    $out = Join-Path $env:TEMP ("zing-perf-{0}.json" -f [guid]::NewGuid())
+    $p = Start-Process -FilePath $exe -ArgumentList (@("--perf-out=$out") + $zingArgs) -PassThru
+    if (-not $p.WaitForExit($timeoutMs)) { $p.Kill(); throw "zing 逾時：$zingArgs" }
+    if (-not (Test-Path $out)) { throw "zing 沒有輸出結果：$zingArgs" }
     $r = Get-Content $out -Raw | ConvertFrom-Json
     Remove-Item $out
     return $r
 }
 
 # 測試資料夾：$Files 個檔案（每 100 個有一個資料夾），只建立一次
-$benchDir = Join-Path $env:TEMP "fx-perf-$Files"
+$benchDir = Join-Path $env:TEMP "zing-perf-$Files"
 if (-not (Test-Path (Join-Path $benchDir '.complete'))) {
     Write-Host "建立測試資料夾 $benchDir（$Files 個項目，只需一次）..."
     New-Item -ItemType Directory -Force $benchDir | Out-Null
@@ -79,16 +79,16 @@ $results = [ordered]@{}
 $results.exe_mb = [math]::Round((Get-Item $exe).Length / 1MB, 3)
 
 Write-Host "量測冷啟動（$Runs 次）..."
-$startups = 1..$Runs | ForEach-Object { (Invoke-Fx @()).startup_ms }
+$startups = 1..$Runs | ForEach-Object { (Invoke-Zing @()).startup_ms }
 $sorted = $startups | Sort-Object
 $results.startup_ms = [math]::Round($sorted[[int][math]::Floor(($sorted.Count - 1) / 2)], 2)
 
 Write-Host '量測閒置記憶體（啟動 5 秒後）...'
-$results.private_working_set_mb = [math]::Round((Invoke-Fx @('--perf-idle-ms=5000')).private_working_set_mb, 2)
+$results.private_working_set_mb = [math]::Round((Invoke-Zing @('--perf-idle-ms=5000')).private_working_set_mb, 2)
 
 # 單次的 p99 雜訊大，跑 3 次取各指標的中位數
 Write-Host "量測開啟 $Files 個項目的資料夾、捲動與主題切換（3 次）..."
-$folderRuns = 1..3 | ForEach-Object { Invoke-Fx @("--perf-dir=$benchDir", '--perf-scroll-frames=300', '--perf-theme') }
+$folderRuns = 1..3 | ForEach-Object { Invoke-Zing @("--perf-dir=$benchDir", '--perf-scroll-frames=300', '--perf-theme') }
 foreach ($k in 'first_screen_ms', 'load_all_ms', 'frame_p50_ms', 'frame_p99_ms', 'frame_max_ms', 'frames_over_8ms', 'theme_switch_ms', 'listing_mb', 'scroll_warp') {
     $vals = @($folderRuns | ForEach-Object { $_.$k } | Where-Object { $null -ne $_ } | Sort-Object)
     if ($vals.Count -gt 0) { $results[$k] = [math]::Round($vals[[int][math]::Floor(($vals.Count - 1) / 2)], 2) }
