@@ -65,6 +65,11 @@ impl App {
                 self.cols[col] = clamp_col(start_w - (x - start_x));
                 self.invalidate();
             }
+            Some(Press::PreviewSplit { start_x, start_w }) => {
+                // 預覽窗格在右側：往左拖變寬
+                self.preview.width = (start_w - (x - start_x)).clamp(200.0, 900.0);
+                self.invalidate();
+            }
             Some(Press::TreeSplit { start_x, start_w }) => {
                 let dx = x - start_x;
                 let right = self.tree_side == zing_core::config::TreeSide::Right;
@@ -123,6 +128,10 @@ impl App {
                 self.open_tree_node(i);
             }
             Hit::TreeEmpty => self.focus = Focus::Tree,
+            Hit::Preview => {}
+            Hit::PreviewSplitter => {
+                self.press = Some(Press::PreviewSplit { start_x: x, start_w: self.preview.width });
+            }
             Hit::TreeSplitter => {
                 self.press = Some(Press::TreeSplit { start_x: x, start_w: self.tree_width });
             }
@@ -316,6 +325,13 @@ impl App {
         }
         let lines = 3.0 * delta as f32 / 120.0;
         let step = lines * self.row_h();
+        if let Some(pr) = self.layout.preview.filter(|r| r.contains(x, y)) {
+            let (_, content, _) = self.preview_rects(pr);
+            let max = self.preview_max_scroll(content.h());
+            self.preview.scroll = (self.preview.scroll - lines * self.caption_line_h()).clamp(0.0, max);
+            self.invalidate();
+            return;
+        }
         if let Some(tr) = self.layout.tree.filter(|r| r.contains(x, y)) {
             let max = self.tree_max_scroll(tr.h());
             self.tree.scroll = (self.tree.scroll - step).clamp(0.0, max);

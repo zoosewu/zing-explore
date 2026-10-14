@@ -17,6 +17,8 @@ use crate::icons::IconKey;
 use crate::model::NodeKind;
 
 pub const SCROLLBAR_W: f32 = 10.0;
+/// 預覽窗格最多顯示的屬性列數
+const PREVIEW_PROPS: usize = 12;
 pub const NAV_BTN: f32 = 32.0;
 const SPLITTER_W: f32 = 5.0;
 const COL_MIN: f32 = 48.0;
@@ -50,6 +52,9 @@ pub struct Layout {
     pub buttons: Vec<Rect>,
     pub tree: Option<Rect>,
     pub tree_splitter: Option<Rect>,
+    /// 預覽窗格（窗格區域右側）
+    pub preview: Option<Rect>,
+    pub preview_splitter: Option<Rect>,
     pub panes: Vec<PaneLayout>,
     /// 檔案作業面板（狀態列上方）
     pub jobs: Option<Rect>,
@@ -69,6 +74,8 @@ pub enum Hit {
     TreeArrow(usize),
     TreeEmpty,
     TreeSplitter,
+    Preview,
+    PreviewSplitter,
     Tab(usize, usize),
     TabClose(usize, usize),
     TabNew(usize),
@@ -188,6 +195,13 @@ impl App {
                 panes_area.l = tw + 1.0;
             }
         }
+        if self.preview.visible {
+            let pv = self.preview.width.clamp(200.0, (panes_area.w() * 0.6).max(200.0));
+            let l = panes_area.r - pv;
+            lay.preview = Some(Rect::new(l, body.t, panes_area.r, body.b));
+            lay.preview_splitter = Some(Rect::new(l - SPLITTER_W / 2.0, body.t, l + SPLITTER_W / 2.0, body.b));
+            panes_area.r = l - 1.0;
+        }
         let n = self.panes.len().max(1) as f32;
         let pw = (panes_area.w() - (n - 1.0)) / n;
         for (i, pane) in self.panes.iter().enumerate() {
@@ -306,6 +320,12 @@ impl App {
         if lay.tree_splitter.is_some_and(|r| r.contains(x, y)) {
             return Hit::TreeSplitter;
         }
+        if lay.preview_splitter.is_some_and(|r| r.contains(x, y)) {
+            return Hit::PreviewSplitter;
+        }
+        if lay.preview.is_some_and(|r| r.contains(x, y)) {
+            return Hit::Preview;
+        }
         if let Some(tr) = lay.tree.filter(|r| r.contains(x, y)) {
             let rh = self.row_h();
             let i = ((y - tr.t - 4.0 + self.tree.scroll) / rh).floor();
@@ -397,6 +417,10 @@ impl App {
         if let Some(tr) = lay.tree {
             let x = if self.tree_side == TreeSide::Right { tr.l - 1.0 } else { tr.r };
             self.gfx.vline(x, tr.t, tr.b, c.border);
+        }
+        if let Some(pr) = lay.preview {
+            self.paint_preview(pr);
+            self.gfx.vline(pr.l - 1.0, pr.t, pr.b, c.border);
         }
         // 縮圖：釋放快取丟掉的點陣圖；這一幀沒要求、還在排隊的工作取消
         let evicted = self.thumbs.take_evicted();
@@ -752,6 +776,76 @@ impl App {
             g.push_clip(capr);
             g.text_w(tab.listing.name(e), Font::Caption, capr, col);
             g.pop_clip();
+        }
+    }
+
+    /// 預覽窗格內各區塊：(名稱列, 內容, 屬性區)
+    pub fn preview_rects(&self, r: Rect) -> (Rect, Rect, Rect) {
+        let rh = self.row_h();
+        let inner = r.inset(12.0, 10.0);
+        let rows = self.preview.loaded.as_ref().map_or(0, |l| {
+            let folder = matches!(l.body, crate::preview::Body::Folder { items: Some(_), .. }) as usize;
+            l.props.len().min(PREVIEW_PROPS) + folder
+        });
+        let props_h = rows as f32 * rh;
+        let name = Rect::new(inner.l, inner.t, inner.r, inner.t + rh);
+        let props = Rect::new(inner.l, inner.b - props_h, inner.r, inner.b);
+        let content = Rect::new(inner.l, name.b + 8.0, inner.r, (props.t - if rows > 0 { 10.0 } else { 0.0 }).max(name.b + 8.0));
+        (name, content, props)
+    }
+
+    fn paint_preview(&self, r: Rect) {
+        use crate::preview::Body;
+        let c = &self.theme.color;
+        let g = &self.gfx;
+        g.fill(r, c.surface);
+        let (name_r, content, props_r) = self.preview_rects(r);
+        let rh = self.row_h();
+        let Some(ld) = self.preview.loaded.as_ref().filter(|l| l.path == self.preview.target) else {
+            let msg = if self.preview.target.is_empty() { "選取檔案以預覽" } else { "載入中…" };
+            g.text(msg, Font::Text, name_r, c.text_secondary);
+            return;
+        };
+        let name = path::file_name(&ld.path);
+        g.text(if name.is_empty() { &ld.path } else { name }, Font::Bold, name_r, c.text);
+        match &ld.body {
+            Body::Image(Some(p)) | Body::Folder { image: Some(p), .. } => {
+                g.preview_image(self.preview.image_id, p, content);
+            }
+            Body::Image(None) | Body::Folder { image: None, .. } => {
+                g.text("沒有可用的預覽", Font::Text, Rect::new(content.l, content.t, content.r, content.t + rh), c.text_secondary);
+            }
+            Body::Text { lines, truncated } => {
+                let lh = self.caption_line_h();
+                g.push_clip(content);
+                let first = (self.preview.scroll / lh).floor().max(0.0) as usize;
+                for (k, line) in lines.iter().enumerate().skip(first) {
+                    let y = content.t + k as f32 * lh - self.preview.scroll;
+                    if y > content.b {
+                        break;
+                    }
+                    g.text(line, Font::Mono, Rect::new(content.l, y, content.r + 2000.0, y + lh), c.text);
+                }
+                if *truncated && first + ((content.h() / lh) as usize) >= lines.len() {
+                    let y = content.t + lines.len() as f32 * lh - self.preview.scroll;
+                    g.text("（只顯示檔案開頭）", Font::Small, Rect::new(content.l, y, content.r, y + lh), c.text_secondary);
+                }
+                g.pop_clip();
+            }
+        }
+        // 屬性：名稱與值兩欄
+        let label_w = (props_r.w() * 0.4).min(130.0);
+        let mut y = props_r.t;
+        let mut row = |label: &str, value: &str| {
+            g.text(label, Font::Small, Rect::new(props_r.l, y, props_r.l + label_w, y + rh), c.text_secondary);
+            g.text(value, Font::Small, Rect::new(props_r.l + label_w + 8.0, y, props_r.r, y + rh), c.text);
+            y += rh;
+        };
+        if let Body::Folder { items: Some(n), .. } = &ld.body {
+            row("項目", &format!("{n} 個"));
+        }
+        for (l, v) in ld.props.iter().take(PREVIEW_PROPS) {
+            row(l, v);
         }
     }
 

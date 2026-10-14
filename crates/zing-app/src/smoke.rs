@@ -1533,6 +1533,87 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
     ));
 
+    // ------------------------------------------------ 預覽窗格
+    v.push(step("預覽：Alt+P 開啟預覽窗格", |c| key(c, "a", letter('p')), |_, a| {
+        expect("顯示", a.preview.visible, true)?;
+        if a.layout.preview.is_some() { Ok(()) } else { Err("版面沒有預覽窗格".into()) }
+    }));
+    v.push(
+        step("預覽：文字檔顯示內容與屬性", |c| click(c, "", row_pos("報告 10.txt")), {
+            let d = d.clone();
+            move |_, a| {
+                let ld = a.preview.loaded.as_ref().ok_or("還沒有內容")?;
+                expect("路徑", ld.path.as_str(), path::join(&d, "報告 10.txt").as_str())?;
+                match &ld.body {
+                    crate::preview::Body::Text { lines, .. } => expect("第一行", lines.first().map(String::as_str), Some("報告 10.txt"))?,
+                    _ => return Err("不是文字預覽".into()),
+                }
+                if ld.props.is_empty() { Err("沒有屬性".into()) } else { Ok(()) }
+            }
+        })
+        .slow(),
+    );
+    v.push(
+        step("預覽：資料夾顯示項目數", |c| click(c, "", row_pos("資料夾A")), |_, a| {
+            let ld = a.preview.loaded.as_ref().ok_or("還沒有內容")?;
+            if !ld.path.ends_with("資料夾A") {
+                return Err(format!("路徑 {}", ld.path));
+            }
+            match &ld.body {
+                crate::preview::Body::Folder { items: Some(n), .. } if *n > 0 => Ok(()),
+                _ => Err("沒有項目數".into()),
+            }
+        })
+        .slow(),
+    );
+    v.push(
+        step(
+            "預覽：新增圖片檔（清單自動更新）",
+            {
+                let d = d.clone();
+                // 資料夾監看會讓清單自動重新整理
+                move |_| {
+                    let _ = std::fs::write(path::join(&d, "預覽圖.png"), TINY_PNG);
+                }
+            },
+            |_, a| {
+                if a.tab().find_view("預覽圖.png").is_none() {
+                    return Err("清單還沒有預覽圖.png".into());
+                }
+                Ok(())
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step("預覽：點選圖片", |c| click(c, "", row_pos("預覽圖.png")), |_, a| {
+            let ld = a.preview.loaded.as_ref().ok_or("還沒有內容")?;
+            if !ld.path.ends_with("預覽圖.png") {
+                return Err(format!("路徑 {}", ld.path));
+            }
+            match &ld.body {
+                crate::preview::Body::Image(Some(_)) => Ok(()),
+                _ => Err("沒有圖片".into()),
+            }
+        })
+        .slow(),
+    );
+    v.push(step("截圖：預覽窗格", |_| {}, |c, _| screenshot(c, "08-預覽")));
+    v.push(step(
+        "預覽：Alt+P 關閉",
+        {
+            let d = d.clone();
+            move |c| {
+                key(c, "a", letter('p'));
+                let _ = std::fs::remove_file(path::join(&d, "預覽圖.png"));
+            }
+        },
+        |_, a| {
+            expect("顯示", a.preview.visible, false)?;
+            if a.layout.preview.is_none() { Ok(()) } else { Err("版面仍有預覽窗格".into()) }
+        },
+    ));
+
     // 狀態列錯誤與 UI 執行緒 I/O 防呆的回報在 finish() 統一檢查
     v.push(step("截圖：結束畫面", |_| {}, |c, _| screenshot(c, "03-結束")));
     v

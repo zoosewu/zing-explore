@@ -16,5 +16,6 @@ pub mod palette;
 pub mod path;
 pub mod sort;
 pub mod text;
+pub mod textpreview;
 pub mod theme;
 pub mod volindex;

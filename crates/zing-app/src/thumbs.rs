@@ -333,7 +333,7 @@ fn produce(shared: &Shared, job: &Job) -> (Option<IconPixels>, Source) {
 }
 
 /// Windows 的縮圖（沒有縮圖處理常式時是大圖示），轉成預乘 alpha 的 BGRA
-fn shell_image(p: &str, px: u32) -> Option<IconPixels> {
+pub(crate) fn shell_image(p: &str, px: u32) -> Option<IconPixels> {
     let w = wide_z(&path::long_form(p));
     unsafe {
         let factory: IShellItemImageFactory = SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None).ok()?;

@@ -139,6 +139,8 @@ pub struct Gfx {
     /// 圖示點陣圖（屬於目前的裝置，換裝置時清空，再由 Icons 的像素重建）
     icon_bitmaps: RefCell<HashMap<u32, ID2D1Bitmap1>>,
     thumb_bitmaps: RefCell<HashMap<u32, ID2D1Bitmap1>>,
+    /// 預覽窗格目前的圖片（版本, 點陣圖）
+    preview_bitmap: RefCell<Option<(u32, ID2D1Bitmap1)>>,
     /// 上一幀 EndDraw（GPU 清空）與 Present 的耗時（毫秒），供效能測試拆解幀時間
     pub last_end_ms: (f64, f64),
 }
@@ -204,6 +206,7 @@ impl Gfx {
             widths: RefCell::new(HashMap::new()),
             icon_bitmaps: RefCell::new(HashMap::new()),
             thumb_bitmaps: RefCell::new(HashMap::new()),
+            preview_bitmap: RefCell::new(None),
             last_end_ms: (0.0, 0.0),
         })
     }
@@ -293,6 +296,7 @@ impl Gfx {
         self.dev = None;
         self.icon_bitmaps.borrow_mut().clear();
         self.thumb_bitmaps.borrow_mut().clear();
+        self.preview_bitmap.borrow_mut().take();
         match self.build_device(d3d, false) {
             Ok(d) => {
                 self.dev = Some(d);
@@ -342,6 +346,7 @@ impl Gfx {
             self.dev = Some(self.build_device(d3d, warp)?);
             self.icon_bitmaps.borrow_mut().clear();
         self.thumb_bitmaps.borrow_mut().clear();
+        self.preview_bitmap.borrow_mut().take();
             crate::perf::mark("device");
         }
         let d = self.dev.as_mut().unwrap();
@@ -406,6 +411,7 @@ impl Gfx {
         self.dev = None;
         self.icon_bitmaps.borrow_mut().clear();
         self.thumb_bitmaps.borrow_mut().clear();
+        self.preview_bitmap.borrow_mut().take();
         // 下一次成功呈現後重新在背景建立硬體裝置
         self.hw_rx = None;
         self.hw_started = false;
@@ -450,6 +456,44 @@ impl Gfx {
 
     pub fn vline(&self, x: f32, y0: f32, y1: f32, c: Color) {
         self.fill(Rect::new(x, y0, x + 1.0, y1), c);
+    }
+
+    pub fn drop_preview(&self) {
+        self.preview_bitmap.borrow_mut().take();
+    }
+
+    /// 預覽窗格的圖片：`version` 變了才重建點陣圖；在 `r` 內等比縮放（不放大超過原圖）、置中
+    pub fn preview_image(&self, version: u32, p: &crate::icons::IconPixels, r: Rect) -> bool {
+        let Some(rt) = &self.rt else { return false };
+        let mut slot = self.preview_bitmap.borrow_mut();
+        if slot.as_ref().is_none_or(|(v, _)| *v != version) {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                ..Default::default()
+            };
+            let Ok(b) = (unsafe {
+                rt.CreateBitmap(D2D_SIZE_U { width: p.w, height: p.h }, Some(p.bgra.as_ptr() as *const _), p.w * 4, &props)
+            }) else {
+                return false;
+            };
+            *slot = Some((version, b));
+        }
+        let (bw, bh) = (p.w as f32, p.h as f32);
+        if bw <= 0.0 || bh <= 0.0 || r.w() <= 0.0 || r.h() <= 0.0 {
+            return false;
+        }
+        let s = self.scale();
+        let k = (r.w() / (bw / s)).min(r.h() / (bh / s)).min(1.0);
+        let (w, h) = (bw / s * k, bh / s * k);
+        let snap = |v: f32| (v * s).round() / s;
+        let l = snap(r.l + (r.w() - w) / 2.0);
+        let t = snap(r.t + (r.h() - h) / 2.0);
+        let dest = Rect::new(l, t, l + w, t + h);
+        let bmp = &slot.as_ref().unwrap().1;
+        unsafe { rt.DrawBitmap(bmp, Some(&dest.d2d()), 1.0, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None) };
+        true
     }
 
     /// 縮圖快取丟掉的項目：一併釋放點陣圖

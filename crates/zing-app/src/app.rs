@@ -42,6 +42,8 @@ pub const TIMER_EXIT: usize = 7;
 /// 輪詢索引服務，確認目前顯示的資料夾大小有沒有變動
 pub const TIMER_INDEX: usize = 8;
 pub const INDEX_POLL_MS: u32 = 2000;
+/// 預覽窗格：焦點停留一段時間才讀取
+pub const TIMER_PREVIEW: usize = 9;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -63,6 +65,7 @@ pub enum Press {
     Scroll { pane: usize, grab: f32 },
     ColResize { col: usize, start_x: f32, start_w: f32 },
     TreeSplit { start_x: f32, start_w: f32 },
+    PreviewSplit { start_x: f32, start_w: f32 },
 }
 
 /// 有自己訊息迴圈的動作：必須在釋放 App 借用後才執行（見 window.rs）
@@ -95,6 +98,7 @@ pub struct App {
     /// 第一幀之後才開始預先載入樹狀列
     pub probes_enabled: bool,
     pub tree_visible: bool,
+    pub preview: crate::preview::Preview,
     pub tree_side: TreeSide,
     pub tree_width: f32,
     pub focus: Focus,
@@ -177,6 +181,7 @@ impl App {
             rules: theme.compiled_rules(),
             tree_side: config.layout.tree,
             tree_visible: session.tree_visible,
+            preview: crate::preview::Preview::new(session.preview_visible, session.preview_width.unwrap_or(360.0)),
             tree_width: session.tree_width.unwrap_or(theme.metrics.tree_width),
             cols: session.columns.unwrap_or([150.0, 120.0, 100.0]),
             theme,
@@ -262,6 +267,8 @@ impl App {
             active_pane: self.active_pane,
             tree_visible: self.tree_visible,
             tree_width: Some(self.tree_width),
+            preview_visible: self.preview.visible,
+            preview_width: Some(self.preview.width),
             columns: Some(self.cols),
             favorites: self.session.favorites.clone(),
             palette_recent: self.palette_recent.clone(),
@@ -716,6 +723,7 @@ impl App {
             Msg::FolderSize { parent, name, size, done } => self.on_folder_size(parent, name, size, done),
             Msg::FolderSizesLoaded(lines) => self.on_size_cache_loaded(lines),
             Msg::FolderViewsLoaded(v) => self.on_folder_views_loaded(v),
+            Msg::Preview { generation, loaded } => self.on_preview_loaded(generation, *loaded),
             Msg::Thumb { id, pixels, source } => {
                 self.thumbs.store(id, pixels, source);
                 self.invalidate();
@@ -1001,6 +1009,7 @@ impl App {
                 self.set_sort(key, asc);
             }
             "view.foldersizes" => self.compute_folder_sizes(p, false, false),
+            "view.preview" => self.toggle_preview(),
             "view.mode" => {
                 let mode = inv.flag("mode").or_else(|| inv.positional().next()).unwrap_or("list").to_string();
                 self.set_view_mode(p, &mode)?;

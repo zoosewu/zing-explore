@@ -148,6 +148,10 @@ cmd = "view.foldersizes"
 
 # 檢視：清單／小／中／大縮圖（Ctrl+滾輪可連續調整縮圖大小），每個資料夾分別記住
 [[key]]
+key = "Alt+P"
+cmd = "view.preview"
+
+[[key]]
 key = "Ctrl+Shift+1"
 cmd = "view.mode list"
 

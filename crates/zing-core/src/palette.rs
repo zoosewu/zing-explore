@@ -41,6 +41,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("view.sort --by=size", "依大小排序"),
     ("view.togglehidden", "顯示／隱藏隱藏檔案"),
     ("view.foldersizes", "計算資料夾大小"),
+    ("view.preview", "顯示／隱藏預覽窗格"),
     ("view.mode list", "檢視：清單"),
     ("view.mode small", "檢視：小縮圖"),
     ("view.mode medium", "檢視：中縮圖"),

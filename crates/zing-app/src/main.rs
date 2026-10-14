@@ -11,6 +11,7 @@ mod jobs;
 mod model;
 mod palette;
 mod perf;
+mod preview;
 mod services;
 mod settings;
 mod shell;

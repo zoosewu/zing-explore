@@ -474,6 +474,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             }
             with_app(|a| {
                 a.schedule_tree_probes();
+                a.update_preview_target();
                 a.paint();
                 crate::perf::after_paint(a);
             });
@@ -577,8 +578,17 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         }
         WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT => {
             let resize = with_app(|a| {
-                matches!(a.hover, crate::view::Hit::HeaderEdge(..) | crate::view::Hit::TreeSplitter)
-                    || matches!(a.press, Some(crate::app::Press::ColResize { .. } | crate::app::Press::TreeSplit { .. }))
+                matches!(
+                    a.hover,
+                    crate::view::Hit::HeaderEdge(..) | crate::view::Hit::TreeSplitter | crate::view::Hit::PreviewSplitter
+                ) || matches!(
+                    a.press,
+                    Some(
+                        crate::app::Press::ColResize { .. }
+                            | crate::app::Press::TreeSplit { .. }
+                            | crate::app::Press::PreviewSplit { .. }
+                    )
+                )
             })
             .unwrap_or(false);
             if resize {
@@ -666,6 +676,9 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                     with_app(crate::perf::after_paint);
                 }
                 TIMER_SMOKE => crate::smoke::tick(hwnd),
+                crate::app::TIMER_PREVIEW => {
+                    with_app(|a| a.on_preview_timer());
+                }
                 crate::app::TIMER_INDEX => {
                     with_app(|a| a.poll_index());
                 }
