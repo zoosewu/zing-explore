@@ -113,6 +113,7 @@ pub struct App {
     /// 已確認結束，等待檔案作業取消完成後關閉視窗
     pub pending_exit: bool,
     pub icons: Icons,
+    pub thumbs: crate::thumbs::Thumbs,
     pub shell_host: ShellHost,
     next_tab_id: TabId,
     pub status: Option<(String, bool, Instant)>,
@@ -159,6 +160,8 @@ impl App {
         let pool = Pool::new(threads);
         let fileops = FileOps::new(notifier.clone());
         let icons = Icons::new(notifier.clone());
+        let thumbs = crate::thumbs::Thumbs::new(notifier.clone(), crate::thumbs::cache_dir(isolated));
+        thumbs.set_thumbnailers(config.thumbnailers.clone());
         let shell_host = ShellHost::new(notifier.clone(), hwnd);
 
         let mut favorites = config.favorites.clone();
@@ -195,6 +198,7 @@ impl App {
             folder_views: Default::default(),
             pending_exit: false,
             icons,
+            thumbs,
             shell_host,
             next_tab_id: 1,
             status: None,
@@ -294,8 +298,8 @@ impl App {
     fn new_tab(&mut self, p: String) -> Tab {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        let spec = self.folder_views.get(&p).sort;
-        Tab::new(id, p, spec)
+        let view = self.folder_views.get(&p);
+        Tab::new(id, p, view)
     }
 
     fn find_tab(&self, id: TabId) -> Option<(usize, usize)> {
@@ -354,7 +358,7 @@ impl App {
 
     pub fn navigate(&mut self, p: usize, target: String, record: bool) {
         let target = path::normalize(&target);
-        let spec = self.folder_views.get(&target).sort;
+        let view = self.folder_views.get(&target);
         let tab = self.panes[p].tab_mut();
         if record && !target.eq_ignore_ascii_case(&tab.path) {
             let old = std::mem::take(&mut tab.path);
@@ -362,7 +366,9 @@ impl App {
             tab.forward.clear();
         }
         // 套用這個資料夾記住的排序方式
-        tab.spec = spec;
+        tab.spec = view.sort;
+        tab.mode = view.mode;
+        tab.thumb = view.thumb;
         tab.path = target;
         tab.reset_contents();
         tab.watcher = None;
@@ -527,15 +533,23 @@ impl App {
     }
 
     pub fn ensure_visible(&mut self, p: usize) {
-        let list_h = self.layout.panes.get(p).map_or(400.0, |pl| pl.list.h());
-        let rh = self.row_h();
+        let list = self.layout.panes.get(p).map(|pl| pl.list);
+        let list_h = list.map_or(400.0, |l| l.h());
         let max = self.max_scroll(p, list_h);
+        let focus = self.panes[p].tab().focus;
+        // 清單：一列；縮圖：一格
+        let (y, h) = match list.and_then(|l| self.grid(p, l)) {
+            Some(g) => {
+                let c = g.cell(focus);
+                (c.y, c.h)
+            }
+            None => (focus as f32 * self.row_h(), self.row_h()),
+        };
         let tab = self.panes[p].tab_mut();
-        let y = tab.focus as f32 * rh;
         if y < tab.scroll {
             tab.scroll = y;
-        } else if y + rh > tab.scroll + list_h {
-            tab.scroll = y + rh - list_h;
+        } else if y + h > tab.scroll + list_h {
+            tab.scroll = y + h - list_h;
         }
         tab.scroll = tab.scroll.clamp(0.0, max);
     }
@@ -702,10 +716,17 @@ impl App {
             Msg::FolderSize { parent, name, size, done } => self.on_folder_size(parent, name, size, done),
             Msg::FolderSizesLoaded(lines) => self.on_size_cache_loaded(lines),
             Msg::FolderViewsLoaded(v) => self.on_folder_views_loaded(v),
+            Msg::Thumb { id, pixels, source } => {
+                self.thumbs.store(id, pixels, source);
+                self.invalidate();
+            }
             Msg::IndexSizes { parent, result } => self.on_index_sizes(parent, result),
             Msg::IndexAction { text, error, changed } => self.on_index_action(text, error, changed),
             Msg::Paste { sources, dest, cut } => self.submit_op(FileOp::Transfer { sources, dest, mov: cut }),
             Msg::ConfigLoaded { config, theme, warnings } => {
+                if config.thumbnailers != self.config.thumbnailers {
+                    self.thumbs.set_thumbnailers(config.thumbnailers.clone());
+                }
                 self.config = config;
                 self.tree_side = self.config.layout.tree;
                 self.apply_theme(theme);
@@ -878,12 +899,15 @@ impl App {
                 self.layout = self.compute_layout();
                 let tab = self.tab();
                 let pl = &self.layout.panes[p];
-                let rh = self.row_h();
                 let (items, folder) = (tab.target_paths(), tab.path.clone());
                 let (extras, target) = self.entry_menu_extras(&items, &folder);
                 let tab = self.tab();
-                let y = if items.is_empty() { pl.list.t } else { pl.list.t + (tab.focus + 1) as f32 * rh - tab.scroll };
-                let x = pl.cols[0].0 + 40.0;
+                let item = self.item_rect(p, tab.focus);
+                let y = match item {
+                    Some(r) if !items.is_empty() => r.b,
+                    _ => pl.list.t,
+                };
+                let x = if self.grid(p, pl.list).is_some() { item.map_or(pl.list.l, |r| r.l) + 16.0 } else { pl.cols[0].0 + 40.0 };
                 let s = self.gfx.scale();
                 let mut pt = POINT { x: (x * s) as i32, y: (y.clamp(pl.list.t, pl.list.b) * s) as i32 };
                 unsafe {
@@ -977,6 +1001,14 @@ impl App {
                 self.set_sort(key, asc);
             }
             "view.foldersizes" => self.compute_folder_sizes(p, false, false),
+            "view.mode" => {
+                let mode = inv.flag("mode").or_else(|| inv.positional().next()).unwrap_or("list").to_string();
+                self.set_view_mode(p, &mode)?;
+            }
+            "view.thumbsize" => {
+                let delta = inv.flag("delta").and_then(|d| d.parse::<i32>().ok()).ok_or("view.thumbsize 需要 --delta=")?;
+                self.zoom_thumbs(p, delta);
+            }
             "index.install" | "index.uninstall" | "index.status" => self.index_command(&inv.name),
             "view.togglehidden" => {
                 self.show_hidden = !self.show_hidden;

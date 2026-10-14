@@ -16,6 +16,7 @@ mod settings;
 mod shell;
 mod shellhost;
 mod sizes;
+mod thumbs;
 #[cfg(feature = "smoke")]
 mod smoke;
 /// 一般建置不含冒煙測試（tools/smoke.ps1 以 `--features smoke` 建置），不增加執行檔大小

@@ -63,6 +63,26 @@ pub struct Button {
     pub cmd: String,
 }
 
+/// 外部命令縮圖產生器：檔名符合 `match`（以 `;` 分隔的萬用字元）時執行 `cmd` 產生 PNG。
+/// `cmd` 中的 `{in}` 換成來源檔案、`{out}` 換成要寫入的 PNG、`{size}` 換成邊長（px）；
+/// 直接啟動程式、不經過命令殼層（需要時自行寫 `cmd /c …`）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Thumbnailer {
+    #[serde(rename = "match")]
+    pub pattern: String,
+    pub cmd: String,
+}
+
+impl Thumbnailer {
+    pub fn matches(&self, name: &[u16]) -> bool {
+        self.pattern.split(';').map(str::trim).filter(|p| !p.is_empty()).any(|p| crate::text::Pattern::new(p).matches(name))
+    }
+
+    pub fn command_line(&self, input: &str, output: &str, size: u32) -> String {
+        self.cmd.replace("{in}", input).replace("{out}", output).replace("{size}", &size.to_string())
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RawConfig {
@@ -75,6 +95,7 @@ pub struct RawConfig {
     pub folder_sizes: Option<FolderSizesConfig>,
     pub key: Vec<KeyBinding>,
     pub button: Option<Vec<Button>>,
+    pub thumbnailer: Vec<Thumbnailer>,
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +110,8 @@ pub struct Config {
     /// 解析後的快速鍵；後定義者優先
     pub keys: Vec<(KeyChord, String)>,
     pub buttons: Vec<Button>,
+    /// 外部命令縮圖產生器（預設 + 使用者，使用者的排前面、先比對）
+    pub thumbnailers: Vec<Thumbnailer>,
 }
 
 impl Config {
@@ -128,6 +151,7 @@ impl Config {
             folder_sizes: user.folder_sizes.or(base.folder_sizes).unwrap_or_default(),
             keys,
             buttons: user.button.or(base.button).unwrap_or_default(),
+            thumbnailers: user.thumbnailer.into_iter().chain(base.thumbnailer).collect(),
         };
         (cfg, warnings)
     }
@@ -144,6 +168,17 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumbnailer_match_and_command() {
+        let (cfg, w) = Config::load(Some("[[thumbnailer]]\nmatch = \"*.stl; *.3MF\"\ncmd = 'stl-thumb -s {size} \"{in}\" \"{out}\"'"));
+        assert!(w.is_empty(), "{w:?}");
+        let t = &cfg.thumbnailers[0];
+        let w16 = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        assert!(t.matches(&w16("模型.STL")) && t.matches(&w16("a.3mf")));
+        assert!(!t.matches(&w16("a.stl.txt")));
+        assert_eq!(t.command_line(r"C:\a b\x.stl", r"C:\t\1.png", 128), r#"stl-thumb -s 128 "C:\a b\x.stl" "C:\t\1.png""#);
+    }
 
     #[test]
     fn defaults_parse() {

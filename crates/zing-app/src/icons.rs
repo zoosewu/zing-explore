@@ -134,7 +134,7 @@ impl Icons {
     }
 }
 
-fn next_id() -> u32 {
+pub(crate) fn next_id() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static NEXT: AtomicU32 = AtomicU32::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
@@ -195,7 +195,7 @@ fn load(key: &IconKey) -> Option<IconPixels> {
     pixels
 }
 
-fn read_bitmap(hbm: HBITMAP) -> Option<(u32, u32, Vec<u8>)> {
+pub(crate) fn read_bitmap(hbm: HBITMAP) -> Option<(u32, u32, Vec<u8>)> {
     unsafe {
         let mut bm = BITMAP::default();
         if GetObjectW(HGDIOBJ(hbm.0), size_of::<BITMAP>() as i32, Some(&mut bm as *mut _ as *mut _)) == 0 {

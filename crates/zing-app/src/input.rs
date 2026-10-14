@@ -304,9 +304,14 @@ impl App {
     }
 
     /// `delta`：WHEEL_DELTA（120）的倍數，正值往上
-    pub fn on_wheel(&mut self, x: f32, y: f32, delta: i16) {
+    pub fn on_wheel(&mut self, x: f32, y: f32, delta: i16, ctrl: bool) {
         if self.palette_contains(x, y) {
             self.palette_move(-3 * delta as isize / 120);
+            return;
+        }
+        if ctrl && let Some(p) = self.layout.panes.iter().position(|pl| pl.list.contains(x, y)) {
+            let notches = (delta as i32 / 120).signum();
+            self.zoom_thumbs(p, notches * crate::views::THUMB_STEP);
             return;
         }
         let lines = 3.0 * delta as f32 / 120.0;
@@ -319,8 +324,10 @@ impl App {
         }
         let target = self.layout.panes.iter().position(|pl| pl.area.contains(x, y));
         if let Some(p) = target {
-            let list_h = self.layout.panes[p].list.h();
-            let max = self.max_scroll(p, list_h);
+            let list = self.layout.panes[p].list;
+            let max = self.max_scroll(p, list.h());
+            // 縮圖：每格滾輪捲動約 3/4 格高
+            let step = self.grid(p, list).map_or(step, |g| delta as f32 / 120.0 * g.cell_h * 0.75);
             let tab = self.panes[p].tab_mut();
             tab.scroll = (tab.scroll - step).clamp(0.0, max);
             self.invalidate();
@@ -362,7 +369,12 @@ impl App {
 
     fn list_key(&mut self, vk: u16, mods: Mods) -> bool {
         let p = self.active_pane;
-        let page = self.layout.panes.get(p).map_or(10, |pl| (pl.list.h() / self.row_h()).floor().max(1.0) as usize);
+        let list = self.layout.panes.get(p).map(|pl| pl.list);
+        let grid = list.and_then(|l| self.grid(p, l));
+        // 縮圖：上下一列是 cols 項，一頁是可見列數 × cols
+        let cols = grid.map_or(1, |g| g.cols);
+        let line_h = grid.map_or(self.row_h(), |g| g.cell_h);
+        let page = list.map_or(10, |l| (l.h() / line_h).floor().max(1.0) as usize) * cols;
         let tab = self.panes[p].tab_mut();
         let n = tab.view.len();
         if n == 0 && vk != VK_ESCAPE.0 {
@@ -370,8 +382,10 @@ impl App {
         }
         let last = n.saturating_sub(1);
         let target = match vk {
-            v if v == VK_UP.0 => Some(tab.focus.saturating_sub(1)),
-            v if v == VK_DOWN.0 => Some((tab.focus + 1).min(last)),
+            v if v == VK_UP.0 => Some(tab.focus.saturating_sub(cols)),
+            v if v == VK_DOWN.0 => Some((tab.focus + cols).min(last)),
+            v if v == VK_LEFT.0 && grid.is_some() => Some(tab.focus.saturating_sub(1)),
+            v if v == VK_RIGHT.0 && grid.is_some() => Some((tab.focus + 1).min(last)),
             v if v == VK_PRIOR.0 => Some(tab.focus.saturating_sub(page)),
             v if v == VK_NEXT.0 => Some((tab.focus + page).min(last)),
             v if v == VK_HOME.0 => Some(0),

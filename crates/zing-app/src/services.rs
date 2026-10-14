@@ -40,6 +40,8 @@ pub enum Msg {
     FileOpDone { dirs: Vec<String>, error: Option<String>, select: Option<Select> },
     Status { text: String, error: bool },
     Icon { id: u32, pixels: Option<crate::icons::IconPixels> },
+    /// 縮圖（None：沒有縮圖，畫圖示）
+    Thumb { id: u32, pixels: Option<crate::icons::IconPixels>, source: crate::thumbs::Source },
     /// 右鍵選單選了「重新命名」
     MenuRename,
     /// 右鍵選單選了程式自訂的項目

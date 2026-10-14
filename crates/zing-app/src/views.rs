@@ -6,10 +6,15 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use zing_core::folderview::FolderViews;
+use zing_core::folderview::{FolderViews, ViewMode};
 
 use crate::app::App;
 use crate::services::Msg;
+
+/// Ctrl+滾輪的縮圖大小範圍與每格的變化量
+pub const THUMB_MIN: u16 = 48;
+pub const THUMB_MAX: u16 = 256;
+pub const THUMB_STEP: i32 = 16;
 
 fn file() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("zing-explore").join("folders.tsv"))
@@ -28,6 +33,8 @@ impl App {
         }
         let mut view = self.folder_views.get(&tab.path);
         view.sort = tab.spec;
+        view.mode = tab.mode;
+        view.thumb = tab.thumb;
         let path = tab.path.clone();
         self.folder_views.set(&path, view, now_secs());
         self.save_folder_views();
@@ -49,6 +56,58 @@ impl App {
                 let _ = std::fs::rename(tmp, file);
             }
         });
+    }
+
+    /// 切換檢視：list、small、medium、large（縮圖 64／128／192）或 thumbnails（沿用目前的縮圖大小）
+    pub fn set_view_mode(&mut self, p: usize, mode: &str) -> Result<(), String> {
+        let (m, size) = match mode {
+            "list" => (ViewMode::List, None),
+            "small" => (ViewMode::Thumbnails, Some(64)),
+            "medium" => (ViewMode::Thumbnails, Some(128)),
+            "large" => (ViewMode::Thumbnails, Some(192)),
+            "thumbnails" => (ViewMode::Thumbnails, None),
+            other => return Err(format!("未知的檢視：{other}（list、small、medium、large、thumbnails）")),
+        };
+        let t = self.panes[p].active;
+        let tab = &mut self.panes[p].tabs[t];
+        tab.mode = m;
+        if let Some(s) = size {
+            tab.thumb = s;
+        }
+        self.after_view_change(p, t);
+        Ok(())
+    }
+
+    /// 縮圖大小加減（Ctrl+滾輪）：清單放大時進入縮圖，縮圖縮到最小以下時回到清單
+    pub fn zoom_thumbs(&mut self, p: usize, delta: i32) {
+        let t = self.panes[p].active;
+        let tab = &mut self.panes[p].tabs[t];
+        match tab.mode {
+            ViewMode::List if delta > 0 => {
+                tab.mode = ViewMode::Thumbnails;
+                tab.thumb = THUMB_MIN;
+            }
+            ViewMode::List => return,
+            ViewMode::Thumbnails => {
+                let next = tab.thumb as i32 + delta;
+                if next < THUMB_MIN as i32 {
+                    tab.mode = ViewMode::List;
+                } else {
+                    tab.thumb = next.min(THUMB_MAX as i32) as u16;
+                }
+            }
+        }
+        self.after_view_change(p, t);
+    }
+
+    fn after_view_change(&mut self, p: usize, t: usize) {
+        self.remember_view(p, t);
+        self.layout = self.compute_layout();
+        let max = self.max_scroll(p, self.layout.panes.get(p).map_or(400.0, |pl| pl.list.h()));
+        let tab = &mut self.panes[p].tabs[t];
+        tab.scroll = tab.scroll.min(max);
+        self.ensure_visible(p);
+        self.invalidate();
     }
 
     /// 第一幀之後在背景讀取
@@ -75,9 +134,12 @@ impl App {
         for p in 0..self.panes.len() {
             for t in 0..self.panes[p].tabs.len() {
                 let tab = &mut self.panes[p].tabs[t];
-                let want = self.folder_views.get(&tab.path).sort;
-                if tab.spec == Default::default() && want != tab.spec {
-                    tab.spec = want;
+                let want = self.folder_views.get(&tab.path);
+                let untouched = tab.spec == Default::default() && tab.mode == ViewMode::List;
+                if untouched && (want.sort != tab.spec || want.mode != tab.mode) {
+                    tab.spec = want.sort;
+                    tab.mode = want.mode;
+                    tab.thumb = want.thumb;
                     self.resort(p, t);
                 }
             }

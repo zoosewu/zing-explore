@@ -7,6 +7,8 @@ use zing_core::config::TreeSide;
 use zing_core::format;
 use zing_core::path;
 use zing_core::sort::SortKey;
+use zing_core::folderview::ViewMode;
+use zing_core::grid::Grid;
 use zing_core::theme::AddressStyle;
 
 use crate::app::{App, Focus};
@@ -93,6 +95,34 @@ pub enum Hit {
 impl App {
     pub fn row_h(&self) -> f32 {
         self.theme.metrics.row_height
+    }
+
+    /// 縮圖檢視時的格狀版面；清單檢視為 None
+    pub fn grid(&self, p: usize, list: Rect) -> Option<Grid> {
+        let t = self.panes.get(p)?.tab();
+        (t.mode == ViewMode::Thumbnails).then(|| Grid::new(list.w() - SCROLLBAR_W, t.thumb as f32, self.caption_line_h()))
+    }
+
+    /// 縮圖下方一行檔名的高度
+    pub fn caption_line_h(&self) -> f32 {
+        (self.theme.font.size * 1.4).ceil()
+    }
+
+    /// 第 `i` 項在視窗中的範圍（清單為整列、縮圖為整格；依上次的版面）
+    pub fn item_rect(&self, p: usize, i: usize) -> Option<Rect> {
+        let pl = self.layout.panes.get(p)?;
+        let scroll = self.panes[p].tab().scroll;
+        Some(match self.grid(p, pl.list) {
+            Some(g) => {
+                let c = g.cell(i);
+                let (l, t) = (pl.list.l + c.x, pl.list.t + c.y - scroll);
+                Rect::new(l, t, l + c.w, t + c.h)
+            }
+            None => {
+                let y = pl.list.t + i as f32 * self.row_h() - scroll;
+                Rect::new(pl.list.l, y, pl.list.r - SCROLLBAR_W, y + self.row_h())
+            }
+        })
     }
 
     pub fn compute_layout(&self) -> Layout {
@@ -214,7 +244,9 @@ impl App {
         pl.tab_new = Rect::new(x + 2.0, strip.t + 6.0, x + 30.0, strip.b - 2.0);
 
         let rh = self.row_h();
-        pl.header = Rect::new(area.l, strip.b, area.r, strip.b + rh);
+        // 縮圖檢視沒有欄位標題（依 Ctrl+1–4 排序）
+        let header_h = if pane.tab().mode == ViewMode::Thumbnails { 0.0 } else { rh };
+        pl.header = Rect::new(area.l, strip.b, area.r, strip.b + header_h);
         pl.list = Rect::new(area.l, pl.header.b, area.r, area.b);
         pl.scrollbar = Rect::new(area.r - SCROLLBAR_W, pl.list.t, area.r, pl.list.b);
         let content_r = area.r - SCROLLBAR_W;
@@ -234,6 +266,9 @@ impl App {
 
     pub fn max_scroll(&self, pane: usize, list_h: f32) -> f32 {
         let t = self.panes[pane].tab();
+        if let Some(g) = self.layout.panes.get(pane).and_then(|pl| self.grid(pane, pl.list)) {
+            return (g.content_h(t.view.len()) - list_h).max(0.0);
+        }
         (t.view.len() as f32 * self.row_h() - list_h).max(0.0)
     }
 
@@ -320,6 +355,12 @@ impl App {
             }
             if pl.list.contains(x, y) {
                 let t = self.panes[p].tab();
+                if let Some(g) = self.grid(p, pl.list) {
+                    return match g.index_at(x - pl.list.l, y - pl.list.t + t.scroll, t.view.len()) {
+                        Some(i) => Hit::Row(p, i),
+                        None => Hit::ListEmpty(p),
+                    };
+                }
                 let i = ((y - pl.list.t + t.scroll) / self.row_h()).floor();
                 if i >= 0.0 && (i as usize) < t.view.len() {
                     return Hit::Row(p, i as usize);
@@ -357,6 +398,12 @@ impl App {
             let x = if self.tree_side == TreeSide::Right { tr.l - 1.0 } else { tr.r };
             self.gfx.vline(x, tr.t, tr.b, c.border);
         }
+        // 縮圖：釋放快取丟掉的點陣圖；這一幀沒要求、還在排隊的工作取消
+        let evicted = self.thumbs.take_evicted();
+        if !evicted.is_empty() {
+            self.gfx.drop_thumbs(&evicted);
+        }
+        self.thumbs.end_frame();
         self.paint_jobs(&lay);
         self.paint_status(&lay);
         self.paint_palette();
@@ -519,7 +566,9 @@ impl App {
         }
         g.text(glyph::ADD, Font::GlyphSmall, pl.tab_new, c.text_secondary);
 
-        // 欄位標題
+        // 欄位標題（縮圖檢視沒有）
+        let has_header = pl.header.h() > 0.0;
+        if has_header {
         g.fill(pl.header, c.background);
         for col in 0..4 {
             let (l, r) = pl.cols[col];
@@ -542,6 +591,7 @@ impl App {
             }
         }
         g.hline(pl.area.l, pl.area.r, pl.header.b - 1.0, c.border);
+        }
 
         // 清單：只繪製可見的列
         let list = pl.list;
@@ -551,7 +601,14 @@ impl App {
         let list_focused = active_pane && self.focus == Focus::List;
         let drop_row = self.drop_hover.filter(|(dp, _)| *dp == p).and_then(|(_, r)| r);
         let size_key = crate::sizes::key(&tab.path);
+        let grid = self.grid(p, list);
+        if let Some(gr) = &grid {
+            self.paint_grid(p, list, gr, list_focused, drop_row);
+        }
         for i in first..(first + visible).min(tab.view.len()) {
+            if grid.is_some() {
+                break;
+            }
             let e = tab.view[i] as usize;
             let entry = &tab.listing.entries[e];
             let y = list.t + i as f32 * rh - tab.scroll;
@@ -646,6 +703,55 @@ impl App {
             let tw = if wide { 6.0 } else { 3.0 };
             let thumb = Rect::new(track.r - tw, thumb_t, track.r, thumb_t + thumb_h);
             g.fill_round(thumb, tw / 2.0, c.text_secondary.with_alpha(if wide { 200 } else { 120 }));
+        }
+    }
+
+    /// 縮圖檢視：只畫可見的格子，縮圖未就緒時先畫圖示
+    fn paint_grid(&self, p: usize, list: Rect, gr: &Grid, list_focused: bool, drop_row: Option<usize>) {
+        let c = &self.theme.color;
+        let g = &self.gfx;
+        let tab = self.panes[p].tab();
+        let radius = self.theme.metrics.radius;
+        let px = crate::thumbs::bucket(gr.thumb * g.scale());
+        let at = |x: f32, y: f32, w: f32, h: f32| {
+            let (l, t) = (list.l + x, list.t + y - tab.scroll);
+            Rect::new(l, t, l + w, t + h)
+        };
+        for i in gr.visible(tab.scroll, list.h(), tab.view.len()) {
+            let e = tab.view[i] as usize;
+            let entry = &tab.listing.entries[e];
+            let cell = gr.cell(i);
+            let r = at(cell.x, cell.y, cell.w, cell.h).inset(2.0, 2.0);
+            let selected = tab.selected[e];
+            let on_selection = selected && list_focused && drop_row != Some(i);
+            if drop_row == Some(i) {
+                g.fill_round(r, radius, c.accent.with_alpha(70));
+            } else if selected {
+                g.fill_round(r, radius, if list_focused { c.selection } else { c.selection_inactive });
+            } else if self.hover == Hit::Row(p, i) {
+                g.fill_round(r, radius, c.hover);
+            }
+            if list_focused && i == tab.focus {
+                g.stroke_round(r, radius, if on_selection { c.selection_text } else { c.accent }, 1.0);
+            }
+            let tb = gr.thumb_box(cell);
+            let boxr = at(tb.x, tb.y, tb.w, tb.h);
+            let dir = entry.is_dir();
+            let opacity = if entry.is_hidden() { 0.5 } else { 1.0 };
+            let full = if tab.path.is_empty() { tab.listing.name_string(e) } else { tab.full_path(e) };
+            let drawn = self.thumbs.get(&full, dir, px).is_some_and(|id| g.thumb(id, &self.thumbs, boxr, opacity));
+            if !drawn {
+                let key = IconKey::for_entry(&tab.path, &tab.listing, e);
+                if !self.icons.get(key).is_some_and(|id| g.icon(id, &self.icons, boxr, opacity)) {
+                    g.text(if dir { glyph::FOLDER } else { glyph::FILE }, Font::Glyph, boxr, if dir { c.folder } else { c.text_secondary });
+                }
+            }
+            let cap = gr.caption(cell);
+            let capr = at(cap.x, cap.y, cap.w, cap.h);
+            let col = if on_selection { c.selection_text } else if entry.is_hidden() { c.text_secondary } else { c.text };
+            g.push_clip(capr);
+            g.text_w(tab.listing.name(e), Font::Caption, capr, col);
+            g.pop_clip();
         }
     }
 

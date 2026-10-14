@@ -47,6 +47,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   重新命名與新增資料夾走另一條執行緒，不會被大量複製擋住。UI 只透過 `JobCtl` 的 atomic 旗標控制工作，不等待鎖；
   暫停／取消在 Shell 的進度回呼（`shell.rs` 的 `Progress`）中生效。冒煙測試用 `shell::TEST_PROGRESS_DELAY_MS` 放慢複製。
 - 清單一律虛擬化：只處理可見的列；昂貴的欄位（圖示、縮圖、屬性）延遲到捲到才計算。
+- 縮圖同樣只取看得到的格子（`thumbs.rs`）：繪製時登記，繪製結束時取消已不可見、還沒開始的請求；
+  本機兩條、網路磁碟與光碟一條執行緒（背景模式）。清單與縮圖的幾何一律經 `App::grid`／`App::item_rect`，
+  不要再自行以 `row_h` 換算位置。
 - 樹狀列同樣只對看得到的節點預先載入子資料夾（`App::schedule_tree_probes`，在繪製前送出、第一幀之後才開始），
   在背景模式的執行緒池執行；有索引時問索引，否則只在本機固定磁碟列舉，網路磁碟、隨身碟不預先載入。
 - 不急的背景工作（資料夾大小、預先載入）用 `Pool::background`：磁碟與 CPU 優先權最低，不影響使用者正在做的事。
@@ -93,7 +96,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
     `themes\*.toml`（主題）、`session.toml`（視窗、分頁、我的最愛、命令面板最近使用）。路徑一律經 `settings::app_dir()`。
   - 系統產生、可重建的資料（資料夾大小快取、縮圖快取…）放在 `%LOCALAPPDATA%\zing-explore\`（只屬於這台電腦、不漫遊，
     刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（沒有索引時的資料夾大小，見 `sizes.rs`）、
-    `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`）。
+    `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`）、
+    `thumbs\`（外部命令產生的縮圖 PNG，上限 256 MB，見 `thumbs.rs`；Windows 的縮圖只放記憶體，上限 64 MB）。
   - 索引服務：執行檔安裝時複製到 `%ProgramFiles%\zing-explore\zing-index.exe`（以 LocalSystem 執行的程式不能放在一般使用者
     可修改的位置）；快照（`<磁碟區序號>.zidx`）與 `index.log` 放在服務帳號的 `%LOCALAPPDATA%`，即
     `C:\Windows\System32\config\systemprofile\AppData\Local\zing-explore`（不用 `%ProgramData%`：一般使用者能先建立同名資料夾）。

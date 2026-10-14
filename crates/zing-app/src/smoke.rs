@@ -15,7 +15,16 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use zing_core::path;
+use zing_core::folderview::ViewMode;
 use zing_core::sort::{SortKey, SortSpec};
+
+/// 1×1 的 PNG（資料夾封面、外部命令產生器的測試圖）
+const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41,
+    0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D, 0xB0, 0x00, 0x00, 0x00,
+    0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
 use zing_core::theme::Mode;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, POINTL, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -347,6 +356,14 @@ fn double_click(ctx: &Ctx, at: Option<(f32, f32)>) {
     send(h, WM_LBUTTONUP, 0, l);
 }
 
+/// Ctrl+滾輪（wParam 帶 MK_CONTROL）
+fn ctrl_wheel(ctx: &Ctx, at: Option<(f32, f32)>, delta: i16) {
+    let Some(at) = at else { return };
+    let pt = screen_point(ctx.hwnd, at);
+    let l = ((pt.y as u16 as isize) << 16) | pt.x as u16 as isize;
+    send(ctx.hwnd, WM_MOUSEWHEEL, ((delta as u16 as usize) << 16) | MK_CONTROL.0 as usize, l);
+}
+
 fn wheel(ctx: &Ctx, at: Option<(f32, f32)>, delta: i16) {
     let Some(at) = at else { return };
     let pt = screen_point(ctx.hwnd, at);
@@ -364,7 +381,13 @@ fn row_pos(name: &str) -> Option<(f32, f32)> {
         let pl = &a.layout.panes[p];
         let t = a.panes[p].tab();
         let i = t.find_view(name)?;
-        Some((pl.cols[0].0 + 40.0, pl.list.t + (i as f32 + 0.5) * a.row_h() - t.scroll))
+        let r = a.item_rect(p, i)?;
+        // 清單點名稱欄；縮圖點格子中央
+        if a.grid(p, pl.list).is_some() {
+            Some(((r.l + r.r) / 2.0, (r.t + r.b) / 2.0))
+        } else {
+            Some((pl.cols[0].0 + 40.0, (r.t + r.b) / 2.0))
+        }
     })
     .flatten()
 }
@@ -1386,6 +1409,129 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("排序", a.tab().spec, SortSpec::default())?;
         expect("記錄", a.folder_views.is_empty(), true)
     }));
+
+    // ------------------------------------------------ 縮圖檢視
+    v.push(step("縮圖：Ctrl+Shift+3 切換為中縮圖（沒有欄位標題）", |c| key(c, "cs", VIRTUAL_KEY(b'3' as u16)), |_, a| {
+        let t = a.tab();
+        expect("檢視", (t.mode, t.thumb), (ViewMode::Thumbnails, 128))?;
+        let pl = &a.layout.panes[a.active_pane];
+        expect("欄位標題高度", pl.header.h(), 0.0)?;
+        let g = a.grid(a.active_pane, pl.list).ok_or("沒有格狀版面")?;
+        if g.cols < 2 { Err(format!("欄數 {}", g.cols)) } else { Ok(()) }
+    }));
+    v.push(
+        step("縮圖：可見的項目都取得縮圖", |_| {}, |_, a| {
+            let n = a.tab().view.len();
+            let ready = a.thumbs.ready_count();
+            if ready >= n { Ok(()) } else { Err(format!("{ready}/{n} 個縮圖就緒")) }
+        })
+        .slow(),
+    );
+    v.push(step("截圖：縮圖檢視", |_| {}, |c, _| screenshot(c, "07-縮圖")));
+    v.push(step(
+        "縮圖：點格子選取",
+        |c| {
+            let pos = with_app(|a| {
+                a.layout = a.compute_layout();
+                a.item_rect(a.active_pane, 2).map(|r| ((r.l + r.r) / 2.0, (r.t + r.b) / 2.0))
+            })
+            .flatten();
+            click(c, "", pos);
+        },
+        |_, a| {
+            let want = names(a)[2].clone();
+            expect("選取", selected(a), vec![want])
+        },
+    ));
+    v.push(step(
+        "縮圖：方向鍵以格子移動（→ 一格、↓ 一列）",
+        |c| {
+            key(c, "", VK_HOME);
+            key(c, "", VK_RIGHT);
+            key(c, "", VK_DOWN);
+        },
+        |_, a| {
+            let p = a.active_pane;
+            let cols = a.grid(p, a.layout.panes[p].list).map_or(1, |g| g.cols);
+            let want = (1 + cols).min(a.tab().view.len() - 1);
+            expect("焦點", a.tab().focus, want)
+        },
+    ));
+    v.push(step("縮圖：Ctrl+滾輪縮小一級", |c| ctrl_wheel(c, list_center(), -120), |_, a| {
+        expect("縮圖大小", a.tab().thumb, 128 - crate::views::THUMB_STEP as u16)
+    }));
+    v.push(
+        step(
+            "縮圖：資料夾裡有 cover.png 時用它當縮圖",
+            {
+                let d = d.clone();
+                move |_| {
+                    let dir = path::join(&d, "封面測試");
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(path::join(&dir, "cover.png"), TINY_PNG);
+                }
+            },
+            {
+                let d = d.clone();
+                move |_, a| {
+                    let px = crate::thumbs::bucket(a.tab().thumb as f32 * a.gfx.scale());
+                    let p = path::join(&d, "封面測試");
+                    expect("來源", a.thumbs.source(&p, px), Some(crate::thumbs::Source::Cover))
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "縮圖：外部命令產生器（設定 [[thumbnailer]]）",
+            {
+                let d = d.clone();
+                move |_| {
+                    let cover = path::join(&path::join(&d, "封面測試"), "cover.png");
+                    let t = zing_core::config::Thumbnailer {
+                        pattern: "*.zt".into(),
+                        cmd: format!(r#"cmd /c copy /y "{cover}" "{{out}}""#),
+                    };
+                    with_app(|a| {
+                        a.config.thumbnailers = vec![t.clone()];
+                        a.thumbs.set_thumbnailers(vec![t]);
+                    });
+                    let _ = std::fs::write(path::join(&d, "外部產生.zt"), b"x");
+                }
+            },
+            {
+                let d = d.clone();
+                move |_, a| {
+                    let px = crate::thumbs::bucket(a.tab().thumb as f32 * a.gfx.scale());
+                    let p = path::join(&d, "外部產生.zt");
+                    expect("來源", a.thumbs.source(&p, px), Some(crate::thumbs::Source::Command))
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(step(
+        "縮圖：Ctrl+Shift+1 回到清單（並清掉測試檔案）",
+        {
+            let d = d.clone();
+            move |c| {
+                let _ = std::fs::remove_dir_all(path::join(&d, "封面測試"));
+                let _ = std::fs::remove_file(path::join(&d, "外部產生.zt"));
+                with_app(|a| {
+                    a.config.thumbnailers.clear();
+                    a.thumbs.set_thumbnailers(Vec::new());
+                });
+                // 隔離模式下外部命令的縮圖放在暫存資料夾
+                let _ = std::fs::remove_dir_all(crate::thumbs::cache_dir(true));
+                key(c, "cs", VIRTUAL_KEY(b'1' as u16));
+            }
+        },
+        |_, a| {
+            expect("檢視", a.tab().mode, ViewMode::List)?;
+            if a.layout.panes[a.active_pane].header.h() > 0.0 { Ok(()) } else { Err("沒有欄位標題".into()) }
+        },
+    ));
 
     // 狀態列錯誤與 UI 執行緒 I/O 防呆的回報在 finish() 統一檢查
     v.push(step("截圖：結束畫面", |_| {}, |c, _| screenshot(c, "03-結束")));

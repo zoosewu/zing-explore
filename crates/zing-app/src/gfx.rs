@@ -20,9 +20,9 @@ use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
-    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_EMERGENCY_BREAK, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
     IDWriteFontCollection, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
@@ -82,6 +82,8 @@ pub enum Font {
     GlyphSmall,
     /// 等寬字（網址列的完整路徑）
     Mono,
+    /// 縮圖下方的檔名：置中、可換行（長檔名在任意字元處斷行），超出兩行以省略號結尾
+    Caption,
 }
 
 /// Fluent 圖示字型的字碼（Segoe Fluent Icons / Segoe MDL2 Assets 共用）
@@ -136,6 +138,7 @@ pub struct Gfx {
     widths: RefCell<HashMap<(Font, String), f32>>,
     /// 圖示點陣圖（屬於目前的裝置，換裝置時清空，再由 Icons 的像素重建）
     icon_bitmaps: RefCell<HashMap<u32, ID2D1Bitmap1>>,
+    thumb_bitmaps: RefCell<HashMap<u32, ID2D1Bitmap1>>,
     /// 上一幀 EndDraw（GPU 清空）與 Present 的耗時（毫秒），供效能測試拆解幀時間
     pub last_end_ms: (f64, f64),
 }
@@ -200,6 +203,7 @@ impl Gfx {
             immediate,
             widths: RefCell::new(HashMap::new()),
             icon_bitmaps: RefCell::new(HashMap::new()),
+            thumb_bitmaps: RefCell::new(HashMap::new()),
             last_end_ms: (0.0, 0.0),
         })
     }
@@ -234,6 +238,12 @@ impl Gfx {
         map.insert(Font::GlyphSmall, mk(&glyph_family, DWRITE_FONT_WEIGHT_NORMAL, 10.0, DWRITE_TEXT_ALIGNMENT_CENTER)?);
         // 只有路徑樣式的網址列用到；找不到 Cascadia Mono 時 DirectWrite 會改用後備字型
         map.insert(Font::Mono, mk(&HSTRING::from("Cascadia Mono"), DWRITE_FONT_WEIGHT_NORMAL, size, DWRITE_TEXT_ALIGNMENT_LEADING)?);
+        let caption = mk(&family, DWRITE_FONT_WEIGHT_NORMAL, size, DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        unsafe {
+            caption.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
+            caption.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+        }
+        map.insert(Font::Caption, caption);
         Ok(Formats { map })
     }
 
@@ -282,6 +292,7 @@ impl Gfx {
         self.brush = None;
         self.dev = None;
         self.icon_bitmaps.borrow_mut().clear();
+        self.thumb_bitmaps.borrow_mut().clear();
         match self.build_device(d3d, false) {
             Ok(d) => {
                 self.dev = Some(d);
@@ -330,6 +341,7 @@ impl Gfx {
             };
             self.dev = Some(self.build_device(d3d, warp)?);
             self.icon_bitmaps.borrow_mut().clear();
+        self.thumb_bitmaps.borrow_mut().clear();
             crate::perf::mark("device");
         }
         let d = self.dev.as_mut().unwrap();
@@ -393,6 +405,7 @@ impl Gfx {
         self.brush = None;
         self.dev = None;
         self.icon_bitmaps.borrow_mut().clear();
+        self.thumb_bitmaps.borrow_mut().clear();
         // 下一次成功呈現後重新在背景建立硬體裝置
         self.hw_rx = None;
         self.hw_started = false;
@@ -437,6 +450,54 @@ impl Gfx {
 
     pub fn vline(&self, x: f32, y0: f32, y1: f32, c: Color) {
         self.fill(Rect::new(x, y0, x + 1.0, y1), c);
+    }
+
+    /// 縮圖快取丟掉的項目：一併釋放點陣圖
+    pub fn drop_thumbs(&self, ids: &[u32]) {
+        let mut cache = self.thumb_bitmaps.borrow_mut();
+        for id in ids {
+            cache.remove(id);
+        }
+    }
+
+    /// 在 `r` 內等比縮放、置中繪製縮圖；尚未就緒回傳 false
+    pub fn thumb(&self, id: u32, thumbs: &crate::thumbs::Thumbs, r: Rect, opacity: f32) -> bool {
+        let Some(rt) = &self.rt else { return false };
+        let mut cache = self.thumb_bitmaps.borrow_mut();
+        if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(id) {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                ..Default::default()
+            };
+            let created = thumbs.with_pixels(id, |p| unsafe {
+                rt.CreateBitmap(D2D_SIZE_U { width: p.w, height: p.h }, Some(p.bgra.as_ptr() as *const _), p.w * 4, &props)
+                    .map(|b| (b, p.w as f32, p.h as f32))
+            });
+            match created {
+                Some(Ok((b, _, _))) => {
+                    e.insert(b);
+                }
+                _ => return false,
+            }
+        }
+        let bmp = &cache[&id];
+        let size = unsafe { bmp.GetPixelSize() };
+        let (bw, bh) = (size.width as f32, size.height as f32);
+        if bw <= 0.0 || bh <= 0.0 {
+            return false;
+        }
+        // 以實際像素換算成 DIP，不放大超過原圖（小圖示不糊）
+        let s = self.scale();
+        let k = (r.w() / (bw / s)).min(r.h() / (bh / s)).min(1.0);
+        let (w, h) = (bw / s * k, bh / s * k);
+        let snap = |v: f32| (v * s).round() / s;
+        let l = snap(r.l + (r.w() - w) / 2.0);
+        let t = snap(r.t + (r.h() - h) / 2.0);
+        let dest = Rect::new(l, t, l + w, t + h);
+        unsafe { rt.DrawBitmap(bmp, Some(&dest.d2d()), opacity, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None) };
+        true
     }
 
     pub fn clear_icons(&self) {

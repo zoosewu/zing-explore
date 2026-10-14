@@ -22,6 +22,9 @@ cargo build --release
 - 複製／剪下／貼上（與檔案總管互通）、刪除到資源回收筒、重新命名（`F2`）、新資料夾（`Ctrl+Shift+N`）
 - 系統右鍵選單（含第三方擴充功能，Shift+F10 / 選單鍵也可開啟）、拖放進出
 - 系統檔案圖示（背景載入，執行檔與捷徑顯示各自的圖示）
+- 縮圖檢視：`Ctrl+Shift+1`–`4` 切換清單／小／中／大縮圖，`Ctrl+滾輪` 連續調整（48–256 px），每個資料夾分別記住。
+  縮圖來自 Windows（與檔案總管相同，安裝的縮圖處理常式都能用）；資料夾裡有 `folder.jpg/png` 或 `cover.jpg/png`
+  時用它當資料夾縮圖；也可在設定檔用 `[[thumbnailer]]` 指定外部命令產生縮圖（見下方「自訂」）
 - 我的最愛：`Ctrl+D` 或右鍵「加入我的最愛」，在樹狀列右鍵移除
 - 資料夾內容變更自動更新
 - 三種內建風格，各有深色／淺色並可跟隨系統：緊湊（預設，高密度、直角、完整路徑）、Fluent（寬鬆圓角）、
@@ -49,6 +52,15 @@ cmd = "copy --move --to={dest}"
 [[button]]
 label = "用 VS Code 開啟"
 cmd = "run code {sel}"
+```
+
+自訂縮圖產生器：檔名符合 `match` 的檔案改用命令產生的 PNG（`{in}` 來源、`{out}` 輸出、`{size}` 邊長），
+結果快取在 `%LOCALAPPDATA%\zing-explore\thumbs`，檔案修改後自動重做；命令最多執行 10 秒。
+
+```toml
+[[thumbnailer]]
+match = "*.stl;*.3mf"
+cmd = 'stl-thumb -s {size} "{in}" "{out}"'
 ```
 
 主題檔放在 `zing.exe` 旁的 `themes\<名稱>.toml`，只需寫要改的欄位，其餘沿用 `style`（compact | fluent | balanced）

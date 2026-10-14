@@ -18,6 +18,12 @@ tree = "left"
 # 命令面板（Ctrl+Shift+P）的位置：top（視窗上方）| center（視窗正中央）
 position = "top"
 
+# 外部命令縮圖產生器（可多個，先符合的優先，優先於 Windows 的縮圖）。{in} 來源檔、{out} 輸出的 PNG、{size} 邊長。
+# 直接啟動程式、不經過命令殼層。產生的縮圖快取在 %LOCALAPPDATA%\zing-explore\thumbs（依路徑、修改時間、大小判斷是否重做）。
+# [[thumbnailer]]
+# match = "*.stl;*.3mf"
+# cmd = 'stl-thumb -s {size} "{in}" "{out}"'
+
 [folder_sizes]
 # 有 NTFS 索引服務（命令面板：啟用 NTFS 索引服務）時，大小一律由索引立即提供，不受這個設定影響。
 # 沒有索引時（服務未啟用、非 NTFS 磁碟）：
@@ -139,6 +145,23 @@ cmd = "tree.toggle"
 [[key]]
 key = "Ctrl+Shift+S"
 cmd = "view.foldersizes"
+
+# 檢視：清單／小／中／大縮圖（Ctrl+滾輪可連續調整縮圖大小），每個資料夾分別記住
+[[key]]
+key = "Ctrl+Shift+1"
+cmd = "view.mode list"
+
+[[key]]
+key = "Ctrl+Shift+2"
+cmd = "view.mode small"
+
+[[key]]
+key = "Ctrl+Shift+3"
+cmd = "view.mode medium"
+
+[[key]]
+key = "Ctrl+Shift+4"
+cmd = "view.mode large"
 
 [[key]]
 key = "Ctrl+H"

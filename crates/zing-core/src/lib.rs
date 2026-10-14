@@ -6,6 +6,7 @@ pub mod dirsize;
 pub mod enumerate;
 pub mod folderview;
 pub mod format;
+pub mod grid;
 pub mod guard;
 pub mod indexproto;
 pub mod keymap;

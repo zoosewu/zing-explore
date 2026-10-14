@@ -245,9 +245,19 @@ pub fn begin_rename(app: &mut App, tab: TabId, full: String) {
     let Some(pl) = app.layout.panes.get(p) else { return };
     let t = app.panes[p].tab();
     let rh = app.row_h();
-    let y = pl.list.t + t.focus as f32 * rh - t.scroll;
-    let (nl, nr) = pl.cols[0];
-    let rect = crate::gfx::Rect::new(nl + 32.0, y, nr - 4.0, y + rh);
+    let rect = match app.grid(p, pl.list) {
+        // 縮圖：編輯框蓋在檔名第一行
+        Some(g) => {
+            let c = g.caption(g.cell(t.focus));
+            let (l, top) = (pl.list.l + c.x, pl.list.t + c.y - t.scroll);
+            crate::gfx::Rect::new(l, top, l + c.w, top + rh)
+        }
+        None => {
+            let y = pl.list.t + t.focus as f32 * rh - t.scroll;
+            let (nl, nr) = pl.cols[0];
+            crate::gfx::Rect::new(nl + 32.0, y, nr - 4.0, y + rh)
+        }
+    };
     let name = path::file_name(&full).to_string();
     let is_dir = t.focused_entry().is_some_and(|e| t.listing.entries[e].is_dir());
     // 預設只選取主檔名，不含副檔名
@@ -560,7 +570,9 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16;
             let (px, py) = lparam_xy(lparam);
             let (x, y) = screen_to_dip(hwnd, POINT { x: px, y: py });
-            with_app(|a| a.on_wheel(x, y, delta));
+            // MK_CONTROL：Ctrl+滾輪調整縮圖大小
+            let ctrl = wparam.0 & 0x0008 != 0;
+            with_app(|a| a.on_wheel(x, y, delta, ctrl));
             Some(LRESULT(0))
         }
         WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT => {

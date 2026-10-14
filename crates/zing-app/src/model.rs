@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
+use zing_core::folderview::{FolderView, ViewMode};
 use zing_core::listing::Listing;
 use zing_core::path;
 use zing_core::sort::{SortSpec, filter_order};
@@ -30,6 +31,10 @@ pub struct Tab {
     pub filter: String,
     pub pattern: Pattern,
     pub spec: SortSpec,
+    /// 清單或縮圖檢視
+    pub mode: ViewMode,
+    /// 縮圖邊長（DIP）
+    pub thumb: u16,
     /// 每次載入遞增，用來丟棄過時的背景結果
     pub generation: u64,
     /// 每次換資料夾遞增，用來丟棄過時的監看通知
@@ -50,7 +55,7 @@ pub struct Tab {
 }
 
 impl Tab {
-    pub fn new(id: TabId, path: String, spec: SortSpec) -> Self {
+    pub fn new(id: TabId, path: String, view: FolderView) -> Self {
         Self {
             id,
             path,
@@ -63,7 +68,9 @@ impl Tab {
             scroll: 0.0,
             filter: String::new(),
             pattern: Pattern::default(),
-            spec,
+            spec: view.sort,
+            mode: view.mode,
+            thumb: view.thumb,
             generation: 0,
             nav_generation: 0,
             loading: false,
@@ -644,7 +651,7 @@ mod tests {
         for n in names {
             l.push_str(n, 0, 1, 0);
         }
-        let mut t = Tab::new(1, "C:\\x".into(), SortSpec::default());
+        let mut t = Tab::new(1, "C:\\x".into(), FolderView::default());
         let sorted = zing_core::sort::sorted_order(&l, t.spec);
         t.apply_listing(Arc::new(l), sorted, true);
         t
