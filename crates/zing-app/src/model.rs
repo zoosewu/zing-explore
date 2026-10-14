@@ -1,8 +1,9 @@
 //! UI 狀態模型：分頁、窗格、樹狀列。這裡只有純狀態操作，不呼叫任何服務。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
 
 use zing_core::listing::Listing;
 use zing_core::path;
@@ -268,6 +269,31 @@ pub enum NodeKind {
     Folder,
 }
 
+/// 一個資料夾的子資料夾：名稱（已依隱藏設定篩選、依自然順序排序）與各自是否還有子資料夾
+#[derive(Clone, Debug)]
+pub struct Children {
+    pub names: Vec<String>,
+    /// 與 `names` 對應；None 表示不知道（逐資料夾列舉時）
+    pub subdirs: Vec<Option<bool>>,
+    pub when: Instant,
+}
+
+impl Children {
+    pub fn new(names: Vec<String>, subdirs: Vec<Option<bool>>) -> Self {
+        Children { names, subdirs, when: Instant::now() }
+    }
+}
+
+/// 子資料夾的預先載入狀態
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Probe {
+    Idle,
+    Pending,
+    /// 不預先載入（網路磁碟、隨身碟、光碟機）：一律顯示箭頭，點了才載入
+    Skipped,
+    Done,
+}
+
 #[derive(Clone, Debug)]
 pub struct Node {
     pub path: String,
@@ -276,9 +302,34 @@ pub struct Node {
     pub kind: NodeKind,
     pub expanded: bool,
     pub loading: bool,
-    /// 已載入且沒有子資料夾
-    pub leaf: bool,
+    /// 有沒有子資料夾；None 表示還不知道
+    pub subdirs: Option<bool>,
+    pub probe: Probe,
+    /// 預先載入的子資料夾：點擊時直接展開，不必等列舉
+    pub prefetched: Option<Children>,
 }
+
+impl Node {
+    /// 是否顯示展開箭頭：確定有子資料夾，或無法預先得知（與檔案總管相同）。
+    /// 本機磁碟在預先載入完成前不顯示，避免顯示後才消失。
+    pub fn arrow(&self) -> bool {
+        self.expanded || self.loading || self.subdirs.unwrap_or(self.probe == Probe::Skipped)
+    }
+}
+
+/// `begin_expand` 的結果
+#[derive(Debug, PartialEq, Eq)]
+pub enum Expand {
+    /// 不可展開（已展開、載入中、沒有子資料夾）
+    No,
+    /// 以預先載入的內容立即展開；`stale` 為 true 時內容可能已過時，呼叫端應在背景重新載入
+    Done { path: String, stale: bool },
+    /// 需要先載入
+    Load(String),
+}
+
+/// 預先載入的內容超過這個時間就在展開後重新確認
+const PREFETCH_FRESH: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 pub struct Tree {
@@ -289,6 +340,7 @@ pub struct Tree {
     pub reveal: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum Reveal {
     /// 需要先載入這個節點的子資料夾
     Load(String),
@@ -305,7 +357,9 @@ impl Tree {
             kind: NodeKind::FavRoot,
             expanded: true,
             loading: false,
-            leaf: favorites.is_empty(),
+            subdirs: Some(!favorites.is_empty()),
+            probe: Probe::Done,
+            prefetched: None,
         }];
         for f in favorites {
             nodes.push(folder_node(f, path::file_name(f).to_string(), 1, NodeKind::Favorite));
@@ -317,7 +371,9 @@ impl Tree {
             kind: NodeKind::Pc,
             expanded: true,
             loading: false,
-            leaf: false,
+            subdirs: Some(true),
+            probe: Probe::Done,
+            prefetched: None,
         });
         for i in 0..drives.len() {
             let p = drives.name_string(i);
@@ -335,8 +391,14 @@ impl Tree {
 
     pub fn collapse(&mut self, i: usize) {
         let end = self.subtree_end(i);
-        self.nodes.drain(i + 1..end);
+        let depth = self.nodes[i].depth + 1;
+        // 子資料夾清單留著，再次展開時立即顯示（放久了會在展開後重新確認）
+        let (names, subdirs) =
+            self.nodes.drain(i + 1..end).filter(|n| n.depth == depth).map(|n| (n.name, n.subdirs)).unzip();
         self.nodes[i].expanded = false;
+        if !self.nodes[i].path.is_empty() {
+            self.nodes[i].prefetched = Some(Children::new(names, subdirs));
+        }
         if self.focus > i && self.focus < end {
             self.focus = i;
         } else if self.focus >= end {
@@ -344,32 +406,145 @@ impl Tree {
         }
     }
 
-    /// 標記為載入中並回傳要載入的路徑；不可展開時回傳 None
-    pub fn begin_expand(&mut self, i: usize) -> Option<String> {
+    /// 展開：有預先載入的內容時立即展開，否則標記為載入中並回傳要載入的路徑
+    pub fn begin_expand(&mut self, i: usize) -> Expand {
         let n = &mut self.nodes[i];
-        if n.expanded || n.loading || n.leaf || n.path.is_empty() {
-            return None;
+        if n.expanded || n.loading || n.subdirs == Some(false) || n.path.is_empty() {
+            return Expand::No;
+        }
+        let path = n.path.clone();
+        if let Some(c) = n.prefetched.take() {
+            let stale = c.when.elapsed() > PREFETCH_FRESH;
+            self.expand_with(i, c);
+            return Expand::Done { path, stale };
         }
         n.loading = true;
-        Some(n.path.clone())
+        Expand::Load(path)
     }
 
-    pub fn insert_children(&mut self, path_: &str, names: Vec<String>) {
-        let Some(i) = self.nodes.iter().position(|n| n.loading && n.path.eq_ignore_ascii_case(path_)) else {
-            return;
-        };
+    fn expand_with(&mut self, i: usize, c: Children) {
         let depth = self.nodes[i].depth + 1;
         let parent = self.nodes[i].path.clone();
-        let children: Vec<Node> =
-            names.into_iter().map(|name| folder_node(&path::join(&parent, &name), name, depth, NodeKind::Folder)).collect();
+        let children: Vec<Node> = c
+            .names
+            .into_iter()
+            .zip(c.subdirs)
+            .map(|(name, sub)| {
+                let mut n = folder_node(&path::join(&parent, &name), name, depth, NodeKind::Folder);
+                n.subdirs = sub;
+                n
+            })
+            .collect();
         let count = children.len();
         let n = &mut self.nodes[i];
         n.loading = false;
         n.expanded = count > 0;
-        n.leaf = count == 0;
+        n.subdirs = Some(count > 0);
+        n.probe = Probe::Done;
+        n.prefetched = None;
         self.nodes.splice(i + 1..i + 1, children);
         if self.focus > i {
             self.focus += count;
+        }
+    }
+
+    /// 載入完成：展開等待中的節點
+    pub fn insert_children(&mut self, path_: &str, c: Children) {
+        let Some(i) = self.nodes.iter().position(|n| n.loading && n.path.eq_ignore_ascii_case(path_)) else {
+            return;
+        };
+        self.expand_with(i, c);
+    }
+
+    /// 可見範圍內需要預先載入的節點：標記為進行中並回傳路徑
+    pub fn take_probes(&mut self, first: usize, count: usize) -> Vec<String> {
+        let end = (first + count).min(self.nodes.len());
+        let mut out = Vec::new();
+        for n in &mut self.nodes[first.min(end)..end] {
+            let kind_ok = matches!(n.kind, NodeKind::Drive | NodeKind::Folder | NodeKind::Favorite);
+            if kind_ok && n.probe == Probe::Idle && !n.expanded && !n.loading && !n.path.is_empty() {
+                n.probe = Probe::Pending;
+                out.push(n.path.clone());
+            }
+        }
+        out
+    }
+
+    /// 預先載入的結果；None 表示這個位置不預先載入
+    pub fn set_probe(&mut self, path_: &str, c: Option<Children>) {
+        for n in &mut self.nodes {
+            if n.probe != Probe::Pending || !n.path.eq_ignore_ascii_case(path_) {
+                continue;
+            }
+            match &c {
+                _ if n.expanded || n.loading => n.probe = Probe::Done,
+                Some(c) => {
+                    n.subdirs = Some(!c.names.is_empty());
+                    n.prefetched = Some(c.clone());
+                    n.probe = Probe::Done;
+                }
+                None => n.probe = Probe::Skipped,
+            }
+        }
+    }
+
+    /// 以重新載入的內容更新已展開節點的子資料夾：保留仍存在的子節點（含其展開的子樹），
+    /// 加入新的、移除已不存在的
+    pub fn reconcile(&mut self, path_: &str, c: Children) {
+        let Some(i) = self.nodes.iter().position(|n| n.expanded && n.path.eq_ignore_ascii_case(path_)) else {
+            return;
+        };
+        let end = self.subtree_end(i);
+        let depth = self.nodes[i].depth + 1;
+        let focus_path = (self.focus > i && self.focus < end).then(|| self.nodes[self.focus].path.clone());
+        let old: Vec<Node> = self.nodes.drain(i + 1..end).collect();
+        let mut groups: HashMap<String, Vec<Node>> = HashMap::new();
+        let mut cur: Option<String> = None;
+        for n in old {
+            if n.depth == depth {
+                cur = Some(n.name.to_lowercase());
+            }
+            if let Some(k) = &cur {
+                groups.entry(k.clone()).or_default().push(n);
+            }
+        }
+        let parent = self.nodes[i].path.clone();
+        let mut fresh = Vec::new();
+        for (name, sub) in c.names.into_iter().zip(c.subdirs) {
+            match groups.remove(&name.to_lowercase()) {
+                Some(mut g) => {
+                    if !g[0].expanded && sub.is_some() {
+                        g[0].subdirs = sub;
+                    }
+                    fresh.extend(g);
+                }
+                None => {
+                    let mut n = folder_node(&path::join(&parent, &name), name, depth, NodeKind::Folder);
+                    n.subdirs = sub;
+                    fresh.push(n);
+                }
+            }
+        }
+        let count = fresh.len();
+        let removed = end - i - 1;
+        self.nodes.splice(i + 1..i + 1, fresh);
+        self.nodes[i].expanded = count > 0;
+        self.nodes[i].subdirs = Some(count > 0);
+        if let Some(fp) = focus_path {
+            self.focus = self.nodes.iter().position(|n| n.path == fp).unwrap_or(i);
+        } else if self.focus >= end {
+            self.focus = self.focus + count - removed;
+        }
+    }
+
+    /// 隱藏檔設定改變：預先載入的內容都要重新取得
+    pub fn reset_probes(&mut self) {
+        for n in &mut self.nodes {
+            if matches!(n.kind, NodeKind::Drive | NodeKind::Folder | NodeKind::Favorite) && !n.expanded {
+                n.probe = Probe::Idle;
+                n.prefetched = None;
+                n.subdirs = None;
+            }
         }
     }
 
@@ -386,6 +561,25 @@ impl Tree {
             .map(|k| pc + 1 + k)
     }
 
+    /// 目前資料夾的上層是隱藏資料夾（例如 AppData）時，子資料夾清單裡沒有它：與檔案總管相同，
+    /// 仍把這一層加到樹狀列（放在上層的子節點最後），才能展開到目前資料夾。上層必須已載入。
+    fn insert_hidden(&mut self, parent: &str, p: &str) -> Option<usize> {
+        let pi = self.find(parent)?;
+        let n = &self.nodes[pi];
+        if n.loading || !(n.expanded || n.subdirs == Some(false)) {
+            return None;
+        }
+        let at = self.subtree_end(pi);
+        let node = folder_node(p, path::file_name(p).to_string(), n.depth + 1, NodeKind::Folder);
+        self.nodes.insert(at, node);
+        self.nodes[pi].expanded = true;
+        self.nodes[pi].subdirs = Some(true);
+        if self.focus >= at {
+            self.focus += 1;
+        }
+        Some(at)
+    }
+
     /// 逐層展開到 `reveal` 目標
     pub fn step_reveal(&mut self) -> Reveal {
         let Some(target) = self.reveal.clone() else { return Reveal::Done(None) };
@@ -400,7 +594,8 @@ impl Tree {
         }
         chain.reverse();
         for (k, p) in chain.iter().enumerate() {
-            let Some(i) = self.find(p) else {
+            let found = self.find(p).or_else(|| if k > 0 { self.insert_hidden(&chain[k - 1], p) } else { None });
+            let Some(i) = found else {
                 self.reveal = None;
                 return Reveal::Done(None);
             };
@@ -413,13 +608,11 @@ impl Tree {
                 return Reveal::Done(None);
             }
             if !n.expanded {
-                return match self.begin_expand(i) {
-                    Some(p) => Reveal::Load(p),
-                    None => {
-                        self.reveal = None;
-                        Reveal::Done(None)
-                    }
-                };
+                match self.begin_expand(i) {
+                    Expand::Load(p) => return Reveal::Load(p),
+                    // 以預先載入的內容展開了，或沒有（可見的）子資料夾：下一層由 insert_hidden 補上
+                    Expand::Done { .. } | Expand::No => {}
+                }
             }
         }
         self.reveal = None;
@@ -428,7 +621,17 @@ impl Tree {
 }
 
 fn folder_node(p: &str, name: String, depth: u16, kind: NodeKind) -> Node {
-    Node { path: p.to_string(), name, depth, kind, expanded: false, loading: false, leaf: false }
+    Node {
+        path: p.to_string(),
+        name,
+        depth,
+        kind,
+        expanded: false,
+        loading: false,
+        subdirs: None,
+        probe: Probe::Idle,
+        prefetched: None,
+    }
 }
 
 #[cfg(test)]
@@ -477,14 +680,23 @@ mod tests {
         assert_eq!(t.find_view("B2"), Some(1));
     }
 
-    #[test]
-    fn tree_expand_collapse() {
+    fn kids(names: &[&str]) -> Children {
+        Children::new(names.iter().map(|s| s.to_string()).collect(), vec![None; names.len()])
+    }
+
+    fn drive_tree() -> (Tree, usize) {
         let mut drives = Listing::default();
         drives.push_str("C:\\", ATTR_DIRECTORY, 0, 0);
-        let mut tree = Tree::build(&[], &drives);
+        let tree = Tree::build(&[], &drives);
         let c = tree.find("C:\\").unwrap();
-        assert_eq!(tree.begin_expand(c).as_deref(), Some("C:\\"));
-        tree.insert_children("C:\\", vec!["Users".into(), "Windows".into()]);
+        (tree, c)
+    }
+
+    #[test]
+    fn tree_expand_collapse() {
+        let (mut tree, c) = drive_tree();
+        assert_eq!(tree.begin_expand(c), Expand::Load("C:\\".into()));
+        tree.insert_children("C:\\", kids(&["Users", "Windows"]));
         assert_eq!(tree.nodes.len(), 5);
         assert_eq!(tree.find("c:\\users"), Some(c + 1));
         tree.reveal = Some("C:\\Users\\me".into());
@@ -492,12 +704,89 @@ mod tests {
             Reveal::Load(p) => assert_eq!(p, "C:\\Users"),
             Reveal::Done(_) => panic!("應先載入 C:\\Users"),
         }
-        tree.insert_children("C:\\Users", vec!["me".into()]);
+        tree.insert_children("C:\\Users", kids(&["me"]));
         match tree.step_reveal() {
             Reveal::Done(Some(i)) => assert_eq!(tree.nodes[i].path, "C:\\Users\\me"),
             _ => panic!(),
         }
         tree.collapse(c);
         assert_eq!(tree.nodes.len(), 3);
+        // 收合後再展開：用保留的子資料夾清單立即展開
+        assert_eq!(tree.begin_expand(c), Expand::Done { path: "C:\\".into(), stale: false });
+        assert_eq!(tree.nodes.len(), 5);
+    }
+
+    #[test]
+    fn tree_probe_and_instant_expand() {
+        let (mut tree, c) = drive_tree();
+        // 預先載入前不顯示箭頭（本機磁碟），送出後不重複送
+        assert!(!tree.nodes[c].arrow());
+        assert_eq!(tree.take_probes(0, 50), vec!["C:\\".to_string()]);
+        assert!(tree.take_probes(0, 50).is_empty());
+        let mut k = kids(&["Users", "Windows", "空"]);
+        k.subdirs = vec![Some(true), Some(true), Some(false)];
+        tree.set_probe("c:\\", Some(k));
+        assert!(tree.nodes[c].arrow());
+        // 點擊時立即展開，子節點的箭頭由索引的資訊決定
+        assert_eq!(tree.begin_expand(c), Expand::Done { path: "C:\\".into(), stale: false });
+        assert_eq!(tree.nodes.len(), 6);
+        let empty = tree.find("C:\\空").unwrap();
+        assert!(!tree.nodes[empty].arrow());
+        assert_eq!(tree.begin_expand(empty), Expand::No);
+        assert!(tree.nodes[tree.find("C:\\Users").unwrap()].arrow());
+        // 沒有子資料夾的節點：預先載入後箭頭消失
+        let users = tree.find("C:\\Users").unwrap();
+        tree.nodes[users].subdirs = None;
+        tree.take_probes(0, 50);
+        tree.set_probe("C:\\Users", Some(kids(&[])));
+        assert!(!tree.nodes[users].arrow());
+        // 不預先載入的位置（網路磁碟）一律顯示箭頭
+        let win = tree.find("C:\\Windows").unwrap();
+        tree.nodes[win].subdirs = None;
+        assert!(!tree.nodes[win].arrow());
+        assert_eq!(tree.nodes[win].probe, Probe::Pending); // 與 Users 同一批送出
+        tree.set_probe("C:\\Windows", None);
+        assert_eq!(tree.nodes[win].probe, Probe::Skipped);
+        assert!(tree.nodes[win].arrow());
+    }
+
+    #[test]
+    fn tree_reveal_through_hidden_folder() {
+        let (mut tree, c) = drive_tree();
+        tree.begin_expand(c);
+        // 不顯示隱藏檔：C:\Users\me 底下的 AppData 不在清單中
+        tree.insert_children("C:\\", kids(&["Users"]));
+        tree.reveal = Some("C:\\Users\\me\\AppData\\Local".into());
+        assert_eq!(tree.step_reveal(), Reveal::Load("C:\\Users".into()));
+        tree.insert_children("C:\\Users", kids(&["me"]));
+        assert_eq!(tree.step_reveal(), Reveal::Load("C:\\Users\\me".into()));
+        tree.insert_children("C:\\Users\\me", kids(&[]));
+        assert_eq!(tree.step_reveal(), Reveal::Load("C:\\Users\\me\\AppData".into()));
+        tree.insert_children("C:\\Users\\me\\AppData", kids(&["Local", "Roaming"]));
+        match tree.step_reveal() {
+            Reveal::Done(Some(i)) => assert_eq!(tree.nodes[i].path, "C:\\Users\\me\\AppData\\Local"),
+            r => panic!("{r:?}"),
+        }
+        let me = tree.find("C:\\Users\\me").unwrap();
+        assert!(tree.nodes[me].expanded && tree.nodes[me].arrow());
+    }
+
+    #[test]
+    fn tree_reconcile_keeps_subtrees() {
+        let (mut tree, c) = drive_tree();
+        tree.begin_expand(c);
+        tree.insert_children("C:\\", kids(&["a", "b", "c"]));
+        let b = tree.find("C:\\b").unwrap();
+        tree.begin_expand(b);
+        tree.insert_children("C:\\b", kids(&["b1", "b2"]));
+        tree.focus = tree.find("C:\\b\\b2").unwrap();
+        // a 被刪除、新增 a2；b 的展開子樹與焦點保留
+        tree.reconcile("C:\\", kids(&["a2", "B", "c"]));
+        let paths: Vec<&str> = tree.nodes[c + 1..].iter().map(|n| n.path.as_str()).collect();
+        assert_eq!(paths, vec!["C:\\a2", "C:\\b", "C:\\b\\b1", "C:\\b\\b2", "C:\\c"]);
+        assert_eq!(tree.nodes[tree.focus].path, "C:\\b\\b2");
+        tree.reconcile("C:\\", kids(&[]));
+        assert!(!tree.nodes[c].expanded && !tree.nodes[c].arrow());
+        assert_eq!(tree.focus, c);
     }
 }

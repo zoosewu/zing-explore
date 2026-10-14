@@ -11,6 +11,8 @@ cargo build --release
 .\target\release\zing.exe
 ```
 
+`cargo build --release` 同時建置 `zing-index.exe`（NTFS 索引服務，見下方「資料夾大小」）。
+
 ## 目前功能（MVP）
 
 - 單窗格 + 樹狀列，可分割成多個窗格（`Ctrl+\`），每個窗格有分頁（`Ctrl+T`）
@@ -24,7 +26,9 @@ cargo build --release
 - 資料夾內容變更自動更新
 - 深色／淺色主題、跟隨系統，可載入自訂主題檔
 - 快速鍵、工具列按鈕全部由設定檔定義，命令可帶變數（`{sel}`、`{dest}`、`{path}`…）
-- 資料夾大小（`Ctrl+Shift+S`）：背景計算選取的或全部資料夾，可依大小排序；設定 `[folder_sizes] auto = true` 可在進入資料夾時自動計算（只限本機固定磁碟）
+- 資料夾大小：進入資料夾就顯示每個子資料夾的大小，可依大小排序（見下方「資料夾大小」）
+- 樹狀列：看得到的節點先在背景載入子資料夾，點擊前就知道能不能展開（沒有子資料夾就不顯示箭頭），
+  點了立即展開；網路磁碟、隨身碟不預先載入，一律顯示箭頭
 - 檔案作業佇列（`Ctrl+J`）：複製／移動／刪除依序執行，顯示進度與剩餘時間，可暫停、取消；重新命名等小作業不必排隊
 - 命令面板（`Ctrl+Shift+P`）：模糊搜尋所有命令（中文標題或命令名稱，如 `tog hid`），顯示快速鍵，最近用過的排前面；輸入 `>` 開頭可直接執行命令腳本
 
@@ -47,6 +51,21 @@ cmd = "run code {sel}"
 ```
 
 主題檔放在 `zing.exe` 旁的 `themes\<名稱>.toml`，只需寫要改的欄位，其餘沿用內建值。
+
+## 資料夾大小
+
+- **NTFS 索引服務（建議）**：命令面板執行「啟用 NTFS 索引服務」（會跳出 UAC）。服務讀取每顆本機 NTFS 磁碟的
+  主檔案表（MFT）建立索引，之後跟著 NTFS 變更日誌更新，所以任何資料夾的大小都能立即顯示，也會隨檔案變動自動更新。
+  做法與 Everything 相同：只有服務（`zing-index`，LocalSystem）有讀取磁碟區的權限，`zing.exe` 維持一般權限，
+  每次查詢服務都以呼叫者的身分確認能列出該資料夾。
+  - 第一次建立索引約數秒到數十秒；之後開機從快照與變更日誌接續，不必重新掃描
+  - 大小是邏輯大小；有硬連結的檔案只算一次（檔案總管「內容」會重複計算，`C:\Windows` 因此差數 GB）；隱藏與系統檔案都計入
+  - 服務執行檔安裝在 `%ProgramFiles%\zing-explore`，快照與記錄檔在服務帳號的
+    `C:\Windows\System32\config\systemprofile\AppData\Local\zing-explore`
+  - 命令列：`zing-index --status`、`--install`、`--uninstall`；以系統管理員身分執行
+    `zing-index --scan C: --verify C:\Users` 可量測讀取 MFT 的時間並與逐資料夾掃描比對
+- **沒有索引時**（服務未啟用、非 NTFS 磁碟、網路磁碟）：設定 `[folder_sizes] auto = true`（預設）時，進入本機固定磁碟上的資料夾
+  就以背景優先權逐資料夾計算；`Ctrl+Shift+S` 計算選取的（或全部）資料夾。結果快取在 `%LOCALAPPDATA%\zing-explore\folder-sizes.tsv`。
 
 ## 效能
 

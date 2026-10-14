@@ -17,9 +17,11 @@ tree = "left"
 position = "top"
 
 [folder_sizes]
-# true：進入本機固定磁碟上的資料夾時自動計算子資料夾大小（網路磁碟、隨身碟不自動算）
+# 有 NTFS 索引服務（命令面板：啟用 NTFS 索引服務）時，大小一律由索引立即提供，不受這個設定影響。
+# 沒有索引時（服務未啟用、非 NTFS 磁碟）：
+# true：進入本機固定磁碟上的資料夾時，以背景優先權逐資料夾計算子資料夾大小（網路磁碟、隨身碟不自動算）
 # false：只在按 Ctrl+Shift+S（view.foldersizes）時計算
-auto = false
+auto = true
 
 # ---- 導覽 ----
 [[key]]

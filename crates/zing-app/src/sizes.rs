@@ -1,7 +1,9 @@
 //! 資料夾大小：背景計算、顯示、排序與快取。
 //!
+//! - 有 NTFS 索引服務時大小直接由服務提供（`index.rs`）；這裡是沒有索引時的逐資料夾掃描。
 //! - `view.foldersizes`（Ctrl+Shift+S）計算選取的資料夾，沒有選取資料夾時計算目前清單中所有資料夾；
-//!   設定 `[folder_sizes] auto = true` 時，進入本機固定磁碟上的資料夾就自動計算。
+//!   設定 `[folder_sizes] auto = true`（預設）時，進入本機固定磁碟上的資料夾就自動計算。
+//!   計算執行緒以背景模式執行（磁碟與 CPU 優先權最低）。
 //! - 在專用的執行緒池計算（不佔用排序等工作的執行緒），換資料夾時取消（自動重新整理不取消）；
 //!   計算途中約每 150 ms 回報累計值。
 //! - 結果以「上層資料夾 → 名稱」存放，寫進清單項目的 size，依大小排序時資料夾也一起排。
@@ -19,7 +21,7 @@ use zing_core::path;
 
 use crate::app::App;
 use crate::model::Tab;
-use crate::services::{Msg, Pool};
+use crate::services::{Msg, Pool, is_fixed_drive};
 
 /// 快取最多保留的筆數（較舊的捨棄）
 const CACHE_MAX: usize = 50_000;
@@ -53,6 +55,14 @@ pub struct FolderSizes {
     batch_done: usize,
     /// 結果有變、需要寫進清單項目的上層資料夾（小寫）
     dirty: HashSet<String>,
+    /// 索引服務查詢用的執行緒
+    pub query_pool: Option<Pool>,
+    /// 查詢中的資料夾（小寫），避免輪詢重複送出
+    pub inflight: HashSet<String>,
+    /// 由索引提供大小的資料夾（小寫）→ 變動標記；0 表示索引建立中，之後再試
+    pub index_touched: HashMap<String, u64>,
+    /// 已提示過可以啟用索引服務
+    pub hinted: bool,
 }
 
 pub fn key(s: &str) -> String {
@@ -72,7 +82,7 @@ impl FolderSizes {
         self.map.contains_key(parent_key)
     }
 
-    fn set(&mut self, parent: &str, name: &str, info: SizeInfo) {
+    pub fn set_info(&mut self, parent: &str, name: &str, info: SizeInfo) {
         self.map.entry(key(parent)).or_default().insert(key(name), info);
     }
 
@@ -151,14 +161,14 @@ impl App {
         let cancel = tab.size_cancel.clone();
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get() / 2).clamp(2, 4);
         if self.sizes.pool.is_none() {
-            self.sizes.pool = Some(Pool::new(threads));
+            self.sizes.pool = Some(Pool::background(threads, "zing-sizes"));
         }
         if self.sizes.pending == 0 {
             self.sizes.batch_done = 0;
         }
         for name in names {
             let prev = self.sizes.get(&parent_key, &name).map(|i| i.size).unwrap_or_default();
-            self.sizes.set(&parent, &name, SizeInfo { size: prev, state: SizeState::Computing, when: 0 });
+            self.sizes.set_info(&parent, &name, SizeInfo { size: prev, state: SizeState::Computing, when: 0 });
             self.sizes.pending += 1;
             let (n, cancel, parent) = (self.notifier.clone(), cancel.clone(), parent.clone());
             self.sizes.pool.as_ref().unwrap().spawn(move || {
@@ -191,7 +201,7 @@ impl App {
             Some(ok) => {
                 self.sizes.pending = self.sizes.pending.saturating_sub(1);
                 if ok {
-                    self.sizes.set(&parent, &name, SizeInfo { size, state: SizeState::Fresh, when: now_secs() });
+                    self.sizes.set_info(&parent, &name, SizeInfo { size, state: SizeState::Fresh, when: now_secs() });
                     self.sizes.batch_done += 1;
                 } else {
                     self.sizes.remove(&parent, &name);
@@ -224,26 +234,30 @@ impl App {
         }
     }
 
-    /// 把已知的資料夾大小寫進分頁的清單；有改變時回傳 true
+    /// 把已知的資料夾大小寫進分頁的清單；有改變時回傳 true。
+    /// 先找出要改的項目，真的有改變才複製清單（清單可能與背景排序共用，複製 10 萬筆要數毫秒）。
     pub fn patch_tab_sizes(&mut self, p: usize, t: usize) -> bool {
         let tab: &mut Tab = &mut self.panes[p].tabs[t];
         let Some(m) = self.sizes.map.get(&key(&tab.path)) else { return false };
-        let mut changed = false;
-        let listing = Arc::make_mut(&mut tab.listing);
-        for i in 0..listing.len() {
-            if !listing.entries[i].is_dir() {
-                continue;
-            }
-            let bytes = match m.get(&key(&listing.name_string(i))) {
-                Some(info) if info.state != SizeState::Computing => info.size.bytes,
-                _ => 0,
-            };
-            if listing.entries[i].size != bytes {
-                listing.entries[i].size = bytes;
-                changed = true;
-            }
+        let listing = &tab.listing;
+        let changes: Vec<(usize, u64)> = (0..listing.len())
+            .filter(|&i| listing.entries[i].is_dir())
+            .filter_map(|i| {
+                let bytes = match m.get(&key(&listing.name_string(i))) {
+                    Some(info) if info.state != SizeState::Computing => info.size.bytes,
+                    _ => 0,
+                };
+                (listing.entries[i].size != bytes).then_some((i, bytes))
+            })
+            .collect();
+        if changes.is_empty() {
+            return false;
         }
-        changed
+        let listing = Arc::make_mut(&mut tab.listing);
+        for (i, bytes) in changes {
+            listing.entries[i].size = bytes;
+        }
+        true
     }
 
     /// 大小欄的文字；計算中回傳 true（以強調色顯示）
@@ -279,7 +293,7 @@ impl App {
             let (Some(parent), name) = (path::parent(&c.path), path::file_name(&c.path).to_string()) else { continue };
             // 這次已經算過（或正在算）的不覆蓋
             if self.sizes.get(&key(&parent), &name).is_none() {
-                self.sizes.set(&parent, &name, SizeInfo { size: c.size, state: SizeState::Stale, when: c.when });
+                self.sizes.set_info(&parent, &name, SizeInfo { size: c.size, state: SizeState::Stale, when: c.when });
                 self.sizes.dirty.insert(key(&parent));
             }
         }
@@ -316,17 +330,6 @@ impl App {
             self.compute_folder_sizes(p, true, true);
         }
     }
-}
-
-/// 本機固定磁碟（自動計算只在這裡做，不碰網路磁碟與隨身碟）
-fn is_fixed_drive(p: &str) -> bool {
-    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
-    const DRIVE_FIXED: u32 = 3;
-    if p.starts_with("\\\\") {
-        return false;
-    }
-    let root = zing_core::text::wide_z(&format!("{}\\", &p[..p.len().min(2)]));
-    unsafe { GetDriveTypeW(windows::core::PCWSTR(root.as_ptr())) == DRIVE_FIXED }
 }
 
 /// 換資料夾時取消舊的計算

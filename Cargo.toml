@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/zing-core", "crates/zing-app"]
+members = ["crates/zing-core", "crates/zing-app", "crates/zing-index"]
 
 [workspace.package]
 version = "0.1.0"

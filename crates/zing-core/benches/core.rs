@@ -1,4 +1,4 @@
-//! 核心效能基準：排序、篩選、列舉 10 萬檔。
+//! 核心效能基準：排序、篩選、列舉 10 萬檔、NTFS 索引。
 //! 列舉測試需要設定 `ZING_BENCH_DIR`（由 tools/perf.ps1 建立的測試資料夾）。
 
 use std::hint::black_box;
@@ -8,7 +8,9 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use zing_core::enumerate::enumerate;
 use zing_core::listing::{ATTR_DIRECTORY, Listing};
 use zing_core::sort::{SortKey, SortSpec, filter_order, sorted_order};
+use zing_core::ntfs::{Name, ROOT, Record};
 use zing_core::text::Pattern;
+use zing_core::volindex::VolumeIndex;
 
 const N: usize = 100_000;
 
@@ -25,6 +27,81 @@ fn synthetic() -> Listing {
         l.push_str(&name, attrs, seed % 10_000_000, seed);
     }
     l
+}
+
+/// 模擬一個磁碟區的 MFT：`n` 筆記錄，約 1/10 是資料夾，隨機掛在較早的資料夾底下
+fn synthetic_mft(n: u64) -> Vec<Record> {
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut dirs = vec![ROOT];
+    let mut out = Vec::with_capacity(n as usize + 1);
+    out.push(Record { frn: ROOT, dir: true, names: vec![Name { parent: ROOT, name: ".".into() }], ..Default::default() });
+    for frn in 16..16 + n {
+        let dir = frn % 10 == 0;
+        let parent = dirs[(rnd() % dirs.len() as u64) as usize];
+        out.push(Record {
+            frn,
+            dir,
+            names: vec![Name { parent, name: if dir { format!("資料夾 {frn}") } else { String::new() } }],
+            size: (!dir).then(|| rnd() % 10_000_000),
+            attrs: Some(0x20),
+            ..Default::default()
+        });
+        if dir {
+            dirs.push(frn);
+        }
+    }
+    out
+}
+
+fn index_benches(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ntfs");
+    group.sample_size(10);
+    // 解析：10 萬筆已還原更新序列的記錄
+    let raw: Vec<Vec<u8>> = (0..100_000u64)
+        .map(|i| {
+            let b = zing_core::ntfs::build::Builder::file(i + 16).attrs(0x20).name(5, "report.txt", 1).data(&[0; 100]);
+            let mut r = b.bytes();
+            zing_core::ntfs::apply_fixup(&mut r, 512, true);
+            r
+        })
+        .collect();
+    group.bench_function("parse_100k_records", |b| {
+        b.iter(|| raw.iter().enumerate().filter_map(|(i, r)| zing_core::ntfs::parse_record(r, i as u64)).count())
+    });
+    let mft = synthetic_mft(1_000_000);
+    group.bench_function("index_build_1m", |b| {
+        b.iter(|| {
+            let mut v = VolumeIndex::new(1_000_016, 1);
+            for r in &mft {
+                v.add(r);
+            }
+            v.finish();
+            v
+        })
+    });
+    let mut v = VolumeIndex::new(1_000_016, 1);
+    for r in &mft {
+        v.add(r);
+    }
+    v.finish();
+    println!("index_build_1m：{} 個資料夾，索引約 {} MB", v.dir_count(), v.memory() >> 20);
+    // 變更日誌：1 萬個檔案變動（每筆都沿上層鏈傳遞）
+    let changed: Vec<Record> = mft.iter().filter(|r| !r.dir).take(10_000).cloned().collect();
+    group.bench_function("index_update_10k", |b| {
+        b.iter(|| {
+            for r in &changed {
+                v.update(r.frn, Some(r));
+            }
+        })
+    });
+    group.bench_function("index_children_root", |b| b.iter(|| v.children(ROOT).unwrap().len()));
+    group.finish();
 }
 
 fn benches(c: &mut Criterion) {
@@ -55,5 +132,5 @@ fn benches(c: &mut Criterion) {
     }
 }
 
-criterion_group!(core, benches);
+criterion_group!(core, benches, index_benches);
 criterion_main!(core);

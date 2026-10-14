@@ -36,6 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::app::{App, EditKind, Focus, TIMER_SMOKE};
+use crate::model::Probe;
 use crate::window::with_app;
 
 pub struct Smoke {
@@ -425,6 +426,17 @@ fn list_center() -> Option<(f32, f32)> {
         let pl = &a.layout.panes[a.active_pane];
         ((pl.list.l + pl.list.r) / 2.0, (pl.list.t + pl.list.b) / 2.0)
     })
+}
+
+/// 樹狀列第 `i` 個節點的展開箭頭位置（視窗座標，DIP）
+fn tree_arrow_pos(a: &App, i: usize) -> Option<(f32, f32)> {
+    let tr = a.layout.tree?;
+    let rh = a.row_h();
+    let y = tr.t + 4.0 + i as f32 * rh - a.tree.scroll + rh / 2.0;
+    if y < tr.t || y > tr.b {
+        return None;
+    }
+    Some((tr.l + 6.0 + a.tree.nodes[i].depth as f32 * 14.0 + 9.0, y))
 }
 
 fn names(a: &App) -> Vec<String> {
@@ -1254,6 +1266,90 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         )
         .slow(),
     );
+
+    // ------------------------------------------------ 樹狀列
+    v.push(step(
+        "樹狀列：可見的節點已預先載入（點擊前就知道能否展開）",
+        {
+            let d = d.clone();
+            move |c| {
+                // 前面的步驟進入過子資料夾，目前資料夾的節點已展開：先收合
+                let pos = with_app(|a| {
+                    a.tree.find(&d).filter(|&i| a.tree.nodes[i].expanded).and_then(|i| tree_arrow_pos(a, i))
+                })
+                .flatten();
+                click(c, "", pos);
+            }
+        },
+        {
+            let d = d.clone();
+            move |_, a| {
+                let i = a.tree.find(&d).ok_or("樹狀列沒有目前資料夾")?;
+                let n = &a.tree.nodes[i];
+                expect("收合", n.expanded, false)?;
+                expect("預先載入", n.probe, Probe::Done)?;
+                let names = n.prefetched.as_ref().map(|c| c.names.clone()).unwrap_or_default();
+                if !names.iter().any(|x| x == "資料夾A") || !names.iter().any(|x| x == "資料夾B") {
+                    return Err(format!("預先載入的子資料夾：{names:?}"));
+                }
+                if names.iter().any(|x| x == ".jobs") {
+                    return Err("包含隱藏資料夾".into());
+                }
+                expect("箭頭", n.arrow(), true)
+            }
+        },
+    ));
+    v.push(step(
+        "樹狀列：點箭頭立即展開（不等待列舉）",
+        {
+            let d = d.clone();
+            move |c| {
+                let pos = with_app(|a| a.tree.find(&d).and_then(|i| tree_arrow_pos(a, i))).flatten();
+                click(c, "", pos);
+                // 點擊的訊息處理完時就應該已經展開
+                let now = with_app(|a| a.tree.find(&d).is_some_and(|i| a.tree.nodes[i].expanded)).unwrap_or(false);
+                c.notes.push(("tree_expand_sync", now.to_string()));
+            }
+        },
+        {
+            let (d, dir_a) = (d.clone(), dir_a.clone());
+            move |c, a| {
+                expect("點擊時已展開", c.note("tree_expand_sync"), Some("true"))?;
+                let i = a.tree.find(&d).ok_or("找不到節點")?;
+                expect("展開", a.tree.nodes[i].expanded, true)?;
+                let k = a.tree.find(&dir_a).ok_or("沒有 資料夾A 子節點")?;
+                expect("子節點深度", a.tree.nodes[k].depth, a.tree.nodes[i].depth + 1)
+            }
+        },
+    ));
+    v.push(step("樹狀列：沒有子資料夾的節點不顯示箭頭", |_| {}, {
+        let dir_a = dir_a.clone();
+        move |_, a| {
+            let k = a.tree.find(&dir_a).ok_or("沒有 資料夾A 子節點")?;
+            let n = &a.tree.nodes[k];
+            expect("預先載入", n.probe, Probe::Done)?;
+            expect("有子資料夾", n.subdirs, Some(false))?;
+            expect("箭頭", n.arrow(), false)
+        }
+    }));
+    v.push(step(
+        "樹狀列：再點一次收合",
+        {
+            let d = d.clone();
+            move |c| {
+                let pos = with_app(|a| a.tree.find(&d).and_then(|i| tree_arrow_pos(a, i))).flatten();
+                click(c, "", pos);
+            }
+        },
+        {
+            let (d, dir_a) = (d.clone(), dir_a.clone());
+            move |_, a| {
+                let i = a.tree.find(&d).ok_or("找不到節點")?;
+                expect("收合", a.tree.nodes[i].expanded, false)?;
+                expect("子節點", a.tree.find(&dir_a), None)
+            }
+        },
+    ));
 
     // 狀態列錯誤與 UI 執行緒 I/O 防呆的回報在 finish() 統一檢查
     v.push(step("截圖：結束畫面", |_| {}, |c, _| screenshot(c, "03-結束")));

@@ -35,8 +35,8 @@ pub struct Perf {
     nav_start: Option<Instant>,
     first_screen_pending: bool,
     loaded_pending: bool,
-    /// 已等待過硬體繪圖裝置（捲動測試要量穩定狀態的 GPU 繪製）
-    gpu_waited: bool,
+    /// 等待硬體繪圖裝置的期限（捲動測試要量穩定狀態的 GPU 繪製）
+    gpu_deadline: Option<Instant>,
     finished: bool,
 }
 
@@ -131,11 +131,18 @@ pub fn after_paint(app: &mut App) {
         let ms = perf.nav_start.unwrap().elapsed().as_secs_f64() * 1000.0;
         perf.record("first_screen_ms", ms);
     }
-    if perf.loaded_pending && app.gfx.is_warp() && !perf.gpu_waited {
-        // 等硬體裝置就緒（WM_APP_GPU_READY）；沒有 GPU 時 3 秒後改用 WARP 量測
-        perf.gpu_waited = true;
-        unsafe { SetTimer(Some(app.hwnd), TIMER_PERF_GPU, 3000, None) };
-        return;
+    if perf.loaded_pending && app.gfx.is_warp() {
+        // 等硬體裝置就緒（WM_APP_GPU_READY）；沒有 GPU 時 3 秒後改用 WARP 量測。
+        // 等待期間背景結果（資料夾大小、樹狀列預先載入）造成的重繪不能結束等待
+        match perf.gpu_deadline {
+            None => {
+                perf.gpu_deadline = Some(Instant::now() + std::time::Duration::from_secs(3));
+                unsafe { SetTimer(Some(app.hwnd), TIMER_PERF_GPU, 3000, None) };
+                return;
+            }
+            Some(d) if Instant::now() < d => return,
+            Some(_) => {}
+        }
     }
     if perf.loaded_pending {
         perf.loaded_pending = false;

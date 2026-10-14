@@ -433,7 +433,7 @@ impl App {
             }
             let x = tr.l + 6.0 + n.depth as f32 * 14.0;
             let header = matches!(n.kind, NodeKind::FavRoot | NodeKind::Pc);
-            if !n.leaf {
+            if n.arrow() {
                 let arrow = if n.expanded { glyph::CHEVRON_DOWN_SMALL } else { glyph::CHEVRON_RIGHT_SMALL };
                 g.text(arrow, Font::GlyphSmall, Rect::new(x, y, x + 18.0, y + rh), c.text_secondary);
             }

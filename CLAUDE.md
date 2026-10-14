@@ -33,6 +33,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   不涵蓋右鍵選單、剪貼簿、刪除（會搶前景、覆蓋剪貼簿、留東西在資源回收筒），這些仍需手動測試。
 - 只有在確認是改善（或刻意接受的取捨）時才執行 `pwsh tools/perf.ps1 -UpdateBaseline` 更新 `perf/baseline.json`，並在說明中寫明原因。
 - 效能模式的視窗固定在 (100, 100)、1280×800，結果才可重現。
+- 效能模式等硬體 GPU 裝置就緒後才量捲動（最多 3 秒）；等待期間背景結果造成的重繪不會提早結束等待。
+  結果的 `scroll_warp` 為 1 表示是用 WARP（軟體）量的，數字不能和基準比較。
 - frame_p99 受 OS/GPU 偶發停頓影響，同一版本重跑約有 ±1.5 ms 差異，因此退步容差為 2 ms；繪製成本的實際退步由 frame_p50（容差 0.5 ms）把關。
 
 ### 規則
@@ -45,6 +47,13 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   重新命名與新增資料夾走另一條執行緒，不會被大量複製擋住。UI 只透過 `JobCtl` 的 atomic 旗標控制工作，不等待鎖；
   暫停／取消在 Shell 的進度回呼（`shell.rs` 的 `Progress`）中生效。冒煙測試用 `shell::TEST_PROGRESS_DELAY_MS` 放慢複製。
 - 清單一律虛擬化：只處理可見的列；昂貴的欄位（圖示、縮圖、屬性）延遲到捲到才計算。
+- 樹狀列同樣只對看得到的節點預先載入子資料夾（`App::schedule_tree_probes`，在繪製前送出、第一幀之後才開始），
+  在背景模式的執行緒池執行；有索引時問索引，否則只在本機固定磁碟列舉，網路磁碟、隨身碟不預先載入。
+- 不急的背景工作（資料夾大小、預先載入）用 `Pool::background`：磁碟與 CPU 優先權最低，不影響使用者正在做的事。
+- 資料夾大小與樹狀列優先向 NTFS 索引服務（`crates/zing-index`）查詢，沒有服務時才逐資料夾掃描。隔離模式
+  （效能、冒煙測試）不使用索引，結果才可重現。服務以 LocalSystem 執行，修改時遵守：每個查詢先以呼叫者身分
+  （`ImpersonateNamedPipeClient`）開啟資料夾，無權列出就拒絕；只回答大小與子資料夾名稱；管線拒絕遠端連線；
+  服務執行檔只放在系統管理員才能寫入的位置；快照與記錄檔只放在 SYSTEM 與系統管理員能讀取的位置。
 - 右鍵選單、內容對話方塊、剪貼簿一律交給 `ShellHost`（shellhost.rs）：獨立的 STA 執行緒，UI 只送請求不等待，結果以訊息送回。主機忙碌超過 3 秒時下一個請求會改用新主機。
 - `ShellHost` 的視窗必須是 message-only，執行緒上不可留下頂層視窗：系統啟用視窗時會同步送 WM_ACTIVATEAPP 給程序內所有頂層視窗，主機卡住會連帶卡住 UI。選單的擁有者視窗只在選單顯示期間存在。
 - 拖曳出去與放置目標受 COM 限制必須在 UI 執行緒，透過 `App::modal` 在釋放 App 借用後執行；放置目標每次拖曳只解析一次路徑（快取）。
@@ -71,14 +80,22 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 ## 專案結構
 
 - `crates/zing-core`：與 UI 無關、可測試的核心（列舉、排序／篩選、命令語言、快速鍵、主題、設定）。
-- `crates/zing-app`：Win32 視窗、繪製（`gfx`、`view`）、輸入、Shell 整合（`shell`）、背景服務（`services`）、效能模式（`perf`）。
+- `crates/zing-app`：Win32 視窗、繪製（`gfx`、`view`）、輸入、Shell 整合（`shell`）、背景服務（`services`）、效能模式（`perf`）、
+  索引服務用戶端（`index`）。
+- `crates/zing-index`：NTFS 索引服務 `zing-index.exe`（Windows 服務）。讀取 MFT 建立資料夾大小索引、跟著變更日誌更新，
+  經 named pipe（協定在 `zing_core::indexproto`）回答查詢；MFT 解析與索引資料結構在 `zing_core::ntfs`、`zing_core::volindex`，
+  以構造的記錄做單元測試與基準測試（`cargo bench -p zing-core --bench core -- ntfs`）。讀取磁碟區需要系統管理員權限，
+  冒煙測試無法涵蓋：實機驗證用系統管理員終端機執行 `zing-index --scan C: --verify 資料夾`。
   圖示的原始檔是 `assets/zing.svg`（24 px 以下用 `zing-small.svg`），修改後執行 `pwsh tools/make-icon.ps1` 重新產生 `zing.ico`；
   圖示與版本資訊由 `build.rs` 以 Windows SDK 的 `rc.exe` 編譯進執行檔。
 - 資料存放位置：
   - 使用者的設定與習慣放在 `zing.exe` 所在的資料夾（可攜式，重灌系統不受影響）：`config.toml`（設定）、
     `themes\*.toml`（主題）、`session.toml`（視窗、分頁、我的最愛、命令面板最近使用）。路徑一律經 `settings::app_dir()`。
   - 系統產生、可重建的資料（資料夾大小快取、縮圖快取…）放在 `%LOCALAPPDATA%\zing-explore\`（只屬於這台電腦、不漫遊，
-    刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（資料夾大小，見 `sizes.rs`）。
+    刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（沒有索引時的資料夾大小，見 `sizes.rs`）。
+  - 索引服務：執行檔安裝時複製到 `%ProgramFiles%\zing-explore\zing-index.exe`（以 LocalSystem 執行的程式不能放在一般使用者
+    可修改的位置）；快照（`<磁碟區序號>.zidx`）與 `index.log` 放在服務帳號的 `%LOCALAPPDATA%`，即
+    `C:\Windows\System32\config\systemprofile\AppData\Local\zing-explore`（不用 `%ProgramData%`：一般使用者能先建立同名資料夾）。
   - 不要把 `zing.exe` 放在使用者無法寫入的位置（如 Program Files）；開發時從 `target\release` 執行，設定會在
     `cargo clean` 時一起被刪除。
 

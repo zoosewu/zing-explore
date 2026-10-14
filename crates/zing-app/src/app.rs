@@ -20,10 +20,10 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use crate::gfx::Gfx;
 use crate::icons::Icons;
 use crate::jobs::Jobs;
-use crate::model::{Pane, Reveal, Tab, Tree};
+use crate::model::{Children, Expand, Pane, Reveal, Tab, Tree};
 use crate::palette::Palette;
 use crate::perf::Perf;
-use crate::services::{self, Msg, Notifier, Pool, TabId};
+use crate::services::{TreeLoad, self, Msg, Notifier, Pool, TabId};
 use crate::settings::{self, Session};
 use crate::shell::{self, FileOp, FileOps};
 use crate::shellhost::{ShellHost, ShellJob};
@@ -39,6 +39,9 @@ pub const TIMER_SMOKE: usize = 5;
 pub const TIMER_JOBS: usize = 6;
 /// 結束時等待檔案作業取消完成的上限
 pub const TIMER_EXIT: usize = 7;
+/// 輪詢索引服務，確認目前顯示的資料夾大小有沒有變動
+pub const TIMER_INDEX: usize = 8;
+pub const INDEX_POLL_MS: u32 = 2000;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -87,6 +90,10 @@ pub struct App {
     pub panes: Vec<Pane>,
     pub active_pane: usize,
     pub tree: Tree,
+    /// 樹狀列預先載入的執行緒（背景模式）；第一幀之後才建立
+    pub tree_pool: Option<Pool>,
+    /// 第一幀之後才開始預先載入樹狀列
+    pub probes_enabled: bool,
     pub tree_visible: bool,
     pub tree_side: TreeSide,
     pub tree_width: f32,
@@ -173,6 +180,8 @@ impl App {
             panes: Vec::new(),
             active_pane: 0,
             tree,
+            tree_pool: None,
+            probes_enabled: false,
             focus: Focus::List,
             favorites,
             pool,
@@ -444,10 +453,41 @@ impl App {
         }
         if self.tree.nodes[i].expanded {
             self.tree.collapse(i);
-        } else if let Some(p) = self.tree.begin_expand(i) {
-            services::tree_children(&self.pool, &self.notifier, p, self.show_hidden);
+        } else {
+            match self.tree.begin_expand(i) {
+                Expand::Load(p) => self.load_tree(p, TreeLoad::Expand),
+                // 以預先載入的內容立即展開；內容放了一陣子時在背景重新確認
+                Expand::Done { path, stale: true } => self.load_tree(path, TreeLoad::Refresh),
+                Expand::Done { .. } | Expand::No => {}
+            }
         }
         self.invalidate();
+    }
+
+    fn load_tree(&mut self, path: String, kind: TreeLoad) {
+        let use_index = !self.isolated;
+        let show_hidden = self.show_hidden;
+        // 使用者展開走一般的工作池（不排在預先載入後面）
+        let pool = match kind {
+            TreeLoad::Probe => self.tree_pool.get_or_insert_with(|| Pool::background(2, "zing-tree")),
+            _ => &self.pool,
+        };
+        services::tree_children(pool, &self.notifier, path, show_hidden, use_index, kind);
+    }
+
+    /// 繪製前：樹狀列可見範圍內還沒預先載入的節點送出預先載入（第一幀之後才開始）
+    pub fn schedule_tree_probes(&mut self) {
+        if !self.probes_enabled {
+            return;
+        }
+        let Some(tr) = self.layout.tree else { return };
+        let rh = self.row_h();
+        let first = (self.tree.scroll / rh).floor().max(0.0) as usize;
+        // 多取幾列，捲動時下一批已經準備好
+        let count = (tr.h() / rh).ceil() as usize + 8;
+        for path in self.tree.take_probes(first.saturating_sub(4), count + 4) {
+            self.load_tree(path, TreeLoad::Probe);
+        }
     }
 
     /// 樹狀列展開到目前資料夾
@@ -458,7 +498,7 @@ impl App {
 
     fn step_tree_reveal(&mut self) {
         match self.tree.step_reveal() {
-            Reveal::Load(p) => services::tree_children(&self.pool, &self.notifier, p, self.show_hidden),
+            Reveal::Load(p) => self.load_tree(p, TreeLoad::Expand),
             Reveal::Done(Some(i)) => {
                 self.tree.focus = i;
                 self.ensure_tree_visible(i);
@@ -557,7 +597,7 @@ impl App {
                     if self.sizes.has_parent(&path_key) {
                         self.sizes_dirty(path_key);
                     }
-                    self.auto_folder_sizes(p, t);
+                    self.folder_sizes_on_enter(p, t);
                     let tab = &mut self.panes[p].tabs[t];
                     if let Some((name, rename)) = tab.pending_select.take() {
                         match tab.find_view(&name) {
@@ -599,12 +639,21 @@ impl App {
                     }
                 }
             }
-            Msg::TreeChildren { path, names } => {
-                self.tree.insert_children(&path, names);
-                if self.tree.reveal.is_some() {
-                    self.step_tree_reveal();
+            Msg::TreeChildren { path, children, kind } => match kind {
+                TreeLoad::Probe => self.tree.set_probe(&path, children),
+                TreeLoad::Refresh => {
+                    if let Some(c) = children {
+                        self.tree.reconcile(&path, c);
+                    }
                 }
-            }
+                TreeLoad::Expand => {
+                    let empty = || Children::new(Vec::new(), Vec::new());
+                    self.tree.insert_children(&path, children.unwrap_or_else(empty));
+                    if self.tree.reveal.is_some() {
+                        self.step_tree_reveal();
+                    }
+                }
+            },
             Msg::DirChanged { tab, generation } => {
                 if let Some((p, t)) = self.find_tab(tab) {
                     let tab = &mut self.panes[p].tabs[t];
@@ -644,6 +693,8 @@ impl App {
             Msg::Job { id, event } => self.on_job_event(id, event),
             Msg::FolderSize { parent, name, size, done } => self.on_folder_size(parent, name, size, done),
             Msg::FolderSizesLoaded(lines) => self.on_size_cache_loaded(lines),
+            Msg::IndexSizes { parent, result } => self.on_index_sizes(parent, result),
+            Msg::IndexAction { text, error, changed } => self.on_index_action(text, error, changed),
             Msg::Paste { sources, dest, cut } => self.submit_op(FileOp::Transfer { sources, dest, mov: cut }),
             Msg::ConfigLoaded { config, theme, warnings } => {
                 self.config = config;
@@ -917,6 +968,7 @@ impl App {
                 self.set_sort(key, asc);
             }
             "view.foldersizes" => self.compute_folder_sizes(p, false, false),
+            "index.install" | "index.uninstall" | "index.status" => self.index_command(&inv.name),
             "view.togglehidden" => {
                 self.show_hidden = !self.show_hidden;
                 let show_hidden = self.show_hidden;
@@ -925,6 +977,7 @@ impl App {
                         t.rebuild_view(show_hidden);
                     }
                 }
+                self.tree.reset_probes();
                 self.set_status(if show_hidden { "顯示隱藏檔案" } else { "不顯示隱藏檔案" }, false);
             }
             "filter.clear" => self.set_filter(String::new()),

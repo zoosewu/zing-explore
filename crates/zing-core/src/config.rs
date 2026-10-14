@@ -38,11 +38,17 @@ pub struct PaletteConfig {
     pub position: PalettePosition,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FolderSizesConfig {
-    /// 進入本機固定磁碟上的資料夾時自動計算子資料夾大小
+    /// 沒有索引時，進入本機固定磁碟上的資料夾就逐資料夾計算子資料夾大小
     pub auto: bool,
+}
+
+impl Default for FolderSizesConfig {
+    fn default() -> Self {
+        FolderSizesConfig { auto: true }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

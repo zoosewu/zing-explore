@@ -17,7 +17,10 @@ use windows::Win32::Storage::FileSystem::{
     FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification,
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
-use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
+use windows::Win32::System::Threading::{
+    CreateEventW, GetCurrentThread, INFINITE, SetEvent, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+    WaitForMultipleObjects,
+};
 use windows::Win32::UI::Shell::{SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, SW_SHOWNORMAL, WM_APP};
 use windows::core::PCWSTR;
@@ -31,7 +34,8 @@ pub enum Msg {
     Listing { tab: TabId, generation: u64, listing: Arc<Listing>, sorted: Vec<u32>, done: bool },
     ListingError { tab: TabId, generation: u64, error: String },
     Sorted { tab: TabId, generation: u64, spec: SortSpec, sorted: Vec<u32> },
-    TreeChildren { path: String, names: Vec<String> },
+    /// 樹狀列的子資料夾；None 表示這個位置不預先載入（`kind` 為 Probe 時）
+    TreeChildren { path: String, children: Option<crate::model::Children>, kind: TreeLoad },
     DirChanged { tab: TabId, generation: u64 },
     FileOpDone { dirs: Vec<String>, error: Option<String>, select: Option<Select> },
     Status { text: String, error: bool },
@@ -54,6 +58,10 @@ pub enum Msg {
     FolderSize { parent: String, name: String, size: zing_core::dirsize::DirSize, done: Option<bool> },
     /// 背景讀出的資料夾大小快取
     FolderSizesLoaded(Vec<zing_core::dirsize::CacheLine>),
+    /// 向索引服務查詢資料夾大小的結果（`parent` 底下的子資料夾）
+    IndexSizes { parent: String, result: Result<zing_core::indexproto::Response, zing_core::indexproto::QueryError> },
+    /// 安裝、移除索引服務或查詢狀態的結果（狀態列訊息，成功時重新查詢）
+    IndexAction { text: String, error: bool, changed: bool },
 }
 
 /// 檔案作業完成後要選取（並可能進入重新命名）的項目
@@ -107,13 +115,27 @@ pub struct Pool {
 
 impl Pool {
     pub fn new(threads: usize) -> Self {
+        Self::with(threads, "zing-worker", false)
+    }
+
+    /// 背景模式的工作池：磁碟與 CPU 優先權最低，用於資料夾大小、樹狀列預先載入等不急的工作
+    pub fn background(threads: usize, name: &str) -> Self {
+        Self::with(threads, name, true)
+    }
+
+    fn with(threads: usize, name: &str, background: bool) -> Self {
         let (tx, rx) = channel::<Job>();
         let rx = Arc::new(Mutex::new(rx));
         for i in 0..threads {
             let rx = rx.clone();
             std::thread::Builder::new()
-                .name(format!("zing-worker-{i}"))
+                .name(format!("{name}-{i}"))
                 .spawn(move || {
+                    if background {
+                        unsafe {
+                            let _ = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+                        }
+                    }
                     loop {
                         let job = match rx.lock() {
                             Ok(guard) => guard.recv(),
@@ -172,22 +194,57 @@ pub fn sort_job(pool: &Pool, n: &Notifier, tab: TabId, generation: u64, listing:
     });
 }
 
-/// 樹狀列：列出子資料夾名稱（自然排序）
-pub fn tree_children(pool: &Pool, n: &Notifier, path: String, show_hidden: bool) {
+/// 樹狀列載入子資料夾的用途
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeLoad {
+    /// 使用者展開，等著顯示
+    Expand,
+    /// 預先載入可見的節點（只在索引或本機固定磁碟上做）
+    Probe,
+    /// 以預先載入的內容展開後重新確認
+    Refresh,
+}
+
+/// 樹狀列：列出子資料夾。有索引時從索引取得（同時知道每個子資料夾是否還有子資料夾），否則列舉。
+pub fn tree_children(pool: &Pool, n: &Notifier, path: String, show_hidden: bool, use_index: bool, kind: TreeLoad) {
     let n = n.clone();
     pool.spawn(move || {
-        let never = AtomicBool::new(false);
-        let names = match enumerate(&path, true, &never, |_| {}) {
-            Ok(l) => {
-                let mut idx: Vec<usize> =
-                    (0..l.len()).filter(|&i| l.entries[i].is_dir() && (show_hidden || !l.entries[i].is_hidden())).collect();
-                idx.sort_by(|&a, &b| natural_cmp(l.name(a), l.name(b)));
-                idx.into_iter().map(|i| l.name_string(i)).collect()
-            }
-            Err(_) => Vec::new(),
-        };
-        n.send(Msg::TreeChildren { path, names });
+        let children = subdirs(&path, show_hidden, use_index, kind == TreeLoad::Probe);
+        n.send(Msg::TreeChildren { path, children, kind });
     });
+}
+
+fn subdirs(path: &str, show_hidden: bool, use_index: bool, probe: bool) -> Option<crate::model::Children> {
+    if use_index && let Some(c) = crate::index::subdirs(path, show_hidden) {
+        return Some(c);
+    }
+    // 預先載入不碰網路磁碟、隨身碟、光碟機（可能很慢或讓光碟開始轉）
+    if probe && !is_fixed_drive(path) {
+        return None;
+    }
+    let never = AtomicBool::new(false);
+    let names: Vec<String> = match enumerate(path, true, &never, |_| {}) {
+        Ok(l) => {
+            let mut idx: Vec<usize> =
+                (0..l.len()).filter(|&i| l.entries[i].is_dir() && (show_hidden || !l.entries[i].is_hidden())).collect();
+            idx.sort_by(|&a, &b| natural_cmp(l.name(a), l.name(b)));
+            idx.into_iter().map(|i| l.name_string(i)).collect()
+        }
+        Err(_) => Vec::new(),
+    };
+    let subdirs = vec![None; names.len()];
+    Some(crate::model::Children::new(names, subdirs))
+}
+
+/// 本機固定磁碟（自動計算與預先載入只在這裡做，不碰網路磁碟與隨身碟）
+pub fn is_fixed_drive(p: &str) -> bool {
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+    const DRIVE_FIXED: u32 = 3;
+    if p.starts_with("\\\\") || p.len() < 2 || p.as_bytes()[1] != b':' {
+        return false;
+    }
+    let root = wide_z(&format!("{}\\", &p[..2]));
+    unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) == DRIVE_FIXED }
 }
 
 /// 資料夾監看。Drop 時停止。

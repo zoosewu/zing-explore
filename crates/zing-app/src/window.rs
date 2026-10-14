@@ -412,7 +412,16 @@ fn set_window_icons(hwnd: HWND) {
 /// 第一幀之後才做的初始化：OLE（剪貼簿、拖放）、視窗圖示，不影響啟動時間
 fn deferred_init(hwnd: HWND) {
     set_window_icons(hwnd);
-    with_app(|a| a.load_size_cache());
+    with_app(|a| {
+        a.load_size_cache();
+        a.probes_enabled = true;
+        a.invalidate();
+        if !a.isolated {
+            unsafe {
+                SetTimer(Some(hwnd), crate::app::TIMER_INDEX, crate::app::INDEX_POLL_MS, None);
+            }
+        }
+    });
     unsafe {
         let _ = OleInitialize(None);
         let target: IDropTarget = DropTarget::new(hwnd, drop_resolve, drop_hover, drop_transfer).into();
@@ -453,6 +462,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 BeginPaint(hwnd, &mut ps);
             }
             with_app(|a| {
+                a.schedule_tree_probes();
                 a.paint();
                 crate::perf::after_paint(a);
             });
@@ -643,6 +653,9 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                     with_app(crate::perf::after_paint);
                 }
                 TIMER_SMOKE => crate::smoke::tick(hwnd),
+                crate::app::TIMER_INDEX => {
+                    with_app(|a| a.poll_index());
+                }
                 TIMER_JOBS => {
                     with_app(|a| a.jobs_tick());
                 }

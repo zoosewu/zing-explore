@@ -1,0 +1,31 @@
+[package]
+name = "zing-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "zing-explore 的 NTFS 索引服務：讀取 MFT 與變更日誌，提供資料夾大小與子資料夾清單"
+
+[[bin]]
+name = "zing-index"
+path = "src/main.rs"
+
+[dependencies]
+zing-core.workspace = true
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
