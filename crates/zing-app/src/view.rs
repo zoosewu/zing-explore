@@ -7,6 +7,7 @@ use zing_core::config::TreeSide;
 use zing_core::format;
 use zing_core::path;
 use zing_core::sort::SortKey;
+use zing_core::theme::AddressStyle;
 
 use crate::app::{App, Focus};
 use crate::gfx::{Font, Rect, glyph};
@@ -106,26 +107,30 @@ impl App {
         // 工具列：導覽按鈕、網址列（麵包屑）、篩選標籤、自訂按鈕
         let tb = lay.toolbar;
         let cy = (tb.t + tb.b) / 2.0;
+        // 工具列內元件的半高：隨主題的工具列高度縮放（緊湊風格較矮）
+        let hh = ((m.toolbar_height - 6.0) / 2.0).clamp(10.0, 16.0);
         let mut x = 6.0;
         for i in 0..4 {
-            lay.nav[i] = Rect::new(x, cy - 16.0, x + NAV_BTN, cy + 16.0);
+            lay.nav[i] = Rect::new(x, cy - hh, x + NAV_BTN, cy + hh);
             x += NAV_BTN + 2.0;
         }
         let mut right = w - 8.0;
         for b in self.config.buttons.iter().rev() {
             let bw = self.gfx.measure(&b.label, Font::Small) + 20.0;
-            lay.buttons.insert(0, Rect::new(right - bw, cy - 14.0, right, cy + 14.0));
+            lay.buttons.insert(0, Rect::new(right - bw, cy - hh + 2.0, right, cy + hh - 2.0));
             right -= bw + 4.0;
         }
         let tab = self.tab();
         if !tab.filter.is_empty() {
             // 左側圖示 26 + 右側關閉鈕 22 + 間距
             let cw = (self.gfx.measure(&format!("篩選：{}", tab.filter), Font::Small) + 54.0).min(280.0);
-            lay.filter_chip = Some(Rect::new(right - cw, cy - 14.0, right, cy + 14.0));
+            lay.filter_chip = Some(Rect::new(right - cw, cy - hh + 2.0, right, cy + hh - 2.0));
             right -= cw + 6.0;
         }
-        lay.address = Rect::new(x + 6.0, cy - 15.0, right.max(x + 120.0), cy + 15.0);
-        self.layout_crumbs(&mut lay);
+        lay.address = Rect::new(x + 6.0, cy - hh + 1.0, right.max(x + 120.0), cy + hh - 1.0);
+        if self.theme.chrome.address == AddressStyle::Breadcrumb {
+            self.layout_crumbs(&mut lay);
+        }
 
         // 檔案作業面板與狀態列上的進度
         let jobs_h = self.jobs_panel_height();
@@ -379,6 +384,17 @@ impl App {
         // 網址列
         g.fill_round(lay.address, self.theme.metrics.radius, c.background);
         g.stroke_round(lay.address, self.theme.metrics.radius, c.border, 1.0);
+        if self.theme.chrome.address == AddressStyle::Path {
+            // 完整路徑；點一下進入編輯（與麵包屑的空白處相同）
+            let a = lay.address;
+            let r = Rect::new(a.l + 8.0, a.t, a.r - 8.0, a.b);
+            if tab.path.is_empty() {
+                // 「此電腦」用一般字型：等寬字型沒有中文字形，啟動的第一幀會多一次字型後備查詢（約 1 ms）
+                g.text("此電腦", Font::Text, r, c.text_secondary);
+            } else {
+                g.text(&tab.path, Font::Mono, r, c.text);
+            }
+        }
         if lay.crumb_overflow {
             g.text("…", Font::Text, Rect::new(lay.address.l + 8.0, lay.address.t, lay.address.l + 28.0, lay.address.b), c.text_secondary);
         }
@@ -423,15 +439,17 @@ impl App {
             let y = tr.t + 4.0 + i as f32 * rh - self.tree.scroll;
             let row = Rect::new(tr.l + 4.0, y, tr.r - 4.0, y + rh);
             let is_current = current == Some(i) && n.kind != NodeKind::Favorite;
+            let x = tr.l + 6.0 + n.depth as f32 * 14.0;
             if is_current {
-                g.fill_round(row, self.theme.metrics.radius, if self.focus == Focus::Tree { c.selection } else { c.selection_inactive });
+                let sel = if self.theme.chrome.selection_after_icon { Rect::new(x + 40.0, row.t, row.r, row.b) } else { row };
+                g.fill_round(sel, self.theme.metrics.radius, if self.focus == Focus::Tree { c.selection } else { c.selection_inactive });
             } else if self.hover == Hit::TreeRow(i) || self.hover == Hit::TreeArrow(i) {
                 g.fill_round(row, self.theme.metrics.radius, c.hover);
             }
             if self.focus == Focus::Tree && self.tree.focus == i {
-                g.stroke_round(row, self.theme.metrics.radius, c.accent, 1.0);
+                let ring = if is_current { c.selection_text } else { c.accent };
+                g.stroke_round(row, self.theme.metrics.radius, ring, 1.0);
             }
-            let x = tr.l + 6.0 + n.depth as f32 * 14.0;
             let header = matches!(n.kind, NodeKind::FavRoot | NodeKind::Pc);
             if n.arrow() {
                 let arrow = if n.expanded { glyph::CHEVRON_DOWN_SMALL } else { glyph::CHEVRON_RIGHT_SMALL };
@@ -455,7 +473,8 @@ impl App {
             }
             let font = if header { Font::Bold } else { Font::Text };
             let label = if n.loading { format!("{}…", n.name) } else { n.name.clone() };
-            g.text(&label, font, Rect::new(x + 44.0, y, row.r - 4.0, y + rh), c.text);
+            let text_col = if is_current && self.focus == Focus::Tree { c.selection_text } else { c.text };
+            g.text(&label, font, Rect::new(x + 44.0, y, row.r - 4.0, y + rh), text_col);
         }
         g.pop_clip();
     }
@@ -475,8 +494,11 @@ impl App {
             let active = t == pane.active;
             if active {
                 g.fill_round(Rect::new(r.l, r.t, r.r, r.b + radius), radius, c.background);
-                if active_pane && self.panes.len() > 1 {
-                    g.fill(Rect::new(r.l + radius, r.t, r.r - radius, r.t + 2.0), c.accent);
+                let multi = self.panes.len() > 1;
+                if self.theme.chrome.tab_accent || (active_pane && multi) {
+                    // 多窗格時只有作用中的窗格用強調色
+                    let line = if active_pane || !multi { c.accent } else { c.border };
+                    g.fill(Rect::new(r.l + radius, r.t, r.r - radius, r.t + 2.0), line);
                 }
             } else if self.hover == Hit::Tab(p, t) || self.hover == Hit::TabClose(p, t) {
                 g.fill_round(r.inset(0.0, 2.0), radius, c.hover);
@@ -535,15 +557,25 @@ impl App {
             let y = list.t + i as f32 * rh - tab.scroll;
             let row = Rect::new(list.l + 4.0, y, list.r - SCROLLBAR_W, y + rh);
             let selected = tab.selected[e];
+            // 焦點所在的選取列：文字一律用選取文字色（緊湊風格的實心強調色上用深色字）
+            let on_selection = selected && list_focused && drop_row != Some(i);
             if drop_row == Some(i) {
                 g.fill_round(row, radius, c.accent.with_alpha(70));
             } else if selected {
-                g.fill_round(row, radius, if list_focused { c.selection } else { c.selection_inactive });
+                let (nl, _) = pl.cols[0];
+                let sel = if self.theme.chrome.selection_after_icon { Rect::new(nl + 34.0, row.t, row.r, row.b) } else { row };
+                g.fill_round(sel, radius, if list_focused { c.selection } else { c.selection_inactive });
             } else if self.hover == Hit::Row(p, i) {
                 g.fill_round(row, radius, c.hover);
             }
             if list_focused && i == tab.focus {
-                g.stroke_round(row, radius, c.accent, 1.0);
+                // 實心選取色上的焦點框用選取文字色才看得見；選取底色不含圖示時框也只框住文字部分
+                let ring_r = if on_selection && self.theme.chrome.selection_after_icon {
+                    Rect::new(pl.cols[0].0 + 34.0, row.t, row.r, row.b)
+                } else {
+                    row
+                };
+                g.stroke_round(ring_r, radius, if on_selection { c.selection_text } else { c.accent }, 1.0);
             }
             let name = tab.listing.name(e);
             let dir = entry.is_dir();
@@ -552,6 +584,10 @@ impl App {
                 && let Some((_, col)) = self.rules.iter().find(|(pat, _)| pat.matches(name)) {
                     text_col = *col;
                 }
+            let secondary = if on_selection { c.selection_text } else { c.text_secondary };
+            if on_selection {
+                text_col = c.selection_text;
+            }
             let (nl, nr) = pl.cols[0];
             // 系統圖示；尚未載入時先畫字型圖示
             let icon_r = Rect::new(nl + 8.0, y, nl + 32.0, y + rh);
@@ -563,20 +599,20 @@ impl App {
             g.text_w(name, Font::Text, Rect::new(nl + 36.0, y, nr - 6.0, y + rh), text_col);
             let (ml, mr) = pl.cols[1];
             if mr - ml > 20.0 {
-                g.text(&format::filetime_local(entry.modified), Font::Text, Rect::new(ml + 12.0, y, mr - 6.0, y + rh), c.text_secondary);
+                g.text(&format::filetime_local(entry.modified), Font::Text, Rect::new(ml + 12.0, y, mr - 6.0, y + rh), secondary);
             }
             let (tl, tr) = pl.cols[2];
             if tr - tl > 20.0 {
                 let label = if tab.path.is_empty() { "磁碟機".to_string() } else { format::type_label(dir, tab.listing.ext(e)) };
-                g.text(&label, Font::Text, Rect::new(tl + 12.0, y, tr - 6.0, y + rh), c.text_secondary);
+                g.text(&label, Font::Text, Rect::new(tl + 12.0, y, tr - 6.0, y + rh), secondary);
             }
             let (sl, sr) = pl.cols[3];
             if sr - sl > 20.0 {
                 let r = Rect::new(sl + 6.0, y, sr - 12.0, y + rh);
                 if !dir {
-                    g.text(&format::size_kb(entry.size), Font::TextRight, r, c.text_secondary);
+                    g.text(&format::size_kb(entry.size), Font::TextRight, r, secondary);
                 } else if let Some((text, computing)) = self.folder_size_text(&size_key, &tab.listing.name_string(e)) {
-                    g.text(&text, Font::TextRight, r, if computing { c.accent } else { c.text_secondary });
+                    g.text(&text, Font::TextRight, r, if computing && !on_selection { c.accent } else { secondary });
                 }
             }
         }

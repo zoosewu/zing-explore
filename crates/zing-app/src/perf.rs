@@ -13,7 +13,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use zing_core::theme::{Mode, Theme};
 use windows::Win32::Foundation::FILETIME;
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2};
 use windows::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
@@ -207,7 +206,7 @@ fn scroll_test(app: &mut App, frames: u32) {
 }
 
 fn theme_test(app: &mut App) {
-    let other = if app.theme.mode == Mode::Dark { Theme::light() } else { Theme::dark() };
+    let other = app.theme.toggled();
     let original = app.theme.clone();
     let t = Instant::now();
     app.apply_theme(other);

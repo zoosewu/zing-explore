@@ -80,6 +80,8 @@ pub enum Font {
     SmallRight,
     Glyph,
     GlyphSmall,
+    /// 等寬字（網址列的完整路徑）
+    Mono,
 }
 
 /// Fluent 圖示字型的字碼（Segoe Fluent Icons / Segoe MDL2 Assets 共用）
@@ -230,6 +232,8 @@ impl Gfx {
         map.insert(Font::SmallRight, mk(&family, DWRITE_FONT_WEIGHT_NORMAL, size - 1.0, DWRITE_TEXT_ALIGNMENT_TRAILING)?);
         map.insert(Font::Glyph, mk(&glyph_family, DWRITE_FONT_WEIGHT_NORMAL, 16.0, DWRITE_TEXT_ALIGNMENT_CENTER)?);
         map.insert(Font::GlyphSmall, mk(&glyph_family, DWRITE_FONT_WEIGHT_NORMAL, 10.0, DWRITE_TEXT_ALIGNMENT_CENTER)?);
+        // 只有路徑樣式的網址列用到；找不到 Cascadia Mono 時 DirectWrite 會改用後備字型
+        map.insert(Font::Mono, mk(&HSTRING::from("Cascadia Mono"), DWRITE_FONT_WEIGHT_NORMAL, size, DWRITE_TEXT_ALIGNMENT_LEADING)?);
         Ok(Formats { map })
     }
 

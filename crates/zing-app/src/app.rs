@@ -1002,7 +1002,8 @@ impl App {
                 });
             }
             "theme.toggle" => {
-                let theme = if self.theme.mode == Mode::Dark { Theme::light() } else { Theme::dark() };
+                // 同一風格的另一種深淺色
+                let theme = self.theme.toggled();
                 self.apply_theme(theme);
             }
             "config.edit" => {

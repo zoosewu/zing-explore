@@ -24,7 +24,8 @@ cargo build --release
 - 系統檔案圖示（背景載入，執行檔與捷徑顯示各自的圖示）
 - 我的最愛：`Ctrl+D` 或右鍵「加入我的最愛」，在樹狀列右鍵移除
 - 資料夾內容變更自動更新
-- 深色／淺色主題、跟隨系統，可載入自訂主題檔
+- 三種內建風格，各有深色／淺色並可跟隨系統：緊湊（預設，高密度、直角、完整路徑）、Fluent（寬鬆圓角）、
+  折衷（Fluent 外觀、中等密度）；命令面板「主題：…」切換，`Ctrl+Shift+T` 切換深淺色時保留風格；可載入自訂主題檔
 - 快速鍵、工具列按鈕全部由設定檔定義，命令可帶變數（`{sel}`、`{dest}`、`{path}`…）
 - 資料夾大小：進入資料夾就顯示每個子資料夾的大小，可依大小排序（見下方「資料夾大小」）
 - 樹狀列：看得到的節點先在背景載入子資料夾，點擊前就知道能不能展開（沒有子資料夾就不顯示箭頭），
@@ -39,7 +40,7 @@ cargo build --release
 範本見 [`crates/zing-core/src/default_config.toml`](crates/zing-core/src/default_config.toml)。
 
 ```toml
-theme = "dark"          # dark | light | system | 自訂主題名稱
+theme = "system"        # system | dark | light（緊湊）、fluent | balanced（跟隨系統）、fluent-dark…、自訂主題名稱
 
 [[key]]
 key = "F6"
@@ -50,7 +51,19 @@ label = "用 VS Code 開啟"
 cmd = "run code {sel}"
 ```
 
-主題檔放在 `zing.exe` 旁的 `themes\<名稱>.toml`，只需寫要改的欄位，其餘沿用內建值。
+主題檔放在 `zing.exe` 旁的 `themes\<名稱>.toml`，只需寫要改的欄位，其餘沿用 `style`（compact | fluent | balanced）
+與 `mode`（dark | light）選定的內建主題：
+
+```toml
+style = "fluent"
+mode = "dark"
+[color]
+accent = "#4cc2ff"
+[metrics]
+row_height = 30
+[chrome]
+address = "path"        # path（完整路徑）| breadcrumb（麵包屑）
+```
 
 ## 資料夾大小
 

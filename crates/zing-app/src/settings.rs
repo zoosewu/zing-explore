@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use zing_core::config::Config;
-use zing_core::theme::Theme;
+use zing_core::theme::{Style, Theme};
 use serde::{Deserialize, Serialize};
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::core::w;
@@ -58,10 +58,10 @@ pub fn system_prefers_light() -> bool {
 /// 依名稱取得主題：`system`、內建的 `dark` / `light`，或 themes 資料夾中的 `<名稱>.toml`。
 pub fn resolve_theme(name: &str) -> (Theme, Option<String>) {
     let name = name.trim();
-    if name.eq_ignore_ascii_case("system") || name.is_empty() {
-        return (if system_prefers_light() { Theme::light() } else { Theme::dark() }, None);
-    }
-    if let Some(t) = Theme::builtin(&name.to_ascii_lowercase()) {
+    // 內建主題（system、dark、light、fluent、balanced-dark…）；只有用到「跟隨系統」時才讀登錄
+    let lower = name.to_ascii_lowercase();
+    let follows_system = lower.is_empty() || lower == "system" || Style::parse(&lower).is_some();
+    if let Some(t) = Theme::resolve_builtin(name, follows_system && system_prefers_light()) {
         return (t, None);
     }
     zing_core::guard::io("讀取主題檔");
