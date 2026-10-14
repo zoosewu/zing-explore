@@ -2,7 +2,8 @@
 //!
 //! - 腳本在專用的執行緒執行，UI 只送工作、不等待；腳本要求的動作（命令、訊息、詢問）以訊息送回 UI。
 //! - 呼叫時一併傳入當下狀態的快照（目前資料夾、選取、焦點）。
-//! - 每次執行有時間上限（命令 30 秒、縮圖規則 0.3 秒），超過時以指令計數鉤子中止。
+//! - 每次執行有 CPU 時間上限（命令 30 秒、縮圖規則 0.3 秒），超過時以指令計數鉤子中止。
+//!   以腳本執行緒的 CPU 時間計算：等待 `ask()`、外部程式（`os.execute`）、檔案 I/O 不計，只攔下失控的迴圈。
 //! - 全域函式就是命令（標題取自上方的 `---` 註解）；`on_navigate`、`thumbnail` 是事件。
 //!
 //! release build 是 `panic = "abort"`：Lua 的錯誤（Windows 上是 SEH 展開的 longjmp）只要穿過 Rust 的堆疊框架，
@@ -18,15 +19,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mlua::{Lua, LuaOptions, StdLib, Table, Value};
-use zing_core::command::{Arg, Invocation};
+use zing_core::command::{Arg, Invocation, quote_arg};
 use zing_core::scriptapi;
 
-use crate::services::{Msg, Notifier};
+use crate::services::{self, Msg, Notifier, Show};
 
 const PRELUDE: &str = include_str!("prelude.lua");
-/// 一次命令、事件、運算式的時間上限
+/// 一次命令、事件、運算式的 CPU 時間上限
 const CALL_LIMIT: Duration = Duration::from_secs(30);
-/// 縮圖規則的時間上限（每個縮圖呼叫一次）
+/// 縮圖規則的 CPU 時間上限（每個縮圖呼叫一次）
 const THUMB_LIMIT: Duration = Duration::from_millis(300);
 const HOOK_NAMES: [&str; 2] = ["on_navigate", "thumbnail"];
 
@@ -129,16 +130,25 @@ impl Scripts {
 
 // ---------------------------------------------------------------- 腳本執行緒
 
-/// 時間上限（Unix 毫秒）；鉤子每執行一段指令檢查一次
+/// CPU 時間上限（腳本執行緒的 CPU 時間，100 ns 單位）；鉤子每執行一段指令檢查一次。
+/// 設定與檢查都在腳本執行緒上
 struct Deadline(Arc<AtomicU64>);
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+/// 目前執行緒用掉的 CPU 時間（核心 + 使用者，100 ns 單位）
+fn thread_cpu() -> u64 {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+    let (mut c, mut e, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+    let ft = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    match unsafe { GetThreadTimes(GetCurrentThread(), &mut c, &mut e, &mut k, &mut u) } {
+        Ok(()) => ft(k) + ft(u),
+        Err(_) => 0,
+    }
 }
 
 impl Deadline {
     fn set(&self, limit: Duration) {
-        self.0.store(now_ms() + limit.as_millis() as u64, Ordering::Relaxed);
+        self.0.store(thread_cpu() + (limit.as_nanos() / 100) as u64, Ordering::Relaxed);
     }
 }
 
@@ -154,6 +164,11 @@ fn call_limit() -> Duration {
 }
 
 fn worker(rx: Receiver<Job>, n: Notifier) {
+    // run{ wait = true } 可能經 ShellExecuteEx 啟動（文件、視窗程式），需要 STA
+    unsafe {
+        use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    }
     let mut lua: Option<Lua> = None;
     let deadline = Deadline(Arc::new(AtomicU64::new(u64::MAX)));
     for job in rx {
@@ -362,7 +377,7 @@ fn new_lua(n: &Notifier, deadline: &Deadline) -> mlua::Result<Lua> {
         lua.create_function(move |_, (prompt, default): (Value, Value)| {
             let (reply, rx) = sync_channel(1);
             tx.send(Msg::ScriptAsk { prompt: text(&prompt), default: text(&default), reply });
-            // 等使用者回答（不受時間上限影響：等待在 Rust 中，不執行 Lua 指令）
+            // 等使用者回答（不耗 CPU，不計入時間上限）
             Ok(rx.recv().ok().flatten())
         })?,
     )?;
@@ -371,14 +386,54 @@ fn new_lua(n: &Notifier, deadline: &Deadline) -> mlua::Result<Lua> {
         Ok(())
     })?)?;
     g.raw_set("__is_dir", lua.create_function(|_, v: Value| Ok(Path::new(&text(&v)).is_dir()))?)?;
+    add_process_fns(&lua)?;
     // 時間上限：prelude 的鉤子每執行一段指令問一次，超過時由 Lua 丟出錯誤
     let d = deadline.0.clone();
-    g.raw_set("__expired", lua.create_function(move |_, ()| Ok(now_ms() > d.load(Ordering::Relaxed)))?)?;
+    g.raw_set("__expired", lua.create_function(move |_, ()| Ok(thread_cpu() > d.load(Ordering::Relaxed)))?)?;
     g.raw_set("__commands", lua.create_sequence_from(scriptapi::COMMANDS.iter().map(|c| c.name))?)?;
     drop(g);
     deadline.set(CALL_LIMIT);
     lua.load(PRELUDE).set_name("@prelude.lua").exec()?;
     Ok(lua)
+}
+
+/// run{ wait = true }、os.execute、io.popen 用的程序函式（測試也用真的實作）
+fn add_process_fns(lua: &Lua) -> mlua::Result<()> {
+    let g = lua.globals();
+    // run{ ..., wait = true }：在腳本執行緒啟動並等程式結束（等待不耗 CPU，不計入時間上限）。回傳結束代碼，無法啟動時為 nil 與錯誤訊息
+    g.raw_set(
+        "__spawn",
+        lua.create_function(|_, (pos, console, dir): (Value, Value, Value)| {
+            let args = seq_texts(&pos);
+            let Some((program, rest)) = args.split_first() else {
+                return Ok((None, Some("run 需要程式名稱".to_string())));
+            };
+            let params = rest.iter().map(|a| quote_arg(a)).collect::<Vec<_>>().join(" ");
+            let how = if matches!(console, Value::Boolean(true)) { Show::Normal } else { Show::HideConsole };
+            match services::start(program, Some(&params), Some(&text(&dir)), None, how, Default::default()) {
+                Ok(s) => Ok((s.wait().map(i64::from), None)),
+                Err(e) => Ok((None, Some(format!("無法執行 {program}：{e}")))),
+            }
+        })?,
+    )?;
+    // os.execute、io.popen 的替代：經 cmd.exe 執行、不顯示主控台視窗。回傳 (結束代碼, 輸出)，無法啟動時為 (nil, 錯誤訊息)
+    g.raw_set(
+        "__shell",
+        lua.create_function(|l, (line, capture, dir): (Value, Value, Value)| {
+            zing_core::guard::io("Lua 執行命令");
+            let mut c = services::shell_command(&text(&line), Some(&text(&dir)));
+            let r = if matches!(capture, Value::Boolean(true)) {
+                c.stderr(std::process::Stdio::null()).output().map(|o| (o.status.code(), Some(o.stdout)))
+            } else {
+                c.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| (s.code(), None))
+            };
+            Ok(match r {
+                Ok((code, out)) => (code.map(|c| Value::Integer(c.into())), out.and_then(|o| l.create_string(o).ok()).map(Value::String)),
+                Err(e) => (None, l.create_string(e.to_string()).ok().map(Value::String)),
+            })
+        })?,
+    )?;
+    Ok(())
 }
 
 fn load(dir: &Path, n: &Notifier, deadline: &Deadline) -> (Option<Lua>, Loaded) {
@@ -529,9 +584,10 @@ mod tests {
     fn lua() -> Lua {
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
         let g = lua.globals();
-        for name in ["__invoke", "__msg", "__exec", "__ask", "__log", "__is_dir"] {
+        for name in ["__invoke", "__msg", "__exec", "__ask", "__log", "__is_dir", "__expired"] {
             g.set(name, lua.create_function(|_, _: mlua::MultiValue| Ok(())).unwrap()).unwrap();
         }
+        add_process_fns(&lua).unwrap();
         g.set("__commands", lua.create_sequence_from(scriptapi::COMMANDS.iter().map(|c| c.name)).unwrap()).unwrap();
         drop(g);
         lua.load(PRELUDE).exec().unwrap();
@@ -608,6 +664,74 @@ mod tests {
             let v: Value = l.load(format!("return {}", s.name)).eval().unwrap();
             assert!(!matches!(v, Value::Nil), "scriptapi.rs 的「{}」在內建函式庫中不存在", s.name);
         }
+    }
+
+    /// run{ wait }、os.execute、io.popen（不顯示主控台視窗的版本）
+    #[test]
+    fn processes_without_console() {
+        let l = lua();
+        assert_eq!(run(&l, "return run{ 'cmd', '/c', 'exit 4', wait = true }"), "4");
+        assert_eq!(run(&l, "local ok, kind, code = os.execute('exit 5'); return tostring(ok) .. kind .. code"), "nilexit5");
+        assert_eq!(run(&l, "return (os.execute('exit 0'))"), "true");
+        assert_eq!(run(&l, "return os.execute()"), "true");
+        let popen = "local f = io.popen('echo a& echo b'); local r = f:read('l') .. '|' .. f:read('a'); return r .. tostring(f:close())";
+        assert_eq!(run(&l, popen), "a|b\ntrue");
+        assert_eq!(run(&l, "local n = 0; for _ in io.popen('echo 1& echo 2'):lines() do n = n + 1 end; return n"), "2");
+        assert_eq!(run(&l, "local c, e = run{ '不存在的程式-zing', wait = true }; return tostring(c) .. (e and 'err' or '')"), "nilerr");
+    }
+
+    /// examples/scripts/extract.lua：以真的 tar.exe 解壓縮（中文路徑、子資料夾、損壞的檔案）
+    #[test]
+    fn example_extract_script() {
+        let _allow = zing_core::guard::allow_io("測試");
+        let dir = std::env::temp_dir().join(format!("zing-extract-測試-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("來源");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("甲.txt"), "a").unwrap();
+        std::fs::write(src.join("乙.txt"), "b").unwrap();
+        let tar = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap()).join(r"System32\tar.exe");
+        let pack = |out: &str, file: &str| {
+            let st = std::process::Command::new(&tar).arg("-a").arg("-cf").arg(dir.join(out)).arg("-C").arg(&src).arg(file).status();
+            assert!(st.unwrap().success(), "建立 {out} 失敗");
+        };
+        pack("壓縮 1.zip", "甲.txt");
+        pack("資料.tar.gz", "乙.txt");
+        std::fs::write(dir.join("壞掉.zip"), "not a zip").unwrap();
+        std::fs::write(dir.join("說明.txt"), "x").unwrap();
+
+        let l = lua();
+        let g = l.globals();
+        g.set("__is_dir", l.create_function(|_, p: String| Ok(Path::new(&p).is_dir())).unwrap()).unwrap();
+        g.set("__msg", l.create_function(|l, m: String| l.globals().set("last_msg", m)).unwrap()).unwrap();
+        // ask() 依序回答 __answers 的內容
+        l.load("function __ask() return table.remove(__answers, 1) end").exec().unwrap();
+        l.load(include_str!("../../../examples/scripts/extract.lua")).set_name("@extract.lua").exec().unwrap();
+        let sel = ["壓縮 1.zip", "資料.tar.gz", "壞掉.zip", "說明.txt"].map(|n| dir.join(n).to_string_lossy().into_owned());
+        let ctx = l.create_table().unwrap();
+        ctx.set("cwd", dir.to_string_lossy().as_ref()).unwrap();
+        ctx.set("sel", sel.to_vec()).unwrap();
+        g.set("__ctx", ctx).unwrap();
+        drop(g);
+        let run = |answers: [&str; 2]| -> String {
+            l.globals().set("__answers", answers.to_vec()).unwrap();
+            l.load("extract_to()").exec().unwrap();
+            l.globals().get("last_msg").unwrap()
+        };
+
+        // 每個壓縮檔各自的子資料夾；損壞的檔案回報失敗，其他照常完成
+        let out = dir.join("輸出");
+        let m = run([&out.to_string_lossy(), "是"]);
+        assert!(m.contains("1 個失敗") && m.contains("壞掉.zip"), "{m}");
+        assert!(out.join("壓縮 1").join("甲.txt").exists());
+        assert!(out.join("資料").join("乙.txt").exists());
+
+        // 直接解壓縮到目標資料夾
+        let flat = dir.join("平放");
+        run([&flat.to_string_lossy(), "否"]);
+        assert!(flat.join("甲.txt").exists() && flat.join("乙.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

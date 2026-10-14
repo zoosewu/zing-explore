@@ -59,6 +59,14 @@ function smoke_coloop()
   coroutine.wrap(function() while true do end end)()
 end
 
+-- 執行外部程式：主控台程式不顯示視窗，wait 取得結束代碼；os.execute、io.popen 的替代版本
+function smoke_proc()
+  local c = run{ "cmd", "/c", "exit 3", wait = true }
+  local _, _, e = os.execute("exit 5")
+  local out = io.popen("echo hi"):read("l")
+  msg("proc:" .. tostring(c) .. ":" .. tostring(e) .. ":" .. out)
+end
+
 -- 全域表設了會報錯的 metatable：Rust 端只做 raw 存取，不受影響
 function smoke_strict()
   setmetatable(_G, {
@@ -2203,6 +2211,12 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(
         step("Lua：型別錯誤的參數傳給內部函式不會中止程序", |_| exec("smoke_bad"), |_, a| {
             expect("狀態列", status(a).as_deref(), Some("bad ok"))
+        })
+        .slow(),
+    );
+    v.push(
+        step("Lua：執行外部程式（不顯示主控台視窗，取得結束代碼與輸出）", |_| exec("smoke_proc"), |_, a| {
+            expect("狀態列", status(a).as_deref(), Some("proc:3:5:hi"))
         })
         .slow(),
     );

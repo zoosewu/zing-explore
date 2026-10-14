@@ -61,6 +61,9 @@ label = "用 VS Code 開啟"
 cmd = "run code {sel}"
 ```
 
+`run` 執行主控台程式（含 `.bat`、`.cmd`）時不顯示主控台視窗，視窗程式照常顯示；要開互動式的終端機時加上 `--console`，
+例如 `run --console pwsh`。
+
 自訂縮圖產生器：檔名符合 `match` 的檔案改用命令產生的 PNG（`{in}` 來源、`{out}` 輸出、`{size}` 邊長），
 結果快取在 `%LOCALAPPDATA%\zing-explore\thumbs`，檔案修改後自動重做；命令最多執行 10 秒。
 
@@ -85,9 +88,11 @@ function move_images()
 end
 ```
 
-- 每次執行有時間上限（命令 30 秒、縮圖規則 0.3 秒），腳本在背景執行，不會卡住視窗
+- 每次執行有 CPU 時間上限（命令 30 秒、縮圖規則 0.3 秒；等待輸入、外部程式不算），腳本在背景執行，不會卡住視窗
 - 錯誤顯示在狀態列，完整的呼叫堆疊記在 `scripts\error.log`；`log()` 寫入 `scripts\zing.log`
 - 載入時在 `scripts\.zing\` 產生 LuaLS 定義檔與 `.luarc.json`：用 VS Code 的 Lua 擴充功能開啟 `scripts` 資料夾就有自動補全與說明
+
+範例：[examples/scripts/extract.lua](examples/scripts/extract.lua)（批次解壓縮，使用 Windows 內建的 tar.exe）。
 
 完整的函式說明見 [docs/lua.md](docs/lua.md)（由程式碼產生，永遠與程式一致）。
 

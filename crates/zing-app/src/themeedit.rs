@@ -307,7 +307,8 @@ impl App {
             return;
         }
         let path = theme_file(&self.theme_name);
-        crate::services::launch(&self.notifier, "notepad.exe".into(), Some(format!("\"{}\"", path.display())), None, None);
+        let file = Some(format!("\"{}\"", path.display()));
+        crate::services::launch(&self.notifier, "notepad.exe".into(), file, None, None, crate::services::Show::Normal);
         self.watch_theme_file();
     }
 

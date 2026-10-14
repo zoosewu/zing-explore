@@ -1,11 +1,11 @@
 -- zing-explore 內建函式庫：惰性串流、不可變、純函式、組合。說明見 docs/lua.md（由 scriptapi.rs 產生）。
--- 由 Rust 提供：__invoke(名稱, 位置參數, 旗標)、__msg、__exec、__ask、__log、__is_dir、__expired、__commands、__ctx
+-- 由 Rust 提供：__invoke(名稱, 位置參數, 旗標)、__msg、__exec、__ask、__log、__is_dir、__expired、__spawn、__shell、__commands、__ctx
 -- Rust 提供的函式不會丟錯；錯誤一律在 Lua 這邊丟出（見 script.rs 開頭）
 
--- 時間上限：每 10000 個指令問一次 Rust，超過時中止。鉤子是每個協程各自設定的，新建的協程也要設
+-- CPU 時間上限：每 10000 個指令問一次 Rust，超過時中止。鉤子是每個協程各自設定的，新建的協程也要設
 local expired, sethook = __expired, debug.sethook
 local function limit()
-  if expired() then error("執行超過時間上限，已中止", 2) end
+  if expired() then error("執行超過 CPU 時間上限，已中止", 2) end
 end
 sethook(limit, "", 10000)
 do
@@ -362,6 +362,73 @@ for _, full in ipairs(__commands) do
 end
 
 function go(p) __invoke("nav.goto", { tostring(p) }, {}) end
+
+-- run：主控台程式預設不顯示視窗（console = true 時顯示）；wait = true 時在腳本執行緒等程式結束並回傳結束代碼
+do
+  local spawn = __spawn
+  run = function(...)
+    local pos, flags = args_of(...)
+    if flags.wait then return spawn(pos, flags.console ~= nil, ctx().cwd) end
+    __invoke("run", pos, flags)
+  end
+end
+
+-- os.execute、io.popen：經 cmd.exe 在目前資料夾執行，不顯示主控台視窗（標準版本會閃出主控台視窗）。
+-- io.popen 的讀取模式等命令結束後一次取得全部輸出；寫入模式沿用標準版本
+do
+  local shell, popen = __shell, io.popen
+  local function status(code)
+    if code == 0 then return true, "exit", 0 end
+    return nil, "exit", code
+  end
+  os.execute = function(cmd)
+    if cmd == nil then return true end
+    local code, err = shell(tostring(cmd), false, ctx().cwd)
+    if code == nil then return nil, err end
+    return status(code)
+  end
+  io.popen = function(cmd, mode)
+    if mode ~= nil and mode ~= "r" then return popen(cmd, mode) end
+    local code, out = shell(tostring(cmd), true, ctx().cwd)
+    if code == nil then return nil, out end
+    out = out:gsub("\r\n", "\n")
+    local pos, f = 1, {}
+    local function read(fmt)
+      if type(fmt) == "number" then
+        if pos > #out then return nil end
+        local r = out:sub(pos, pos + fmt - 1)
+        pos = pos + #r
+        return r
+      end
+      fmt = tostring(fmt or "l"):gsub("^%*", ""):sub(1, 1)
+      if fmt == "a" then
+        local r = out:sub(pos)
+        pos = #out + 1
+        return r
+      end
+      if pos > #out then return nil end
+      if fmt == "n" then
+        local num, after = out:match("^%s*(%S+)()", pos)
+        pos = after or #out + 1
+        return tonumber(num)
+      end
+      local nl = out:find("\n", pos, true)
+      local line = out:sub(pos, nl and (fmt == "L" and nl or nl - 1) or #out)
+      pos = nl and nl + 1 or #out + 1
+      return line
+    end
+    function f:read(...)
+      local n = select("#", ...)
+      if n <= 1 then return read((...)) end
+      local r = {}
+      for i = 1, n do r[i] = read((select(i, ...))) end
+      return table.unpack(r, 1, n)
+    end
+    function f:lines(fmt) return function() return read(fmt) end end
+    function f:close() return status(code) end
+    return f
+  end
+end
 
 -- ---------------------------------------------------------------- 給 Rust 用
 

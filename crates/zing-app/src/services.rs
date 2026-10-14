@@ -18,10 +18,12 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::Threading::{
-    CreateEventW, GetCurrentThread, INFINITE, SetEvent, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
-    WaitForMultipleObjects,
+    CREATE_NO_WINDOW, CreateEventW, GetCurrentThread, GetExitCodeProcess, INFINITE, SetEvent, SetThreadPriority,
+    THREAD_MODE_BACKGROUND_BEGIN, WaitForMultipleObjects, WaitForSingleObject,
 };
-use windows::Win32::UI::Shell::{SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW};
+use windows::Win32::UI::Shell::{
+    SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, SHGFI_EXETYPE, SHGetFileInfoW, ShellExecuteExW,
+};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, SW_SHOWNORMAL, WM_APP};
 use windows::core::PCWSTR;
 
@@ -325,34 +327,207 @@ pub fn watch(path: &str, n: &Notifier, tab: TabId, generation: u64) -> Option<Wa
     Some(Watcher { stop: stop_raw })
 }
 
-/// 以 ShellExecuteEx 開啟檔案或執行程式。在獨立的 STA 執行緒進行：
+/// 開啟檔案或執行程式（見 `start`）。在獨立的 STA 執行緒進行：
 /// 某些檔案類型的開啟處理常式會阻塞很久，不能放在 UI 執行緒。
-pub fn launch(n: &Notifier, file: String, params: Option<String>, dir: Option<String>, verb: Option<&'static str>) {
+pub fn launch(n: &Notifier, file: String, params: Option<String>, dir: Option<String>, verb: Option<&'static str>, how: Show) {
     let n = n.clone();
     std::thread::spawn(move || unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        let file_w = wide_z(&file);
-        let params_w = params.as_deref().map(wide_z);
-        let dir_w = dir.as_deref().filter(|d| !d.is_empty()).map(wide_z);
-        let verb_w = verb.map(wide_z);
-        let ptr = |v: &Option<Vec<u16>>| v.as_ref().map_or(PCWSTR::null(), |v| PCWSTR(v.as_ptr()));
-        let mut info = SHELLEXECUTEINFOW {
-            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
-            fMask: SEE_MASK_NOASYNC,
-            hwnd: HWND(n.hwnd() as _),
-            lpVerb: ptr(&verb_w),
-            lpFile: PCWSTR(file_w.as_ptr()),
-            lpParameters: ptr(&params_w),
-            lpDirectory: ptr(&dir_w),
-            nShow: SW_SHOWNORMAL.0,
-            ..Default::default()
-        };
-        if let Err(e) = ShellExecuteExW(&mut info) {
-            // 使用者取消（例如 UAC）不算錯誤
-            if e.code().0 as u32 != 0x800704C7 {
-                n.status(format!("無法開啟 {file}：{}", e.message()), true);
-            }
+        let hwnd = HWND(n.hwnd() as _);
+        if let Err(e) = start(&file, params.as_deref(), dir.as_deref(), verb, how, hwnd) {
+            n.status(format!("無法開啟 {file}：{e}"), true);
         }
         CoUninitialize();
     });
+}
+
+/// 主控台程式的視窗
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Show {
+    /// 和檔案總管相同（開啟檔案、網址列輸入、互動式終端機）
+    Normal,
+    /// 主控台程式（含 .bat、.cmd）不顯示主控台視窗；視窗程式、文件照常開啟
+    HideConsole,
+}
+
+/// 已啟動的程式
+pub enum Started {
+    Child(std::process::Child),
+    Process(HANDLE),
+    /// 開啟文件、網址、使用者取消（例如 UAC）時沒有程序可等
+    None,
+}
+
+impl Started {
+    /// 等程式結束並回傳結束代碼（沒有程序可等時為 None）
+    pub fn wait(mut self) -> Option<u32> {
+        match &mut self {
+            Started::Child(c) => c.wait().ok().and_then(|s| s.code()).map(|c| c as u32),
+            Started::Process(h) => unsafe {
+                let _ = WaitForSingleObject(*h, INFINITE);
+                let mut code = 0u32;
+                GetExitCodeProcess(*h, &mut code).ok().map(|_| code)
+            },
+            Started::None => None,
+        }
+    }
+}
+
+impl Drop for Started {
+    fn drop(&mut self) {
+        if let Started::Process(h) = self {
+            unsafe {
+                let _ = CloseHandle(*h);
+            }
+        }
+    }
+}
+
+/// 開啟檔案或執行程式（會阻塞：解析路徑、Shell 的開啟處理常式；呼叫端要先以 STA 初始化 COM）。
+/// `HideConsole` 且目標是主控台程式時以 CREATE_NO_WINDOW 直接建立程序；其餘交給 ShellExecuteEx
+/// （文件、網址、App Paths 登錄的程式名稱、視窗程式、動詞）。
+pub fn start(file: &str, params: Option<&str>, dir: Option<&str>, verb: Option<&str>, how: Show, hwnd: HWND) -> Result<Started, String> {
+    zing_core::guard::io("啟動程式");
+    let params = params.filter(|p| !p.is_empty());
+    let dir = dir.filter(|d| !d.is_empty());
+    if how == Show::HideConsole
+        && verb.is_none()
+        && let Some(exe) = resolve_program(file, dir).filter(|e| is_console_program(e))
+    {
+        return spawn_hidden(&exe, params, dir).map(Started::Child).map_err(|e| e.to_string());
+    }
+    let file_w = wide_z(file);
+    let params_w = params.map(wide_z);
+    let dir_w = dir.map(wide_z);
+    let verb_w = verb.map(wide_z);
+    let ptr = |v: &Option<Vec<u16>>| v.as_ref().map_or(PCWSTR::null(), |v| PCWSTR(v.as_ptr()));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        // run（HideConsole）找不到程式時只回報錯誤，不跳出 Shell 的對話方塊；開啟檔案時保留「選擇開啟方式」等對話方塊
+        fMask: SEE_MASK_NOASYNC
+            | SEE_MASK_NOCLOSEPROCESS
+            | if how == Show::HideConsole { SEE_MASK_FLAG_NO_UI } else { Default::default() },
+        hwnd,
+        lpVerb: ptr(&verb_w),
+        lpFile: PCWSTR(file_w.as_ptr()),
+        lpParameters: ptr(&params_w),
+        lpDirectory: ptr(&dir_w),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    match unsafe { ShellExecuteExW(&mut info) } {
+        Ok(()) if !info.hProcess.is_invalid() => Ok(Started::Process(info.hProcess)),
+        Ok(()) => Ok(Started::None),
+        // 使用者取消（例如 UAC）不算錯誤
+        Err(e) if e.code().0 as u32 == 0x800704C7 => Ok(Started::None),
+        Err(e) => Err(e.message()),
+    }
+}
+
+/// `cmd.exe /d /s /c "命令列"`，不顯示主控台視窗（Lua 的 os.execute、io.popen）
+pub fn shell_command(line: &str, dir: Option<&str>) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = std::process::Command::new(system32("cmd.exe"));
+    c.raw_arg(format!("/d /s /c \"{line}\""));
+    if let Some(d) = dir.filter(|d| !d.is_empty()) {
+        c.current_dir(d);
+    }
+    c.creation_flags(CREATE_NO_WINDOW.0).stdin(std::process::Stdio::null());
+    c
+}
+
+fn system32(name: &str) -> std::path::PathBuf {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    std::path::Path::new(&root).join("System32").join(name)
+}
+
+fn spawn_hidden(exe: &std::path::Path, params: Option<&str>, dir: Option<&str>) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+    let mut c = if is_batch(exe) {
+        // 批次檔要經 cmd.exe 執行
+        shell_command(&format!("\"{}\" {}", exe.display(), params.unwrap_or("")), dir)
+    } else {
+        let mut c = std::process::Command::new(exe);
+        if let Some(p) = params {
+            c.raw_arg(p);
+        }
+        if let Some(d) = dir {
+            c.current_dir(d);
+        }
+        c.creation_flags(CREATE_NO_WINDOW.0).stdin(std::process::Stdio::null());
+        c
+    };
+    c.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()
+}
+
+fn is_batch(p: &std::path::Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("bat") || e.eq_ignore_ascii_case("cmd"))
+}
+
+/// 找出程式的完整路徑：含路徑時以 dir 為基準，否則依 PATH 搜尋；沒有副檔名時依 PATHEXT 補上。
+/// 找不到（App Paths 登錄的名稱、文件、網址、App 執行別名）時回傳 None，交給 ShellExecuteEx
+fn resolve_program(file: &str, dir: Option<&str>) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+    let exts: Vec<String> = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
+        .split(';')
+        .filter(|e| e.starts_with('.'))
+        .map(str::to_string)
+        .collect();
+    let find = |base: PathBuf| -> Option<PathBuf> {
+        if base.is_file() {
+            return Some(base);
+        }
+        exts.iter()
+            .map(|e| {
+                let mut s = base.clone().into_os_string();
+                s.push(e);
+                PathBuf::from(s)
+            })
+            .find(|c| c.is_file())
+    };
+    let p = Path::new(file);
+    if file.contains(['\\', '/', ':']) {
+        return match dir {
+            Some(d) if p.is_relative() => find(Path::new(d).join(p)),
+            _ => find(p.to_path_buf()),
+        };
+    }
+    let path = std::env::var_os("PATH")?;
+    std::iter::once(system32("")).chain(std::env::split_paths(&path)).find_map(|d| find(d.join(file)))
+}
+
+/// 主控台程式（PE 的子系統為主控台、DOS 程式、批次檔）
+fn is_console_program(p: &std::path::Path) -> bool {
+    if is_batch(p) {
+        return true;
+    }
+    let w = wide_z(&p.to_string_lossy());
+    let r = unsafe { SHGetFileInfoW(PCWSTR(w.as_ptr()), Default::default(), None, 0, SHGFI_EXETYPE) };
+    // 低位元組是 "PE"（0x4550）或 "MZ"（0x5A4D）、高位元組（Windows 版本）為 0 才是主控台程式
+    r >> 16 == 0 && matches!(r & 0xFFFF, 0x4550 | 0x5A4D)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn console_programs_are_detected() {
+        let cmd = resolve_program("cmd", None).unwrap();
+        assert!(cmd.to_string_lossy().to_lowercase().ends_with("cmd.exe"), "{}", cmd.display());
+        assert!(is_console_program(&cmd));
+        assert!(is_console_program(&resolve_program("tar.exe", None).unwrap()));
+        assert!(!is_console_program(&resolve_program("notepad", None).unwrap()));
+        assert!(resolve_program("不存在的程式-zing", None).is_none());
+    }
+
+    #[test]
+    fn hidden_program_returns_exit_code() {
+        let s = start("cmd", Some("/c exit 7"), None, None, Show::HideConsole, HWND::default()).unwrap();
+        assert!(matches!(s, Started::Child(_)));
+        assert_eq!(s.wait(), Some(7));
+        let out = shell_command("echo 中文 & exit 3", None).output().unwrap();
+        assert_eq!(out.status.code(), Some(3));
+    }
 }

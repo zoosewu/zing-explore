@@ -2,10 +2,26 @@
 
 技術取捨的原因，供日後查詢。新的在上面。
 
+## 2026-10-15　`run` 預設不顯示主控台視窗
+
+**決定**：`run`（設定檔、命令面板、Lua）執行主控台程式（PE 子系統為主控台、DOS 程式、`.bat`、`.cmd`）時以 CREATE_NO_WINDOW
+直接建立程序；視窗程式、文件、網址、App Paths 登錄的名稱仍交給 ShellExecuteEx。要顯示主控台時加 `--console`（Lua 為 `console = true`）。
+Lua 的 `os.execute`、`io.popen` 換成不顯示主控台視窗的版本。開啟檔案（按兩下、`open`）與網址列輸入維持檔案總管的行為。
+
+**原因**：zing 是視窗程式，沒有主控台；每執行一個主控台程式（例如批次解壓縮時的 tar）就會閃出一個主控台視窗。
+腳本與按鈕執行的多半是批次工具，需要互動的終端機是少數，所以預設隱藏、少數情況明確指定。
+
+**代價與處理**：
+- 不能一律隱藏：以 SW_HIDE 啟動會連視窗程式本身也藏起來，所以先判斷程式類型（`SHGetFileInfoW` 的 SHGFI_EXETYPE）。
+- 互動式主控台程式（`cmd`、`pwsh`、`python`）若沒加 `--console` 會在背景執行、看不到；預設設定只有 `run wt.exe`（視窗程式），不受影響。
+- 找程式的順序是 System32、PATH（依 PATHEXT 補副檔名），與 CreateProcess 的搜尋順序不完全相同；找不到的交給 ShellExecuteEx。
+- `io.popen` 的讀取模式等命令結束後一次取得全部輸出，不是串流；寫入模式沿用標準版本（會閃視窗）。
+
 ## 2026-10-14　Lua 腳本：Lua 5.4（mlua 內建）、函數式但不用 functor／monad、release 維持 panic = "abort"
 
 **決定**：
-- 用 `mlua` 0.11 搭配內建編譯的 Lua 5.4（`vendored`），開放完整的標準函式庫；腳本在專用執行緒執行，命令 30 秒、縮圖規則 0.3 秒的時間上限。
+- 用 `mlua` 0.11 搭配內建編譯的 Lua 5.4（`vendored`），開放完整的標準函式庫；腳本在專用執行緒執行，命令 30 秒、縮圖規則 0.3 秒的 CPU 時間上限
+  （以腳本執行緒的 CPU 時間計算：等待 `ask()`、外部程式、檔案 I/O 不計，批次解壓縮這類長時間但多半在等待的腳本不會被誤殺）。
 - prelude 提供惰性求值（`seq`）、不可變（`freeze`）、組合（`compose`／`pipe`／`partial`、`|` 管線），但不提供 functor／monad。
 - release 維持 `panic = "abort"`，改由程式規則保證 Lua 的錯誤不穿過 Rust 的堆疊框架。
 

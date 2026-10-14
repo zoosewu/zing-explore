@@ -492,7 +492,7 @@ impl App {
             .collect();
         let dir = tab.path.clone();
         for f in files {
-            services::launch(&self.notifier, f, None, Some(dir.clone()), None);
+            services::launch(&self.notifier, f, None, Some(dir.clone()), None, services::Show::Normal);
         }
     }
 
@@ -805,7 +805,7 @@ impl App {
                     self.navigate(pane, normalized, true);
                 } else {
                     // 不是資料夾：交給系統開啟（檔案、網址、程式名稱都可以）
-                    services::launch(&self.notifier, target, None, Some(cwd), None);
+                    services::launch(&self.notifier, target, None, Some(cwd), None, services::Show::Normal);
                 }
             }
         }
@@ -1009,11 +1009,13 @@ impl App {
                 let program = args.next().ok_or("run 需要程式名稱")?.to_string();
                 let params: Vec<String> = args.map(quote_arg).collect();
                 let dir = self.tab().path.clone();
-                services::launch(&self.notifier, program, Some(params.join(" ")), Some(dir), None);
+                // 主控台程式預設不顯示視窗；--console 用於互動式終端機（cmd、pwsh…）
+                let how = if inv.has("console") { services::Show::Normal } else { services::Show::HideConsole };
+                services::launch(&self.notifier, program, Some(params.join(" ")), Some(dir), None, how);
             }
             "open" => {
                 for f in inv.positional() {
-                    services::launch(&self.notifier, f.to_string(), None, None, None);
+                    services::launch(&self.notifier, f.to_string(), None, None, None, services::Show::Normal);
                 }
             }
             "sel.all" => self.tab_mut().select_all(),
@@ -1122,7 +1124,14 @@ impl App {
             "config.edit" => {
                 let n = self.notifier.clone();
                 self.pool.spawn(move || match settings::ensure_user_config() {
-                    Ok(p) => services::launch(&n, "notepad.exe".into(), Some(quote_arg(&p.to_string_lossy())), None, None),
+                    Ok(p) => services::launch(
+                        &n,
+                        "notepad.exe".into(),
+                        Some(quote_arg(&p.to_string_lossy())),
+                        None,
+                        None,
+                        services::Show::Normal,
+                    ),
                     Err(e) => n.status(format!("無法建立設定檔：{e}"), true),
                 });
             }

@@ -47,7 +47,16 @@ pub const COMMANDS: &[Spec] = &[
         "複製或移動到指定資料夾（經檔案作業佇列）",
         "copy{ to = \"D:\\\\備份\", move = true }",
     ),
-    spec("run", &["program string 程式", "... string 參數"], "執行程式", "run(\"code\", cwd())"),
+    spec(
+        "run",
+        &[
+            "program string 程式",
+            "... string|{wait?: boolean, console?: boolean} 參數；表格的 wait = true 等程式結束並回傳結束代碼（只在腳本中，等待不計入時間上限），console = true 顯示主控台視窗（互動式終端機）",
+            "return integer?, string? 結束代碼（wait 時）；無法啟動時為 nil 與錯誤訊息",
+        ],
+        "執行程式（在目前資料夾）。主控台程式（含 .bat、.cmd）不顯示主控台視窗，視窗程式照常顯示；設定檔中以 `run --console 程式` 顯示主控台",
+        "run(\"code\", cwd())\nlocal code = run{ \"tar\", \"-xf\", \"a.zip\", \"-C\", \"D:\\\\out\", wait = true }\nrun{ \"pwsh\", console = true }",
+    ),
     spec("open", &["... string 檔案"], "以預設程式開啟檔案", "open(\"C:\\\\a.pdf\")"),
     spec("sel.all", &[], "全選", "sel.all()"),
     spec("sel.none", &[], "取消選取", "sel.none()"),
@@ -126,7 +135,7 @@ pub const PRELUDE: &[Spec] = &[
 /// 事件：在腳本中定義這些名稱的全域函式即生效
 pub const HOOKS: &[Spec] = &[
     spec("on_navigate", &["path string 進入的資料夾"], "進入資料夾時呼叫（不等待結果）", "function on_navigate(p)\n  if p:find(\"\\\\Photos\") then view.mode(\"large\") end\nend"),
-    spec("thumbnail", &["path string 檔案或資料夾", "return string? 要當作縮圖的圖片路徑；nil 表示使用預設"], "決定縮圖來源（每個縮圖呼叫一次，0.3 秒內要回傳）", "function thumbnail(p)\n  if path.ext(p) == \"mp4\" then\n    local jpg = path.join(path.dir(p), path.stem(p) .. \".jpg\")\n    if io.open(jpg) then return jpg end\n  end\nend"),
+    spec("thumbnail", &["path string 檔案或資料夾", "return string? 要當作縮圖的圖片路徑；nil 表示使用預設"], "決定縮圖來源（每個縮圖呼叫一次，CPU 時間上限 0.3 秒）", "function thumbnail(p)\n  if path.ext(p) == \"mp4\" then\n    local jpg = path.join(path.dir(p), path.stem(p) .. \".jpg\")\n    if io.open(jpg) then return jpg end\n  end\nend"),
 ];
 
 fn lua_type(sig: &str) -> (&str, &str) {
@@ -189,8 +198,9 @@ const MD_HEAD: &str = r#"# Lua 腳本
 > 修改 API 後執行 `ZING_UPDATE_DOCS=1 cargo test -p zing-core` 更新。
 
 腳本放在 `zing.exe` 旁的 `scripts\*.lua`，啟動後在背景載入（依檔名順序），「重新載入 Lua 腳本」（`script.reload`）可重新載入。
-腳本在專用的執行緒執行，不會讓畫面卡住；單次執行超過 30 秒會被中止。錯誤顯示在狀態列，並記錄在 `scripts\error.log`（含檔名、行號與呼叫堆疊）。
-腳本可以使用 Lua 5.4 完整的標準函式庫（含 `io`、`os`）。
+腳本在專用的執行緒執行，不會讓畫面卡住；單次執行用掉的 CPU 時間超過 30 秒會被中止（等待 `ask()`、外部程式、檔案 I/O 不算在內，只攔下失控的迴圈）。錯誤顯示在狀態列，並記錄在 `scripts\error.log`（含檔名、行號與呼叫堆疊）。
+腳本可以使用 Lua 5.4 完整的標準函式庫（含 `io`、`os`）。`os.execute`、`io.popen` 改為在目前資料夾執行且不顯示主控台視窗
+（`io.popen` 的讀取模式會等命令結束後一次取得全部輸出）。
 
 ## 自訂命令
 
