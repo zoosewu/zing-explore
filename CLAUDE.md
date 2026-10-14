@@ -53,8 +53,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 批次重新命名（`batch.rs`、`zing_core::batchrename`）：兩個輸入框不佔用 `app.edit`；輸入框的按鍵以 `WM_APP_BATCH`
   post 給主視窗處理（不在輸入框自己的訊息處理中改變面板）。
 - 預覽窗格（`preview.rs`）：焦點停留 150 ms 才讀取，在專用的 STA 執行緒只處理最新的請求，以 generation 丟棄過時結果。
-  Windows 預覽處理常式（IPreviewHandler）尚未使用：接上時要放在獨立執行緒、以擁有者視窗（不是子視窗）承載並加看門狗，
-  避免第三方處理常式卡住時連帶卡住 UI（子視窗會共用輸入佇列）。
+  Windows 預覽處理常式（`prevhost.rs`）在專用 STA 執行緒上、以**沒有擁有者**的頂層彈出視窗承載（跨執行緒的父子或擁有者
+  關係都會連結輸入佇列）；UI 只用 PostThreadMessage、SWP_ASYNCWINDOWPOS、ShowWindowAsync 操作它，從不等待；
+  看門狗 3 秒，逾時就放棄該執行緒並改顯示縮圖。
 - 樹狀列同樣只對看得到的節點預先載入子資料夾（`App::schedule_tree_probes`，在繪製前送出、第一幀之後才開始），
   在背景模式的執行緒池執行；有索引時問索引，否則只在本機固定磁碟列舉，網路磁碟、隨身碟不預先載入。
 - 不急的背景工作（資料夾大小、預先載入）用 `Pool::background`：磁碟與 CPU 優先權最低，不影響使用者正在做的事。

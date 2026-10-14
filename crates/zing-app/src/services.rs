@@ -68,6 +68,8 @@ pub enum Msg {
     FolderSizesLoaded(Vec<zing_core::dirsize::CacheLine>),
     /// 預覽窗格的內容
     Preview { generation: u64, loaded: Box<crate::preview::Loaded> },
+    /// 預覽處理常式顯示完成（ok 為 false：處理常式失敗）
+    PreviewHost { generation: u64, ok: bool },
     /// 背景讀出的各資料夾檢視設定
     FolderViewsLoaded(zing_core::folderview::FolderViews),
     /// 向索引服務查詢資料夾大小的結果（`parent` 底下的子資料夾）

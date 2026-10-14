@@ -13,6 +13,7 @@ mod model;
 mod palette;
 mod perf;
 mod preview;
+mod prevhost;
 mod services;
 mod settings;
 mod shell;

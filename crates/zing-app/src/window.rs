@@ -585,6 +585,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 a.schedule_tree_probes();
                 a.update_preview_target();
                 a.paint();
+                a.sync_preview_host();
                 crate::perf::after_paint(a);
             });
             unsafe {
@@ -758,6 +759,13 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             }
             Some(LRESULT(0))
         }
+        // 主視窗啟用時會蓋到預覽處理常式的視窗（另一條執行緒的頂層視窗）：放回上層（非同步）
+        WM_ACTIVATE => {
+            if wparam.0 & 0xFFFF != 0 {
+                with_app(|a| a.preview.host.raise());
+            }
+            None
+        }
         WM_APP_BATCH => {
             with_app(|a| a.batch_command(wparam.0, lparam.0));
             Some(LRESULT(0))
@@ -796,6 +804,9 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 TIMER_SMOKE => crate::smoke::tick(hwnd),
                 crate::app::TIMER_THEME_WATCH => {
                     with_app(|a| a.on_theme_watch_timer());
+                }
+                crate::app::TIMER_PREVIEW_WATCHDOG => {
+                    with_app(|a| a.on_preview_watchdog());
                 }
                 crate::app::TIMER_PREVIEW => {
                     with_app(|a| a.on_preview_timer());

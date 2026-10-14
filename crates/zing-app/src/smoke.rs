@@ -429,6 +429,12 @@ fn palette_key(vk: VIRTUAL_KEY) {
     }
 }
 
+/// 預覽處理常式的視窗是否顯示（另一條執行緒的視窗，IsWindowVisible 不會等待它）
+fn host_visible(a: &App, want: bool) -> Result<(), String> {
+    let visible = a.preview.host.window().is_some_and(|h| unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(h) }.as_bool());
+    expect("主機視窗顯示", visible, want)
+}
+
 /// 主題編輯面板中某欄位的位置：`value` 為 true 時是數值處（點選項、輸入），否則是名稱處
 fn theme_row_pos(label: &str, value: bool) -> Option<(f32, f32)> {
     with_app(|a| {
@@ -1924,6 +1930,76 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |_, a| {
             expect("主題名稱", a.theme_name.as_str(), "dark")?;
             expect("列高", a.theme.metrics.row_height, 22.0)
+        },
+    ));
+
+    // ------------------------------------------------ 預覽處理常式（Windows 的 TXT 預覽處理常式）
+    use crate::preview::HostState;
+    use std::sync::atomic::Ordering::Relaxed;
+    v.push(
+        step(
+            "預覽處理常式：以獨立視窗顯示",
+            |c| {
+                crate::prevhost::TEST_FORCE_TEXT.store(true, Relaxed);
+                key(c, "a", letter('p'));
+                click(c, "", row_pos("報告 10.txt"));
+            },
+            |_, a| {
+                let ld = a.preview.loaded.as_ref().ok_or("還沒有內容")?;
+                if ld.handler.is_none() {
+                    return Err("找不到 .txt 的預覽處理常式".into());
+                }
+                expect("狀態", a.preview.host_state, HostState::Shown)?;
+                host_visible(a, true)
+            },
+        )
+        .slow(),
+    );
+    v.push(step("截圖：預覽處理常式", |_| {}, |c, _| screenshot(c, "11-預覽處理常式")));
+    v.push(
+        step(
+            "預覽處理常式：卡住 3 秒後放棄、改顯示縮圖（UI 不受影響）",
+            |c| {
+                crate::prevhost::TEST_HANG_MS.store(4500, Relaxed);
+                click(c, "", row_pos("a2.txt"));
+            },
+            |_, a| {
+                expect("狀態", a.preview.host_state, HostState::Failed)?;
+                match a.preview.loaded.as_ref().map(|l| &l.body) {
+                    Some(crate::preview::Body::Image(_)) => Ok(()),
+                    _ => Err("沒有改顯示縮圖".into()),
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step("預覽處理常式：之後換新的主機執行緒", |c| click(c, "", row_pos("報告 10.txt")), |_, a| {
+            expect("狀態", a.preview.host_state, HostState::Shown)?;
+            host_visible(a, true)
+        })
+        .slow(),
+    );
+    v.push(step("預覽處理常式：命令面板開啟時暫時隱藏", |c| key(c, "cs", letter('p')), |_, a| {
+        expect("狀態", a.preview.host_state, HostState::Suspended)?;
+        host_visible(a, false)
+    }));
+    v.push(
+        step("預覽處理常式：命令面板關閉後恢復", |_| palette_key(VK_ESCAPE), |_, a| {
+            expect("狀態", a.preview.host_state, HostState::Shown)?;
+            host_visible(a, true)
+        })
+        .slow(),
+    );
+    v.push(step(
+        "預覽處理常式：關閉預覽窗格",
+        |c| {
+            key(c, "a", letter('p'));
+            crate::prevhost::TEST_FORCE_TEXT.store(false, Relaxed);
+        },
+        |_, a| {
+            expect("狀態", a.preview.host_state, HostState::Off)?;
+            host_visible(a, false)
         },
     ));
 

@@ -824,7 +824,6 @@ impl App {
     }
 
     fn paint_preview(&self, r: Rect) {
-        use crate::preview::Body;
         let c = &self.theme.color;
         let g = &self.gfx;
         g.fill(r, c.surface);
@@ -837,6 +836,22 @@ impl App {
         };
         let name = path::file_name(&ld.path);
         g.text(if name.is_empty() { &ld.path } else { name }, Font::Bold, name_r, c.text);
+        // 預覽處理常式的視窗蓋在內容區上：載入中顯示提示，完成後不畫
+        match self.preview.host_state {
+            crate::preview::HostState::Waiting => {
+                g.text("載入預覽…", Font::Text, Rect::new(content.l, content.t, content.r, content.t + rh), c.text_secondary);
+            }
+            crate::preview::HostState::Shown => {}
+            _ => self.paint_preview_body(ld, content),
+        }
+        self.paint_preview_props(ld, props_r);
+    }
+
+    fn paint_preview_body(&self, ld: &crate::preview::Loaded, content: Rect) {
+        use crate::preview::Body;
+        let c = &self.theme.color;
+        let g = &self.gfx;
+        let rh = self.row_h();
         match &ld.body {
             Body::Image(Some(p)) | Body::Folder { image: Some(p), .. } => {
                 g.preview_image(self.preview.image_id, p, content);
@@ -862,6 +877,13 @@ impl App {
                 g.pop_clip();
             }
         }
+    }
+
+    fn paint_preview_props(&self, ld: &crate::preview::Loaded, props_r: Rect) {
+        use crate::preview::Body;
+        let c = &self.theme.color;
+        let g = &self.gfx;
+        let rh = self.row_h();
         // 屬性：名稱與值兩欄
         let label_w = (props_r.w() * 0.4).min(130.0);
         let mut y = props_r.t;

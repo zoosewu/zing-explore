@@ -46,6 +46,8 @@ pub const INDEX_POLL_MS: u32 = 2000;
 pub const TIMER_PREVIEW: usize = 9;
 /// 以文字編輯器修改主題檔時，每秒檢查是否已存檔
 pub const TIMER_THEME_WATCH: usize = 10;
+/// 預覽處理常式的看門狗
+pub const TIMER_PREVIEW_WATCHDOG: usize = 11;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -749,6 +751,7 @@ impl App {
             Msg::FolderSizesLoaded(lines) => self.on_size_cache_loaded(lines),
             Msg::FolderViewsLoaded(v) => self.on_folder_views_loaded(v),
             Msg::Preview { generation, loaded } => self.on_preview_loaded(generation, *loaded),
+            Msg::PreviewHost { generation, ok } => self.on_preview_host(generation, ok),
             Msg::Thumb { id, pixels, source } => {
                 self.thumbs.store(id, pixels, source);
                 self.invalidate();
