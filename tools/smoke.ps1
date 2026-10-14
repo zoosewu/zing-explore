@@ -34,8 +34,12 @@ if (-not $SkipBuild) {
     Pop-Location
 }
 
+# 測試資料夾：環境變數 ZING_TEST_DIR（與 zing_core::testdir 相同），沒有設定時用系統的暫存資料夾
+$testRoot = if ($env:ZING_TEST_DIR) { $env:ZING_TEST_DIR } else { $env:TEMP }
+New-Item -ItemType Directory -Force $testRoot | Out-Null
+
 # 測試資料夾（內容必須與 crates/zing-app/src/smoke.rs 的步驟一致）
-$dir = Join-Path $env:TEMP ("zing-smoke-{0}" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+$dir = Join-Path $testRoot ("zing-smoke-{0}" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory $dir | Out-Null
 $a = New-Item -ItemType Directory (Join-Path $dir '資料夾A')
 $b = New-Item -ItemType Directory (Join-Path $dir '資料夾B')
@@ -53,7 +57,7 @@ $fs.SetLength(384MB)
 $fs.Dispose()
 
 if (Test-Path $shots) { Remove-Item -Recurse -Force $shots }
-$out = Join-Path $env:TEMP ("zing-smoke-{0}.json" -f [guid]::NewGuid())
+$out = Join-Path $testRoot ("zing-smoke-{0}.json" -f [guid]::NewGuid())
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $p = Start-Process -FilePath $exe -ArgumentList "--smoke-out=`"$out`"", "--smoke-dir=`"$dir`"", "--smoke-shots=`"$shots`"" -PassThru
 $timedOut = -not $p.WaitForExit($TimeoutSec * 1000)

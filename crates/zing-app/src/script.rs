@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn example_extract_script() {
         let _allow = zing_core::guard::allow_io("測試");
-        let dir = std::env::temp_dir().join(format!("zing-extract-測試-{}", std::process::id()));
+        let dir = zing_core::testdir::dir().join(format!("zing-extract-測試-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("來源");
         std::fs::create_dir_all(&src).unwrap();

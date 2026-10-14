@@ -1969,7 +1969,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         step(
             "主題：匯入 .zingtheme",
             |_| {
-                let f = std::env::temp_dir().join("smoke-import.zingtheme");
+                let f = zing_core::testdir::dir().join("smoke-import.zingtheme");
                 let _ = std::fs::write(&f, "name = \"smoke-import\"\nstyle = \"fluent\"\n[color]\naccent = \"#00ff00\"\n");
                 with_app(|a| a.import_theme_file(f.to_string_lossy().into_owned()));
             },
@@ -2004,7 +2004,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             for n in ["smoke-theme", "smoke-import"] {
                 let _ = std::fs::remove_file(theme_path(n));
             }
-            let _ = std::fs::remove_file(std::env::temp_dir().join("smoke-import.zingtheme"));
+            let _ = std::fs::remove_file(zing_core::testdir::dir().join("smoke-import.zingtheme"));
             exec("theme.set dark");
         },
         |_, a| {

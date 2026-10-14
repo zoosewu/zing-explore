@@ -48,8 +48,12 @@ if (-not $SkipBuild) {
     Pop-Location
 }
 
+# 測試資料夾：環境變數 ZING_TEST_DIR（與 zing_core::testdir 相同），沒有設定時用系統的暫存資料夾
+$testRoot = if ($env:ZING_TEST_DIR) { $env:ZING_TEST_DIR } else { $env:TEMP }
+New-Item -ItemType Directory -Force $testRoot | Out-Null
+
 function Invoke-Zing([string[]]$zingArgs, [int]$timeoutMs = 60000) {
-    $out = Join-Path $env:TEMP ("zing-perf-{0}.json" -f [guid]::NewGuid())
+    $out = Join-Path $testRoot ("zing-perf-{0}.json" -f [guid]::NewGuid())
     $p = Start-Process -FilePath $exe -ArgumentList (@("--perf-out=$out") + $zingArgs) -PassThru
     if (-not $p.WaitForExit($timeoutMs)) { $p.Kill(); throw "zing 逾時：$zingArgs" }
     if (-not (Test-Path $out)) { throw "zing 沒有輸出結果：$zingArgs" }
@@ -59,7 +63,7 @@ function Invoke-Zing([string[]]$zingArgs, [int]$timeoutMs = 60000) {
 }
 
 # 測試資料夾：$Files 個檔案（每 100 個有一個資料夾），只建立一次
-$benchDir = Join-Path $env:TEMP "zing-perf-$Files"
+$benchDir = Join-Path $testRoot "zing-perf-$Files"
 if (-not (Test-Path (Join-Path $benchDir '.complete'))) {
     Write-Host "建立測試資料夾 $benchDir（$Files 個項目，只需一次）..."
     New-Item -ItemType Directory -Force $benchDir | Out-Null

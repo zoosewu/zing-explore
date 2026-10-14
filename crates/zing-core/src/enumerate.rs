@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn enumerate_temp_dir() {
-        let dir = std::env::temp_dir().join(format!("zing-enum-test-{}", std::process::id()));
+        let dir = crate::testdir::dir().join(format!("zing-enum-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         for i in 0..1500 {
             std::fs::write(dir.join(format!("f{i}.txt")), b"x").unwrap();

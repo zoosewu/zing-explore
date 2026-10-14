@@ -457,10 +457,10 @@ fn prune(dir: &std::path::Path) {
     }
 }
 
-/// 外部命令產生的縮圖放在哪裡：%LOCALAPPDATA%\zing-explore\thumbs；隔離模式用暫存資料夾
+/// 外部命令產生的縮圖放在哪裡：%LOCALAPPDATA%\zing-explore\thumbs；隔離模式（效能、冒煙測試）用測試資料夾
 pub fn cache_dir(isolated: bool) -> PathBuf {
     if isolated {
-        return std::env::temp_dir().join(format!("zing-thumbs-{}", std::process::id()));
+        return zing_core::testdir::dir().join(format!("zing-thumbs-{}", std::process::id()));
     }
     std::env::var_os("LOCALAPPDATA")
         .map_or_else(std::env::temp_dir, PathBuf::from)
