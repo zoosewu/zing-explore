@@ -2,6 +2,27 @@
 
 技術取捨的原因，供日後查詢。新的在上面。
 
+## 2026-10-14　Lua 腳本：Lua 5.4（mlua 內建）、函數式但不用 functor／monad、release 維持 panic = "abort"
+
+**決定**：
+- 用 `mlua` 0.11 搭配內建編譯的 Lua 5.4（`vendored`），開放完整的標準函式庫；腳本在專用執行緒執行，命令 30 秒、縮圖規則 0.3 秒的時間上限。
+- prelude 提供惰性求值（`seq`）、不可變（`freeze`）、組合（`compose`／`pipe`／`partial`、`|` 管線），但不提供 functor／monad。
+- release 維持 `panic = "abort"`，改由程式規則保證 Lua 的錯誤不穿過 Rust 的堆疊框架。
+
+**原因**：
+- 執行檔增加約 0.79 MB（2.60 → 3.39 MB），建置時間多約 40 秒；LuaJIT 或外部 DLL 都會讓可攜式的單一執行檔變複雜。
+- 10 萬筆資料實測：迴圈 8 ms、map/filter/reduce 11 ms、惰性串流 12 ms、Maybe monad 65 ms。前三者差距小，monad 慢 5–8 倍，
+  而且在 Lua 裡寫起來不自然，所以只保留函數式設計中成本低的部分。
+- Windows 上 Lua 的錯誤是用 SEH 展開的 longjmp；`panic = "abort"` 時 Rust 函式都標為不可展開，錯誤只要穿過 Rust 框架
+  （例如 mlua 的 `set_hook` 回傳錯誤、Rust 函式的參數型別不符）程序就會直接結束（release 冒煙測試實際發生過，0xC0000409）。
+  改成 `panic = "unwind"` 可以根治，但執行檔再多 0.86 MB（+25%）。
+
+**代價與處理**：
+- Rust 提供給 Lua 的函式參數一律收 `Value`、不回傳 `Err`；時間上限用 prelude 裡的 Lua 鉤子（`debug.sethook`，並包裝
+  `coroutine.create`／`wrap` 讓協程也受限制）；Rust 端讀寫全域變數只用 `raw_get`／`raw_set`。
+- 冒煙測試涵蓋：錯誤、無窮迴圈、協程裡的無窮迴圈、型別錯誤的參數、全域表設了會報錯的 metatable，並以 release 執行。
+- 腳本可以自己呼叫 `debug.sethook` 拿掉時間上限；腳本與設定檔同等可信，不另外防範。
+
 ## 2026-10-14　預覽處理常式以「沒有擁有者」的頂層視窗承載
 
 **決定**：Windows 預覽處理常式（IPreviewHandler）在專用的 STA 執行緒上，用一個沒有父視窗、也沒有擁有者的

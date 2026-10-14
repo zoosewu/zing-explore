@@ -203,13 +203,19 @@ pub fn refresh_edit_style(app: &App) {
 const EDIT_PALETTE: usize = 1;
 /// 批次重新命名的輸入框（按鍵轉給面板、失去焦點不結束）
 const EDIT_BATCH: usize = 2;
+/// Lua 腳本 ask() 的輸入框（失去焦點時視為取消）
+const EDIT_ASK: usize = 3;
 
 /// 建立編輯框。`rect` 為 DIP；`sel_end` 為預設選取的結尾（UTF-16 單位）
 fn create_edit(app: &mut App, rect: crate::gfx::Rect, text: &str, sel_end: usize, kind: EditKind) {
     if let Some(old) = app.edit.take() {
         destroy_edit(old.hwnd);
     }
-    let data = if matches!(kind, EditKind::Palette) { EDIT_PALETTE } else { 0 };
+    let data = match kind {
+        EditKind::Palette => EDIT_PALETTE,
+        EditKind::Ask => EDIT_ASK,
+        _ => 0,
+    };
     if let Some(hwnd) = make_edit(app, rect, text, sel_end, data) {
         focus_edit(hwnd);
         app.edit = Some(Edit { hwnd, kind });
@@ -398,7 +404,7 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             }
             WM_CHAR if wparam.0 == 0x0D || wparam.0 == 0x1B || wparam.0 == 0x01 => return LRESULT(0),
             // 失去焦點：重新命名、網址列視為確認；命令面板視為取消
-            WM_KILLFOCUS => done(data != EDIT_PALETTE),
+            WM_KILLFOCUS => done(data != EDIT_PALETTE && data != EDIT_ASK),
             _ => {}
         }
         DefSubclassProc(hwnd, msg, wparam, lparam)
@@ -534,6 +540,11 @@ fn deferred_init(hwnd: HWND) {
     with_app(|a| {
         a.load_size_cache();
         a.load_folder_views();
+        // 效能模式不載入腳本，結果才可重現
+        if a.perf.is_none() {
+            let n = a.notifier.clone();
+            a.scripts.load(&n);
+        }
         a.probes_enabled = true;
         a.invalidate();
         if !a.isolated {

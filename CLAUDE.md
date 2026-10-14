@@ -1,6 +1,6 @@
 # 專案：Windows 11 檔案總管 zing-explore（執行檔 zing.exe）
 
-Rust + 原生 Win32（`windows-rs`）+ Direct2D/DirectWrite 自繪 UI，腳本使用 Lua（尚未實作）。
+Rust + 原生 Win32（`windows-rs`）+ Direct2D/DirectWrite 自繪 UI，腳本使用 Lua 5.4（`mlua`）。
 規格文件：https://claude.ai/code/artifact/335464a0-428e-4b77-b122-94f641201d9f
 
 ## 核心開發注意事項：效能是硬性門檻
@@ -68,6 +68,14 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 拖曳出去與放置目標受 COM 限制必須在 UI 執行緒，透過 `App::modal` 在釋放 App 借用後執行；放置目標每次拖曳只解析一次路徑（快取）。
 - 測試卡住的 Shell 擴充功能：debug build 設定 `ZING_TEST_SHELL_DELAY_MS=8000`，第一個右鍵選單會延遲；UI 必須仍可操作，3 秒後再按右鍵會改用新主機。
 - 新增相依套件前，評估對執行檔大小與啟動時間的影響。
+- Lua 腳本（`script.rs`、`prelude.lua`）：
+  - 腳本只在腳本執行緒執行；UI 只送工作，腳本要求的動作以訊息送回。每次呼叫都要設定時間上限。
+  - release 是 `panic = "abort"`，Lua 的錯誤不可穿過 Rust 的堆疊框架：Rust 提供給 Lua 的函式參數一律收 `Value`、
+    不回傳 `Err`；不用 mlua 的 `set_hook`（時間上限在 prelude 用 `debug.sethook`）；Rust 端讀寫全域變數只用 `raw_get`／`raw_set`。
+    改動 Lua 邊界後要跑 `pwsh tools/smoke.ps1 -Release`。
+  - API 的說明只寫在 `zing_core::scriptapi`：新增或修改命令、全域函式、prelude 函式時同步更新，再以
+    `ZING_UPDATE_DOCS=1 cargo test -p zing-core` 重新產生 `docs/lua.md`（測試會檢查是否最新）；
+    `app_commands_match_scriptapi` 測試檢查命令清單與 `App::run` 一致。
 - 啟動路徑上不放非必要初始化，能延後的就延後（OLE、拖放在第一幀之後初始化）。
 - 第一幀用 WARP 繪製，硬體 GPU 裝置在第一幀呈現後於背景建立再切換；不要在第一幀前碰硬體裝置（驅動初始化約 130 ms，且會鎖住 DXGI）。
 - 分析工具：`--perf-out` 模式的 `phase_*` 時間點、Windows Performance Recorder/Analyzer（ETW）、`criterion`；需要符號時用 `cargo build --profile profiling`。
@@ -90,7 +98,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 
 - `crates/zing-core`：與 UI 無關、可測試的核心（列舉、排序／篩選、命令語言、快速鍵、主題、設定）。
 - `crates/zing-app`：Win32 視窗、繪製（`gfx`、`view`）、輸入、Shell 整合（`shell`）、背景服務（`services`）、效能模式（`perf`）、
-  索引服務用戶端（`index`）。
+  索引服務用戶端（`index`）、Lua 腳本（`script`、`prelude.lua`）。
 - `crates/zing-index`：NTFS 索引服務 `zing-index.exe`（Windows 服務）。讀取 MFT 建立資料夾大小索引、跟著變更日誌更新，
   經 named pipe（協定在 `zing_core::indexproto`）回答查詢；MFT 解析與索引資料結構在 `zing_core::ntfs`、`zing_core::volindex`，
   以構造的記錄做單元測試與基準測試（`cargo bench -p zing-core --bench core -- ntfs`）。讀取磁碟區需要系統管理員權限，

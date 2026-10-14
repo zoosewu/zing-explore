@@ -90,6 +90,8 @@ pub enum EditKind {
     /// 主題編輯器：欄位的值、另存新主題的名稱
     ThemeField { field: usize },
     ThemeSaveAs,
+    /// Lua 腳本的 ask()
+    Ask,
 }
 
 pub struct Edit {
@@ -117,6 +119,9 @@ pub struct App {
     /// 目前主題的名稱（內建名稱或 themes 資料夾中的檔名）
     pub theme_name: String,
     pub theme_editor: Option<crate::themeedit::ThemeEditor>,
+    pub scripts: crate::script::Scripts,
+    /// Lua 腳本的 ask() 等待中的提示與回答通道
+    pub ask: Option<(String, std::sync::mpsc::SyncSender<Option<String>>)>,
     /// 以文字編輯器修改中的主題檔：(主題名稱, 上次看到的修改時間)
     pub theme_watch: Option<(String, Option<std::time::SystemTime>)>,
     pub tree_side: TreeSide,
@@ -206,6 +211,8 @@ impl App {
             batch: None,
             theme_name,
             theme_editor: None,
+            scripts: Default::default(),
+            ask: None,
             theme_watch: None,
             preview: crate::preview::Preview::new(session.preview_visible, session.preview_width.unwrap_or(360.0)),
             tree_width: session.tree_width.unwrap_or(theme.metrics.tree_width),
@@ -411,6 +418,11 @@ impl App {
         self.load(p, t);
         if p == self.active_pane {
             self.sync_tree();
+        }
+        if self.scripts.on_navigate {
+            let (ctx, n) = (self.script_ctx(), self.notifier.clone());
+            let path = self.panes[p].tabs[t].path.clone();
+            self.scripts.navigate(&n, &path, ctx);
         }
         self.invalidate();
     }
@@ -752,6 +764,17 @@ impl App {
             Msg::FolderViewsLoaded(v) => self.on_folder_views_loaded(v),
             Msg::Preview { generation, loaded } => self.on_preview_loaded(generation, *loaded),
             Msg::PreviewHost { generation, ok } => self.on_preview_host(generation, ok),
+            Msg::ScriptRun(invs) => {
+                for inv in invs {
+                    if let Err(e) = self.run(&inv) {
+                        self.set_status(e, true);
+                    }
+                }
+                self.invalidate();
+            }
+            Msg::ScriptExec(script) => self.exec(&script),
+            Msg::ScriptAsk { prompt, default, reply } => self.open_ask(prompt, default, reply),
+            Msg::ScriptsLoaded(l) => self.on_scripts_loaded(l),
             Msg::Thumb { id, pixels, source } => {
                 self.thumbs.store(id, pixels, source);
                 self.invalidate();
@@ -1104,7 +1127,17 @@ impl App {
                 });
             }
             "config.reload" => self.reload_config(),
+            "script.reload" => {
+                let n = self.notifier.clone();
+                self.scripts.load(&n);
+            }
             "app.exit" => window::close(self.hwnd),
+            // Lua 腳本定義的命令（全域函式）
+            other if self.scripts.has(other) => {
+                let ctx = self.script_ctx();
+                let n = self.notifier.clone();
+                self.scripts.call(&n, other, ctx);
+            }
             other => return Err(format!("未知命令：{other}")),
         }
         Ok(())
@@ -1248,6 +1281,11 @@ impl App {
         if self.edit.as_ref().is_none_or(|e| e.hwnd != hwnd) {
             return;
         }
+        if matches!(self.edit.as_ref().map(|e| &e.kind), Some(EditKind::Ask)) {
+            let text = self.edit.as_ref().map(|e| window::edit_text(e.hwnd));
+            self.finish_ask(commit, text);
+            return;
+        }
         if matches!(self.edit.as_ref().map(|e| &e.kind), Some(EditKind::Palette)) {
             if commit {
                 self.run_palette(None);
@@ -1289,6 +1327,7 @@ impl App {
                 EditKind::Palette => {}
                 EditKind::ThemeField { field } => self.commit_theme_field(field, &text),
                 EditKind::ThemeSaveAs => self.save_theme_as(&text),
+                EditKind::Ask => {}
             }
         }
         window::focus_main(self.hwnd);

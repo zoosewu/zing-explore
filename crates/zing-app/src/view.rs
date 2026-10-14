@@ -460,6 +460,7 @@ impl App {
         self.paint_status(&lay);
         self.paint_palette();
         self.paint_batch();
+        self.paint_ask();
         self.gfx.end();
         self.layout = lay;
         self.update_title();

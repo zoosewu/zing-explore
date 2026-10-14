@@ -18,6 +18,62 @@ use zing_core::path;
 use zing_core::folderview::ViewMode;
 use zing_core::sort::{SortKey, SortSpec};
 
+/// Lua 冒煙測試用的腳本
+const SMOKE_LUA: &str = r#"
+--- 冒煙測試命令
+function smoke_cmd()
+  local names = sel() | map(path.name) | list
+  msg("smoke:" .. #names .. ":" .. (names[1] or ""))
+end
+
+function smoke_go()
+  go(path.join(cwd(), "資料夾A"))
+end
+
+function smoke_ask()
+  local v = ask("名稱？", "預設")
+  msg("答案：" .. tostring(v))
+end
+
+function smoke_err()
+  error("boom")
+end
+
+function smoke_loop()
+  while true do end
+end
+
+function on_navigate(p)
+  msg("nav:" .. path.name(p))
+end
+
+-- 型別錯誤的參數傳給 Rust 函式：不可丟錯穿過 Rust（release 會直接結束程序）
+function smoke_bad()
+  __invoke("nav.refresh", 5, 7)
+  __msg({}); __exec(nil); __log(print); __is_dir({})
+  msg("bad ok")
+end
+
+-- 協程裡的無窮迴圈也受時間上限約束
+function smoke_coloop()
+  coroutine.wrap(function() while true do end end)()
+end
+
+-- 全域表設了會報錯的 metatable：Rust 端只做 raw 存取，不受影響
+function smoke_strict()
+  setmetatable(_G, {
+    __index = function(_, k) error("未定義的全域變數：" .. tostring(k), 2) end,
+    __newindex = function(_, k) error("禁止新增全域變數：" .. tostring(k), 2) end,
+  })
+  msg("strict")
+end
+"#;
+
+/// 狀態列目前的訊息
+fn status(a: &App) -> Option<String> {
+    a.status.as_ref().map(|s| s.0.clone())
+}
+
 /// 1×1 的 PNG（資料夾封面、外部命令產生器的測試圖）
 const TINY_PNG: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01,
@@ -79,9 +135,16 @@ struct Step {
     act: Option<Act>,
     check: Check,
     timeout: Duration,
+    /// 這一步故意觸發的錯誤，不算狀態列錯誤
+    expect_error: bool,
 }
 
 impl Step {
+    fn expect_error(mut self) -> Self {
+        self.expect_error = true;
+        self
+    }
+
     /// 檔案作業、Shell 拖放：給比較長的時間
     fn slow(mut self) -> Self {
         self.timeout = Duration::from_secs(10);
@@ -94,7 +157,13 @@ fn step(
     act: impl FnOnce(&mut Ctx) + 'static,
     check: impl FnMut(&mut Ctx, &mut App) -> Result<(), String> + 'static,
 ) -> Step {
-    Step { name: name.into(), act: Some(Box::new(act)), check: Box::new(check), timeout: Duration::from_secs(4) }
+    Step {
+        name: name.into(),
+        act: Some(Box::new(act)),
+        check: Box::new(check),
+        timeout: Duration::from_secs(4),
+        expect_error: false,
+    }
 }
 
 /// 步驟之間共用的資料
@@ -180,6 +249,7 @@ impl Driver {
         }
         let ctx = &mut self.ctx;
         let (errors, last) = (&mut self.errors, &mut self.last_status);
+        let expect_error = step.expect_error;
         let r = {
             // 檢查會讀磁碟、寫截圖；被測的程式碼在動作中執行，不受影響
             let _allow = zing_core::guard::allow_io("冒煙測試的驗證");
@@ -188,7 +258,9 @@ impl Driver {
                     && text != last
                 {
                     *last = text.clone();
-                    errors.push(text.clone());
+                    if !expect_error {
+                        errors.push(text.clone());
+                    }
                 }
                 (step.check)(ctx, a)
             })
@@ -2002,6 +2074,174 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             host_visible(a, false)
         },
     ));
+
+    // ------------------------------------------------ Lua 腳本
+    v.push(
+        step(
+            "Lua：載入腳本（全域函式成為命令，標題取自 --- 註解）",
+            |_| {
+                let dir = crate::script::scripts_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::write(dir.join("smoke.lua"), SMOKE_LUA);
+                exec("script.reload");
+            },
+            |_, a| {
+                let want = ("smoke_cmd".to_string(), "冒煙測試命令".to_string());
+                if !a.scripts.commands.contains(&want) {
+                    return Err(format!("命令：{:?}", a.scripts.commands));
+                }
+                expect("on_navigate", a.scripts.on_navigate, true)?;
+                let meta = crate::script::scripts_dir().join(".zing").join("zing.d.lua");
+                if meta.exists() { Ok(()) } else { Err("沒有寫入自動補全定義".into()) }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "Lua：執行自訂命令（sel、管線、msg）",
+            |c| {
+                click(c, "", row_pos("a2.txt"));
+                exec("smoke_cmd");
+            },
+            |_, a| expect("狀態列", status(a).as_deref(), Some("smoke:1:a2.txt")),
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "Lua：命令面板 = 運算式（惰性串流）",
+            |c| {
+                key(c, "cs", letter('p'));
+                // 一次設定整段文字：逐字輸入在 debug build 單一計時器週期內會超過卡頓門檻
+                if let Some(e) = edit_hwnd() {
+                    set_text(e, "= seq({1,2,3,4}) | filter(function(x) return x % 2 == 0 end) | map(function(x) return x * 10 end) | list");
+                }
+                palette_key(VK_RETURN);
+            },
+            |_, a| expect("狀態列", status(a).as_deref(), Some("= { 20, 40 }")),
+        )
+        .slow(),
+    );
+    v.push(
+        step("Lua：go() 與 on_navigate 事件", |_| exec("smoke_go"), {
+            let dir_a = dir_a.clone();
+            move |_, a| {
+                at(a, &dir_a)?;
+                expect("狀態列", status(a).as_deref(), Some("nav:資料夾A"))
+            }
+        })
+        .slow(),
+    );
+    v.push(step("Lua：回到測試資料夾", |_| exec("nav.back"), {
+        let d = d.clone();
+        move |_, a| at(a, &d)
+    }));
+    v.push(step("Lua：ask() 顯示輸入框", |_| exec("smoke_ask"), |_, a| {
+        if a.ask.is_some() && a.edit.is_some() { Ok(()) } else { Err(format!("沒有輸入框：ask={} 狀態={:?}", a.ask.is_some(), status(a))) }
+    }));
+    v.push(
+        step(
+            "Lua：ask() 回答後腳本繼續",
+            |_| {
+                if let Some(e) = edit_hwnd() {
+                    set_text(e, "abc");
+                    key_to(e, "", VK_RETURN);
+                }
+            },
+            |_, a| {
+                expect("輸入框", a.ask.is_none(), true)?;
+                expect("狀態列", status(a).as_deref(), Some("答案：abc"))
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step("Lua：錯誤顯示在狀態列並記錄行號", |_| exec("smoke_err"), |_, a| {
+            let st = a.status.as_ref().map(|s| (s.0.clone(), s.1));
+            match st {
+                Some((m, true)) if m.contains("boom") => {}
+                other => return Err(format!("狀態列：{other:?}")),
+            }
+            let log = std::fs::read_to_string(crate::script::scripts_dir().join("error.log")).unwrap_or_default();
+            if log.contains("smoke.lua:") { Ok(()) } else {             Err("error.log 沒有檔名與行號".into()) }
+        })
+        .slow()
+        .expect_error(),
+    );
+    v.push(
+        step(
+            "Lua：無窮迴圈超過時間上限被中止（UI 不受影響）",
+            |_| {
+                crate::script::TEST_CALL_LIMIT_MS.store(400, std::sync::atomic::Ordering::Relaxed);
+                with_app(|a| a.status = None);
+                exec("smoke_loop");
+            },
+            |_, a| {
+                let st = a.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+                if st.contains("中止") { Ok(()) } else { Err(format!("狀態列：{st}")) }
+            },
+        )
+        .slow()
+        .expect_error(),
+    );
+    v.push(
+        step(
+            "Lua：協程裡的無窮迴圈也會被中止",
+            |_| {
+                with_app(|a| a.status = None);
+                exec("smoke_coloop");
+            },
+            |_, a| {
+                let st = a.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+                if st.contains("中止") { Ok(()) } else { Err(format!("狀態列：{st}")) }
+            },
+        )
+        .slow()
+        .expect_error(),
+    );
+    v.push(
+        step("Lua：型別錯誤的參數傳給內部函式不會中止程序", |_| exec("smoke_bad"), |_, a| {
+            expect("狀態列", status(a).as_deref(), Some("bad ok"))
+        })
+        .slow(),
+    );
+    v.push(
+        step(
+            "Lua：全域表設了 metatable 後仍可呼叫命令",
+            |_| exec("smoke_strict"),
+            |_, a| expect("狀態列", status(a).as_deref(), Some("strict")),
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "Lua：（同上）再執行命令",
+            |c| {
+                click(c, "", row_pos("a2.txt"));
+                exec("smoke_cmd");
+            },
+            |_, a| expect("狀態列", status(a).as_deref(), Some("smoke:1:a2.txt")),
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "Lua：移除測試腳本並重新載入",
+            |_| {
+                crate::script::TEST_CALL_LIMIT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
+                let dir = crate::script::scripts_dir();
+                let _ = std::fs::remove_file(dir.join("smoke.lua"));
+                let _ = std::fs::remove_file(dir.join("error.log"));
+                let _ = std::fs::remove_file(dir.join("zing.log"));
+                exec("script.reload");
+            },
+            |_, a| {
+                if a.scripts.has("smoke_cmd") { Err("測試命令還在".into()) } else { Ok(()) }
+            },
+        )
+        .slow(),
+    );
 
     // 狀態列錯誤與 UI 執行緒 I/O 防呆的回報在 finish() 統一檢查
     v.push(step("截圖：結束畫面", |_| {}, |c, _| screenshot(c, "03-結束")));

@@ -15,6 +15,7 @@ pub mod listing;
 pub mod ntfs;
 pub mod palette;
 pub mod path;
+pub mod scriptapi;
 pub mod sort;
 pub mod text;
 pub mod textpreview;

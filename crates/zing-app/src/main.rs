@@ -18,6 +18,7 @@ mod services;
 mod settings;
 mod shell;
 mod shellhost;
+mod script;
 mod sizes;
 mod themeedit;
 mod thumbs;

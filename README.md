@@ -40,7 +40,8 @@ cargo build --release
 - 樹狀列：看得到的節點先在背景載入子資料夾，點擊前就知道能不能展開（沒有子資料夾就不顯示箭頭），
   點了立即展開；網路磁碟、隨身碟不預先載入，一律顯示箭頭
 - 檔案作業佇列（`Ctrl+J`）：複製／移動／刪除依序執行，顯示進度與剩餘時間，可暫停、取消；重新命名等小作業不必排隊
-- 命令面板（`Ctrl+Shift+P`）：模糊搜尋所有命令（中文標題或命令名稱，如 `tog hid`），顯示快速鍵，最近用過的排前面；輸入 `>` 開頭可直接執行命令腳本
+- 命令面板（`Ctrl+Shift+P`）：模糊搜尋所有命令（中文標題或命令名稱，如 `tog hid`），顯示快速鍵，最近用過的排前面；輸入 `>` 開頭可直接執行命令腳本，`=` 開頭可計算 Lua 運算式
+- Lua 腳本：`scripts\*.lua` 裡的全域函式就是命令（見下方「Lua 腳本」）
 
 ## 自訂
 
@@ -68,6 +69,27 @@ cmd = "run code {sel}"
 match = "*.stl;*.3mf"
 cmd = 'stl-thumb -s {size} "{in}" "{out}"'
 ```
+
+## Lua 腳本
+
+腳本放在 `zing.exe` 旁的 `scripts\*.lua`（Lua 5.4），啟動後在背景載入，命令面板「重新載入 Lua 腳本」可重新載入。
+全域函式就是命令，上方的 `---` 註解是命令面板顯示的標題；`on_navigate(path)`、`thumbnail(path)` 是事件。
+內建命令都能直接呼叫（`nav.refresh()`、`copy(sel(), { to = "D:\\備份" })`），清單可用 `|` 串接惰性的處理步驟：
+
+```lua
+--- 把選取的圖片移到「圖片」資料夾
+function move_images()
+  local imgs = sel() | filter(function(p) return path.ext(p) == "jpg" or path.ext(p) == "png" end) | list
+  if #imgs == 0 then return msg("沒有選取圖片") end
+  copy(imgs, { to = path.join(cwd(), "圖片"), move = true })
+end
+```
+
+- 每次執行有時間上限（命令 30 秒、縮圖規則 0.3 秒），腳本在背景執行，不會卡住視窗
+- 錯誤顯示在狀態列，完整的呼叫堆疊記在 `scripts\error.log`；`log()` 寫入 `scripts\zing.log`
+- 載入時在 `scripts\.zing\` 產生 LuaLS 定義檔與 `.luarc.json`：用 VS Code 的 Lua 擴充功能開啟 `scripts` 資料夾就有自動補全與說明
+
+完整的函式說明見 [docs/lua.md](docs/lua.md)（由程式碼產生，永遠與程式一致）。
 
 主題（命令面板）：
 - 「編輯目前的主題」：右側面板列出配色、字型、尺寸、外觀，修改立即套用；顏色可點色塊選色或輸入 `#rrggbb`，

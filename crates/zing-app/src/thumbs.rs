@@ -47,6 +47,8 @@ pub enum Source {
     Shell,
     Cover,
     Command,
+    /// Lua 腳本的 thumbnail() 指定的圖片
+    Script,
 }
 
 pub fn bucket(px: f32) -> u32 {
@@ -310,6 +312,11 @@ fn is_slow_path(p: &str) -> bool {
 
 fn produce(shared: &Shared, job: &Job) -> (Option<IconPixels>, Source) {
     zing_core::guard::io("讀取縮圖");
+    if let Some(img) = crate::script::thumbnail_rule(&job.path)
+        && let Some(p) = shell_image(&img, job.px)
+    {
+        return (Some(p), Source::Script);
+    }
     if !job.is_dir {
         let name: Vec<u16> = path::file_name(&job.path).encode_utf16().collect();
         let list = shared.thumbnailers.lock().unwrap().clone();

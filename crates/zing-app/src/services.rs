@@ -68,6 +68,13 @@ pub enum Msg {
     FolderSizesLoaded(Vec<zing_core::dirsize::CacheLine>),
     /// 預覽窗格的內容
     Preview { generation: u64, loaded: Box<crate::preview::Loaded> },
+    /// Lua 腳本要求執行的命令（結構化，不經命令語言的解析與變數展開）
+    ScriptRun(Vec<zing_core::command::Invocation>),
+    /// Lua 腳本的 exec(命令腳本)
+    ScriptExec(String),
+    /// Lua 腳本的 ask()：顯示輸入框，回答送回 `reply`（取消為 None）
+    ScriptAsk { prompt: String, default: String, reply: std::sync::mpsc::SyncSender<Option<String>> },
+    ScriptsLoaded(crate::script::Loaded),
     /// 預覽處理常式顯示完成（ok 為 false：處理常式失敗）
     PreviewHost { generation: u64, ok: bool },
     /// 背景讀出的各資料夾檢視設定

@@ -36,8 +36,18 @@ impl Palette {
         self.query.trim_start().strip_prefix('>').map(str::trim)
     }
 
+    /// `=` 開頭：立即執行的 Lua 運算式
+    fn lua(&self) -> Option<&str> {
+        self.query.trim_start().strip_prefix('=').map(str::trim)
+    }
+
+    /// 直接執行（不列出命令）
+    fn direct(&self) -> bool {
+        self.raw().is_some() || self.lua().is_some()
+    }
+
     fn visible_rows(&self) -> usize {
-        if self.raw().is_some() { 1 } else { self.matches.len().clamp(1, MAX_ROWS) }
+        if self.direct() { 1 } else { self.matches.len().clamp(1, MAX_ROWS) }
     }
 }
 
@@ -56,6 +66,11 @@ impl App {
         for b in &self.config.buttons {
             if !v.iter().any(|e| e.cmd == b.cmd) {
                 v.push(Entry { title: format!("按鈕：{}", b.label), cmd: b.cmd.clone(), key: key(&b.cmd) });
+            }
+        }
+        for (name, title) in &self.scripts.commands {
+            if !v.iter().any(|e| &e.cmd == name) {
+                v.push(Entry { title: format!("腳本：{title}"), cmd: name.clone(), key: key(name) });
             }
         }
         for (chord, cmd) in &self.config.keys {
@@ -110,7 +125,7 @@ impl App {
         }
         let row = lay.rows.iter().position(|r| r.contains(x, y)).map(|i| p.top + i).filter(|&i| i < p.matches.len());
         Some(match row {
-            Some(i) if p.raw().is_none() => Hit::PaletteRow(i),
+            Some(i) if !p.direct() => Hit::PaletteRow(i),
             _ => Hit::Palette,
         })
     }
@@ -125,7 +140,7 @@ impl App {
         let recent = &self.palette_recent;
         let Some(p) = self.palette.as_mut() else { return };
         p.query = text;
-        p.matches = if p.raw().is_some() { Vec::new() } else { filter(&p.entries, &p.query, recent) };
+        p.matches = if p.direct() { Vec::new() } else { filter(&p.entries, &p.query, recent) };
         p.sel = 0;
         p.top = 0;
         self.invalidate();
@@ -150,6 +165,13 @@ impl App {
     pub fn run_palette(&mut self, index: Option<usize>) {
         let Some(p) = self.palette.take() else { return };
         self.close_palette_edit();
+        if let Some(expr) = p.lua() {
+            if !expr.is_empty() {
+                let (ctx, n) = (self.script_ctx(), self.notifier.clone());
+                self.scripts.eval(&n, expr, ctx);
+            }
+            return;
+        }
         let cmd = match p.raw() {
             Some(raw) => raw.to_string(),
             None => match p.matches.get(index.unwrap_or(p.sel)) {
@@ -196,6 +218,12 @@ impl App {
         g.stroke_round(lay.input, self.theme.metrics.radius, c.accent, 1.0);
 
         let row0 = lay.rows[0];
+        if let Some(expr) = p.lua() {
+            g.fill_round(row0, self.theme.metrics.radius, c.selection);
+            let text = if expr.is_empty() { "輸入 Lua 運算式後按 Enter 執行（結果顯示在狀態列）".to_string() } else { format!("執行 Lua：{expr}") };
+            g.text(&text, Font::Text, Rect::new(row0.l + 10.0, row0.t, row0.r - 10.0, row0.b), c.selection_text);
+            return;
+        }
         if let Some(raw) = p.raw() {
             g.fill_round(row0, self.theme.metrics.radius, c.selection);
             let text = if raw.is_empty() { "輸入命令腳本後按 Enter 執行".to_string() } else { format!("執行命令：{raw}") };

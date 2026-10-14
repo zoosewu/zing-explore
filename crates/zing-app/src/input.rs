@@ -96,6 +96,13 @@ impl App {
     pub fn on_lbutton_down(&mut self, x: f32, y: f32) {
         let mods = Mods::current();
         let hit = self.fresh_hit(x, y);
+        // Lua 的 ask()：點輸入框外視為取消
+        if self.ask.is_some() {
+            if self.ask_layout().is_some_and(|(card, _, _)| !card.contains(x, y)) {
+                self.finish_ask(false, None);
+            }
+            return;
+        }
         // 批次重新命名面板：點面板外取消
         if self.batch.is_some() {
             self.batch_click(hit);
