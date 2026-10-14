@@ -414,6 +414,7 @@ fn deferred_init(hwnd: HWND) {
     set_window_icons(hwnd);
     with_app(|a| {
         a.load_size_cache();
+        a.load_folder_views();
         a.probes_enabled = true;
         a.invalidate();
         if !a.isolated {

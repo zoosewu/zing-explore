@@ -4,6 +4,7 @@ pub mod command;
 pub mod config;
 pub mod dirsize;
 pub mod enumerate;
+pub mod folderview;
 pub mod format;
 pub mod guard;
 pub mod indexproto;

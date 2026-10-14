@@ -58,6 +58,8 @@ pub enum Msg {
     FolderSize { parent: String, name: String, size: zing_core::dirsize::DirSize, done: Option<bool> },
     /// 背景讀出的資料夾大小快取
     FolderSizesLoaded(Vec<zing_core::dirsize::CacheLine>),
+    /// 背景讀出的各資料夾檢視設定
+    FolderViewsLoaded(zing_core::folderview::FolderViews),
     /// 向索引服務查詢資料夾大小的結果（`parent` 底下的子資料夾）
     IndexSizes { parent: String, result: Result<zing_core::indexproto::Response, zing_core::indexproto::QueryError> },
     /// 安裝、移除索引服務或查詢狀態的結果（狀態列訊息，成功時重新查詢）

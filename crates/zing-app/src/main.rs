@@ -5,6 +5,7 @@ mod app;
 mod gfx;
 mod icons;
 mod index;
+mod views;
 mod input;
 mod jobs;
 mod model;

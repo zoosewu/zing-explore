@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use zing_core::path;
-use zing_core::sort::SortKey;
+use zing_core::sort::{SortKey, SortSpec};
 use zing_core::theme::Mode;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, POINTL, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -1350,6 +1350,42 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             }
         },
     ));
+
+    // ------------------------------------------------ 每個資料夾的檢視設定
+    v.push(step(
+        "資料夾檢視：Ctrl+2 依修改日期排序後進入資料夾A（資料夾A 用預設排序）",
+        {
+            let dir_a = dir_a.clone();
+            move |c| {
+                key(c, "c", VIRTUAL_KEY(b'2' as u16));
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, dir_a.clone(), true);
+                });
+            }
+        },
+        {
+            let (d, dir_a) = (d.clone(), dir_a.clone());
+            move |_, a| {
+                at(a, &dir_a)?;
+                expect("資料夾A 的排序", a.tab().spec, SortSpec::default())?;
+                expect("記住測試資料夾的排序", a.folder_views.get(&d).sort, SortSpec { key: SortKey::Modified, ascending: false })
+            }
+        },
+    ));
+    v.push(step("資料夾檢視：回上一頁時恢復記住的排序", |_| {
+        with_app(|a| a.go_back());
+    }, {
+        let d = d.clone();
+        move |_, a| {
+            at(a, &d)?;
+            expect("排序", a.tab().spec, SortSpec { key: SortKey::Modified, ascending: false })
+        }
+    }));
+    v.push(step("資料夾檢視：Ctrl+1 改回名稱排序（與預設相同，不再保存）", |c| key(c, "c", VIRTUAL_KEY(b'1' as u16)), |_, a| {
+        expect("排序", a.tab().spec, SortSpec::default())?;
+        expect("記錄", a.folder_views.is_empty(), true)
+    }));
 
     // 狀態列錯誤與 UI 執行緒 I/O 防呆的回報在 finish() 統一檢查
     v.push(step("截圖：結束畫面", |_| {}, |c, _| screenshot(c, "03-結束")));

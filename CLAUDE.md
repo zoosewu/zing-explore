@@ -92,7 +92,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   - 使用者的設定與習慣放在 `zing.exe` 所在的資料夾（可攜式，重灌系統不受影響）：`config.toml`（設定）、
     `themes\*.toml`（主題）、`session.toml`（視窗、分頁、我的最愛、命令面板最近使用）。路徑一律經 `settings::app_dir()`。
   - 系統產生、可重建的資料（資料夾大小快取、縮圖快取…）放在 `%LOCALAPPDATA%\zing-explore\`（只屬於這台電腦、不漫遊，
-    刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（沒有索引時的資料夾大小，見 `sizes.rs`）。
+    刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（沒有索引時的資料夾大小，見 `sizes.rs`）、
+    `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`）。
   - 索引服務：執行檔安裝時複製到 `%ProgramFiles%\zing-explore\zing-index.exe`（以 LocalSystem 執行的程式不能放在一般使用者
     可修改的位置）；快照（`<磁碟區序號>.zidx`）與 `index.log` 放在服務帳號的 `%LOCALAPPDATA%`，即
     `C:\Windows\System32\config\systemprofile\AppData\Local\zing-explore`（不用 `%ProgramData%`：一般使用者能先建立同名資料夾）。

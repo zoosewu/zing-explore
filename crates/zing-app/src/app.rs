@@ -108,6 +108,8 @@ pub struct App {
     pub fileops: FileOps,
     pub jobs: Jobs,
     pub sizes: FolderSizes,
+    /// 每個資料夾的檢視設定（排序…），見 views.rs
+    pub folder_views: zing_core::folderview::FolderViews,
     /// 已確認結束，等待檔案作業取消完成後關閉視窗
     pub pending_exit: bool,
     pub icons: Icons,
@@ -190,6 +192,7 @@ impl App {
             fileops,
             jobs: Jobs::default(),
             sizes: FolderSizes::default(),
+            folder_views: Default::default(),
             pending_exit: false,
             icons,
             shell_host,
@@ -291,7 +294,8 @@ impl App {
     fn new_tab(&mut self, p: String) -> Tab {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        Tab::new(id, p, SortSpec::default())
+        let spec = self.folder_views.get(&p).sort;
+        Tab::new(id, p, spec)
     }
 
     fn find_tab(&self, id: TabId) -> Option<(usize, usize)> {
@@ -350,12 +354,15 @@ impl App {
 
     pub fn navigate(&mut self, p: usize, target: String, record: bool) {
         let target = path::normalize(&target);
+        let spec = self.folder_views.get(&target).sort;
         let tab = self.panes[p].tab_mut();
         if record && !target.eq_ignore_ascii_case(&tab.path) {
             let old = std::mem::take(&mut tab.path);
             tab.back.push(old);
             tab.forward.clear();
         }
+        // 套用這個資料夾記住的排序方式
+        tab.spec = spec;
         tab.path = target;
         tab.reset_contents();
         tab.watcher = None;
@@ -538,6 +545,7 @@ impl App {
         let asc = ascending.unwrap_or(if tab.spec.key == key { !tab.spec.ascending } else { key == SortKey::Name });
         tab.spec = SortSpec { key, ascending: asc };
         let (p, t) = (self.active_pane, self.panes[self.active_pane].active);
+        self.remember_view(p, t);
         self.resort(p, t);
         self.ensure_visible(p);
         self.invalidate();
@@ -693,6 +701,7 @@ impl App {
             Msg::Job { id, event } => self.on_job_event(id, event),
             Msg::FolderSize { parent, name, size, done } => self.on_folder_size(parent, name, size, done),
             Msg::FolderSizesLoaded(lines) => self.on_size_cache_loaded(lines),
+            Msg::FolderViewsLoaded(v) => self.on_folder_views_loaded(v),
             Msg::IndexSizes { parent, result } => self.on_index_sizes(parent, result),
             Msg::IndexAction { text, error, changed } => self.on_index_action(text, error, changed),
             Msg::Paste { sources, dest, cut } => self.submit_op(FileOp::Transfer { sources, dest, mov: cut }),
