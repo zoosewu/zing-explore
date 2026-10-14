@@ -117,6 +117,7 @@ fn describe(op: &FileOp) -> (String, &'static str) {
         FileOp::Transfer { sources, dest, mov: true } => (format!("移動{}到「{}」", what(sources), folder(dest)), "\u{E8C6}"),
         FileOp::Delete { paths, permanent: false } => (format!("刪除{}", what(paths)), "\u{E74D}"),
         FileOp::Delete { paths, permanent: true } => (format!("永久刪除{}", what(paths)), "\u{E74D}"),
+        FileOp::BatchRename { pairs, .. } => (format!("重新命名 {} 個項目", pairs.len()), "\u{E8AC}"),
         _ => (String::new(), glyph::FILE),
     }
 }

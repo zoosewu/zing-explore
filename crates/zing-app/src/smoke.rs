@@ -41,7 +41,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect, ICON_BIG, KillTimer, SendMessageW, SetTimer, WM_CHAR, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONUP,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_SETTEXT, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONUP,
 };
 
 use crate::app::{App, EditKind, Focus, TIMER_SMOKE};
@@ -426,6 +426,19 @@ fn palette_closed(a: &App) -> Result<(), String> {
 fn palette_key(vk: VIRTUAL_KEY) {
     if let Some(e) = edit_hwnd() {
         key_to(e, "", vk);
+    }
+}
+
+/// 批次重新命名的兩個輸入框
+fn batch_edits() -> (HWND, HWND) {
+    with_app(|a| a.batch.as_ref().map(|b| (b.edits[0], b.edits[1]))).flatten().unwrap_or_default()
+}
+
+/// 直接設定輸入框內容（會送出 EN_CHANGE）
+fn set_text(h: HWND, text: &str) {
+    let w = zing_core::text::wide_z(text);
+    unsafe {
+        SendMessageW(h, WM_SETTEXT, None, Some(LPARAM(w.as_ptr() as isize)));
     }
 }
 
@@ -1611,6 +1624,158 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |_, a| {
             expect("顯示", a.preview.visible, false)?;
             if a.layout.preview.is_none() { Ok(()) } else { Err("版面仍有預覽窗格".into()) }
+        },
+    ));
+
+    // ------------------------------------------------ 批次重新命名
+    let batch_dir = ctx.sub("批次測試");
+    v.push(step(
+        "批次：建立測試資料夾並進入",
+        {
+            let bd = batch_dir.clone();
+            move |_| {
+                let _ = std::fs::create_dir_all(&bd);
+                for n in ["x1.txt", "x2.txt", "y.txt"] {
+                    let _ = std::fs::write(path::join(&bd, n), n);
+                }
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, bd.clone(), true);
+                });
+            }
+        },
+        {
+            let bd = batch_dir.clone();
+            move |_, a| {
+                at(a, &bd)?;
+                expect("項目數", names(a).len(), 3)
+            }
+        },
+    ));
+    v.push(step(
+        "批次：全選後 F2 開啟批次重新命名",
+        |c| {
+            key(c, "c", letter('a'));
+            key(c, "", VK_F2);
+        },
+        |_, a| {
+            let b = a.batch.as_ref().ok_or("面板沒有開啟")?;
+            expect("項目數", b.items.len(), 3)?;
+            expect("單檔重新命名", a.edit.is_none(), true)
+        },
+    ));
+    v.push(step(
+        "批次：規則運算式＋編號的預覽",
+        |_| {
+            let (e0, e1) = batch_edits();
+            key_to(e0, "a", letter('r'));
+            type_to(e0, r"^x(\d)$");
+            key_to(e0, "", VK_TAB);
+            type_to(e1, "相片 {n:2}");
+        },
+        |_, a| {
+            let b = a.batch.as_ref().ok_or("面板沒有開啟")?;
+            expect("規則運算式", b.rule.regex, true)?;
+            expect("焦點欄位", b.field, 1)?;
+            let news: Vec<String> = b.plan.as_ref().map_err(|e| e.clone())?.iter().map(|p| p.new.clone()).collect();
+            expect("新名稱", news, vec!["相片 01.txt".to_string(), "相片 02.txt".into(), "y.txt".into()])
+        },
+    ));
+    v.push(step("截圖：批次重新命名", |_| {}, |c, _| screenshot(c, "09-批次重新命名")));
+    v.push(step(
+        "批次：新名稱重複時不能執行",
+        |_| {
+            let (_, e1) = batch_edits();
+            set_text(e1, "same");
+            key_to(e1, "", VK_RETURN);
+        },
+        |_, a| {
+            let b = a.batch.as_ref().ok_or("面板被關閉了")?;
+            expect("擋下", b.blocked, true)?;
+            expect("衝突數", b.counts().1, 2)
+        },
+    ));
+    v.push(
+        step(
+            "批次：Enter 執行改名",
+            |_| {
+                let (_, e1) = batch_edits();
+                set_text(e1, "相片 {n:2}");
+                key_to(e1, "", VK_RETURN);
+            },
+            {
+                let bd = batch_dir.clone();
+                move |_, a| {
+                    expect("面板關閉", a.batch.is_none(), true)?;
+                    let has = |n: &str| std::path::Path::new(&path::join(&bd, n)).exists();
+                    if !(has("相片 01.txt") && has("相片 02.txt") && has("y.txt") && !has("x1.txt")) {
+                        return Err("檔案沒有改名".into());
+                    }
+                    // 清單也要更新完成，下一步才會選到新名稱
+                    if a.tab().find_view("相片 01.txt").is_some() && a.tab().find_view("x1.txt").is_none() {
+                        Ok(())
+                    } else {
+                        Err("清單還沒更新".into())
+                    }
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "批次：新名稱與舊名稱重疊時經過暫時名稱（01→02、02→03）",
+            |c| {
+                key(c, "c", letter('a'));
+                key(c, "", VK_F2);
+                let (e0, e1) = batch_edits();
+                key_to(e0, "a", letter('r'));
+                type_to(e0, r"^相片 \d+$");
+                type_to(e1, "相片 {n:2:2}");
+                key_to(e1, "", VK_RETURN);
+            },
+            {
+                let bd = batch_dir.clone();
+                move |_, a| {
+                    expect("面板關閉", a.batch.is_none(), true)?;
+                    let has = |n: &str| std::path::Path::new(&path::join(&bd, n)).exists();
+                    let leftovers = std::fs::read_dir(&bd).map(|r| r.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("~zing-")).count()).unwrap_or(0);
+                    expect("暫時檔", leftovers, 0)?;
+                    if has("相片 02.txt") && has("相片 03.txt") && !has("相片 01.txt") && has("y.txt") {
+                        Ok(())
+                    } else {
+                        Err("連鎖改名不正確".into())
+                    }
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(step(
+        "批次：Esc 取消",
+        |c| {
+            key(c, "c", letter('a'));
+            key(c, "", VK_F2);
+            let (e0, _) = batch_edits();
+            key_to(e0, "", VK_ESCAPE);
+        },
+        |_, a| expect("面板關閉", a.batch.is_none(), true),
+    ));
+    v.push(step(
+        "批次：回到測試資料夾並清除",
+        {
+            let (d, bd) = (d.clone(), batch_dir.clone());
+            move |_| {
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, d.clone(), true);
+                });
+                let _ = std::fs::remove_dir_all(&bd);
+            }
+        },
+        {
+            let d = d.clone();
+            move |_, a| at(a, &d)
         },
     ));
 

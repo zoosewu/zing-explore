@@ -96,12 +96,14 @@ pub enum FileOp {
     Delete { paths: Vec<String>, permanent: bool },
     Rename { path: String, new_name: String },
     NewFolder { dir: String },
+    /// 同一個資料夾內批次改名：(舊名稱, 新名稱)
+    BatchRename { dir: String, pairs: Vec<(String, String)> },
 }
 
 impl FileOp {
     /// 可能耗時、要顯示在作業佇列的作業
     pub fn is_long(&self) -> bool {
-        matches!(self, FileOp::Transfer { .. } | FileOp::Delete { .. })
+        matches!(self, FileOp::Transfer { .. } | FileOp::Delete { .. } | FileOp::BatchRename { .. })
     }
 }
 
@@ -344,11 +346,53 @@ fn affected(op: &FileOp) -> (Vec<String>, Option<Select>) {
         FileOp::NewFolder { dir } => {
             (vec![dir.clone()], Some(Select { dir: dir.clone(), name: String::new(), rename: true }))
         }
+        FileOp::BatchRename { dir, .. } => (vec![dir.clone()], None),
     }
+}
+
+/// 一次 IFileOperation 改多個名稱：(完整路徑, 新名稱)
+fn rename_pass(hwnd: isize, items: &[(String, String)], sink: Option<&IFileOperationProgressSink>) -> Result<()> {
+    unsafe {
+        let fo: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
+        fo.SetOwnerWindow(HWND(hwnd as _))?;
+        let silent = if sink.is_some() { FOF_SILENT } else { Default::default() };
+        fo.SetOperationFlags(FOF_ALLOWUNDO | silent)?;
+        if let Some(s) = sink {
+            fo.Advise(s)?;
+        }
+        for (p, n) in items {
+            let name = wide_z(n);
+            fo.RenameItem(&shell_item(p)?, PCWSTR(name.as_ptr()), None::<&IFileOperationProgressSink>)?;
+        }
+        fo.PerformOperations()?;
+        if fo.GetAnyOperationsAborted()?.as_bool() {
+            return Err(windows::core::Error::from_hresult(windows::core::HRESULT(ERROR_CANCELLED_HR)));
+        }
+        Ok(())
+    }
+}
+
+/// 批次改名；新名稱與其他項目的舊名稱重疊時先改成暫時名稱，再改成新名稱
+fn batch_rename(hwnd: isize, dir: &str, pairs: &[(String, String)], sink: Option<&IFileOperationProgressSink>) -> Result<()> {
+    let pairs: Vec<&(String, String)> = pairs.iter().filter(|(o, n)| o != n).collect();
+    let owned: Vec<(String, String)> = pairs.iter().map(|p| (*p).clone()).collect();
+    if !zing_core::batchrename::needs_two_phase(&owned) {
+        let items: Vec<(String, String)> = pairs.iter().map(|(o, n)| (path::join(dir, o), n.clone())).collect();
+        return rename_pass(hwnd, &items, sink);
+    }
+    let tag = format!("{:x}{:x}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()));
+    let temps: Vec<String> = (0..pairs.len()).map(|k| format!("~zing-{tag}-{k}.tmp")).collect();
+    let first: Vec<(String, String)> = pairs.iter().zip(&temps).map(|((o, _), t)| (path::join(dir, o), t.clone())).collect();
+    rename_pass(hwnd, &first, sink)?;
+    let second: Vec<(String, String)> = pairs.iter().zip(&temps).map(|((_, n), t)| (path::join(dir, t), n.clone())).collect();
+    rename_pass(hwnd, &second, sink)
 }
 
 /// 執行一個作業。新資料夾回傳實際建立的名稱。`sink` 為進度回呼（作業佇列的工作才有）
 fn perform(hwnd: isize, op: FileOp, sink: Option<&IFileOperationProgressSink>) -> Result<Option<String>> {
+    if let FileOp::BatchRename { dir, pairs } = &op {
+        return batch_rename(hwnd, dir, pairs, sink).map(|()| None);
+    }
     unsafe {
         let fo: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
         fo.SetOwnerWindow(HWND(hwnd as _))?;
@@ -405,6 +449,7 @@ fn perform(hwnd: isize, op: FileOp, sink: Option<&IFileOperationProgressSink>) -
                 fo.NewItem(&shell_item(&dir)?, FILE_ATTRIBUTE_DIRECTORY.0, PCWSTR(name_w.as_ptr()), PCWSTR::null(), none_sink)?;
                 created = Some(name);
             }
+            FileOp::BatchRename { .. } => unreachable!("在函式開頭處理"),
         }
         fo.PerformOperations()?;
         if fo.GetAnyOperationsAborted()?.as_bool() {

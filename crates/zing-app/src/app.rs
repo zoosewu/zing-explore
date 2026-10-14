@@ -99,6 +99,8 @@ pub struct App {
     pub probes_enabled: bool,
     pub tree_visible: bool,
     pub preview: crate::preview::Preview,
+    /// 批次重新命名面板
+    pub batch: Option<crate::batch::Batch>,
     pub tree_side: TreeSide,
     pub tree_width: f32,
     pub focus: Focus,
@@ -181,6 +183,7 @@ impl App {
             rules: theme.compiled_rules(),
             tree_side: config.layout.tree,
             tree_visible: session.tree_visible,
+            batch: None,
             preview: crate::preview::Preview::new(session.preview_visible, session.preview_width.unwrap_or(360.0)),
             tree_width: session.tree_width.unwrap_or(theme.metrics.tree_width),
             cols: session.columns.unwrap_or([150.0, 120.0, 100.0]),
@@ -309,7 +312,7 @@ impl App {
         Tab::new(id, p, view)
     }
 
-    fn find_tab(&self, id: TabId) -> Option<(usize, usize)> {
+    pub fn find_tab(&self, id: TabId) -> Option<(usize, usize)> {
         self.panes.iter().enumerate().find_map(|(p, pane)| pane.tabs.iter().position(|t| t.id == id).map(|t| (p, t)))
     }
 
@@ -889,7 +892,17 @@ impl App {
                     self.submit_op(FileOp::Delete { paths, permanent: inv.has("permanent") });
                 }
             }
-            "file.rename" => self.start_rename(),
+            // 選取多個項目時開啟批次重新命名
+            "file.rename" => {
+                if !self.open_batch_rename() {
+                    self.start_rename();
+                }
+            }
+            "file.batchrename" => {
+                if !self.open_batch_rename() {
+                    return Err("請先選取兩個以上的項目".into());
+                }
+            }
             "file.newfolder" => {
                 let dir = self.tab().path.clone();
                 if dir.is_empty() {

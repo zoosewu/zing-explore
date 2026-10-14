@@ -2,6 +2,7 @@
 //! zing-explore：Windows 11 檔案總管（執行檔 zing.exe）。
 
 mod app;
+mod batch;
 mod gfx;
 mod icons;
 mod index;

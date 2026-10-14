@@ -74,6 +74,12 @@ pub enum Hit {
     TreeArrow(usize),
     TreeEmpty,
     TreeSplitter,
+    /// 批次重新命名面板：選項、輸入框、執行、取消、面板內其他位置
+    BatchChip(usize),
+    BatchField(usize),
+    BatchRun,
+    BatchCancel,
+    Batch,
     Preview,
     PreviewSplitter,
     Tab(usize, usize),
@@ -293,6 +299,9 @@ impl App {
     // ------------------------------------------------------------ 點擊判定
 
     pub fn hit_test(&self, lay: &Layout, x: f32, y: f32) -> Hit {
+        if let Some(h) = self.batch_hit(x, y) {
+            return h;
+        }
         if let Some(h) = self.palette_hit(x, y) {
             return h;
         }
@@ -431,6 +440,7 @@ impl App {
         self.paint_jobs(&lay);
         self.paint_status(&lay);
         self.paint_palette();
+        self.paint_batch();
         self.gfx.end();
         self.layout = lay;
         self.update_title();

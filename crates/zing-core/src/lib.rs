@@ -1,5 +1,6 @@
 //! zing-explore 核心：與 UI 無關、可單元測試與基準測試的部分。
 
+pub mod batchrename;
 pub mod command;
 pub mod config;
 pub mod dirsize;

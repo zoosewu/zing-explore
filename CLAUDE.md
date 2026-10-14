@@ -50,6 +50,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 縮圖同樣只取看得到的格子（`thumbs.rs`）：繪製時登記，繪製結束時取消已不可見、還沒開始的請求；
   本機兩條、網路磁碟與光碟一條執行緒（背景模式）。清單與縮圖的幾何一律經 `App::grid`／`App::item_rect`，
   不要再自行以 `row_h` 換算位置。
+- 批次重新命名（`batch.rs`、`zing_core::batchrename`）：兩個輸入框不佔用 `app.edit`；輸入框的按鍵以 `WM_APP_BATCH`
+  post 給主視窗處理（不在輸入框自己的訊息處理中改變面板）。
 - 預覽窗格（`preview.rs`）：焦點停留 150 ms 才讀取，在專用的 STA 執行緒只處理最新的請求，以 generation 丟棄過時結果。
   Windows 預覽處理常式（IPreviewHandler）尚未使用：接上時要放在獨立執行緒、以擁有者視窗（不是子視窗）承載並加看門狗，
   避免第三方處理常式卡住時連帶卡住 UI（子視窗會共用輸入佇列）。

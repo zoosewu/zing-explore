@@ -35,6 +35,8 @@ use crate::shell::{self, DropTarget};
 
 pub const WM_APP_EDIT_DONE: u32 = WM_APP + 2;
 pub const WM_APP_DEFERRED_INIT: u32 = WM_APP + 3;
+/// 批次重新命名的輸入框送來的動作（wParam 為 batch::CMD_*，lParam 為參數）
+pub const WM_APP_BATCH: u32 = WM_APP + 5;
 
 thread_local! {
     pub static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -199,12 +201,33 @@ pub fn refresh_edit_style(app: &App) {
 
 /// 編輯框子類別資料：命令面板的輸入框（方向鍵轉給面板、失去焦點時取消）
 const EDIT_PALETTE: usize = 1;
+/// 批次重新命名的輸入框（按鍵轉給面板、失去焦點不結束）
+const EDIT_BATCH: usize = 2;
 
 /// 建立編輯框。`rect` 為 DIP；`sel_end` 為預設選取的結尾（UTF-16 單位）
 fn create_edit(app: &mut App, rect: crate::gfx::Rect, text: &str, sel_end: usize, kind: EditKind) {
     if let Some(old) = app.edit.take() {
         destroy_edit(old.hwnd);
     }
+    let data = if matches!(kind, EditKind::Palette) { EDIT_PALETTE } else { 0 };
+    if let Some(hwnd) = make_edit(app, rect, text, sel_end, data) {
+        focus_edit(hwnd);
+        app.edit = Some(Edit { hwnd, kind });
+    }
+}
+
+/// 批次重新命名的輸入框（不佔用 `app.edit`）
+pub fn make_batch_edit(app: &App, rect: crate::gfx::Rect) -> Option<HWND> {
+    make_edit(app, rect, "", 0, EDIT_BATCH)
+}
+
+pub fn focus_edit(hwnd: HWND) {
+    unsafe {
+        let _ = SetFocus(Some(hwnd));
+    }
+}
+
+fn make_edit(app: &App, rect: crate::gfx::Rect, text: &str, sel_end: usize, data: usize) -> Option<HWND> {
     let s = app.gfx.scale();
     let font_px = app.theme.font.size * s;
     let h = (font_px * 1.45).round();
@@ -226,17 +249,15 @@ fn create_edit(app: &mut App, rect: crate::gfx::Rect, text: &str, sel_end: usize
             None,
         )
     };
-    let Ok(hwnd) = hwnd else { return };
+    let hwnd = hwnd.ok()?;
     unsafe {
         if let Some(f) = EDIT_STYLE.with(|st| st.borrow().font) {
             SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(f.0 as usize)), Some(LPARAM(0)));
         }
         SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(sel_end as isize)));
-        let data = if matches!(kind, EditKind::Palette) { EDIT_PALETTE } else { 0 };
         let _ = SetWindowSubclass(hwnd, Some(edit_proc), 1, data);
-        let _ = SetFocus(Some(hwnd));
     }
-    app.edit = Some(Edit { hwnd, kind });
+    Some(hwnd)
 }
 
 pub fn begin_rename(app: &mut App, tab: TabId, full: String) {
@@ -299,6 +320,54 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         let done = |commit: bool| {
             let _ = PostMessageW(Some(parent), WM_APP_EDIT_DONE, WPARAM(commit as usize), LPARAM(hwnd.0 as isize));
         };
+        // 批次重新命名：按鍵轉成面板動作（post，避免在輸入框自己的訊息處理中銷毀它）
+        if data == EDIT_BATCH {
+            let post = |cmd: usize, arg: isize| {
+                let _ = PostMessageW(Some(parent), WM_APP_BATCH, WPARAM(cmd), LPARAM(arg));
+            };
+            let alt_toggle = |vk: usize| match vk as u8 {
+                b'R' => Some(0),
+                b'C' => Some(1),
+                b'E' => Some(2),
+                b'U' => Some(3),
+                _ => None,
+            };
+            match msg {
+                WM_GETDLGCODE => return LRESULT(DLGC_WANTALLKEYS as isize),
+                WM_KEYDOWN => {
+                    let page = crate::batch::ROWS as isize;
+                    let act = match wparam.0 {
+                        0x0D => Some((crate::batch::CMD_RUN, 0)),
+                        0x1B => Some((crate::batch::CMD_CANCEL, 0)),
+                        0x09 => Some((crate::batch::CMD_TAB, 0)),
+                        0x26 => Some((crate::batch::CMD_SCROLL, -1)),
+                        0x28 => Some((crate::batch::CMD_SCROLL, 1)),
+                        0x21 => Some((crate::batch::CMD_SCROLL, -page)),
+                        0x22 => Some((crate::batch::CMD_SCROLL, page)),
+                        _ => None,
+                    };
+                    if let Some((cmd, arg)) = act {
+                        post(cmd, arg);
+                        return LRESULT(0);
+                    }
+                    if wparam.0 == b'A' as usize && Mods::current().ctrl {
+                        SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
+                        return LRESULT(0);
+                    }
+                }
+                WM_SYSKEYDOWN => {
+                    if let Some(i) = alt_toggle(wparam.0) {
+                        post(crate::batch::CMD_TOGGLE, i);
+                        return LRESULT(0);
+                    }
+                }
+                // 不讓 Enter、Esc、Tab、Ctrl+A、Alt+字母發出提示音或輸入字元
+                WM_CHAR if matches!(wparam.0, 0x0D | 0x1B | 0x09 | 0x01) => return LRESULT(0),
+                WM_SYSCHAR if alt_toggle((wparam.0 as u8).to_ascii_uppercase() as usize).is_some() => return LRESULT(0),
+                _ => {}
+            }
+            return DefSubclassProc(hwnd, msg, wparam, lparam);
+        }
         match msg {
             WM_GETDLGCODE => return LRESULT(DLGC_WANTALLKEYS as isize),
             WM_KEYDOWN if wparam.0 == 0x0D || wparam.0 == 0x1B => {
@@ -492,6 +561,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                     destroy_edit(e.hwnd);
                 }
                 a.palette = None;
+                a.close_batch();
                 a.paint();
             });
             Some(LRESULT(0))
@@ -637,11 +707,19 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         // 命令面板輸入框內容改變
         WM_COMMAND if (wparam.0 >> 16) & 0xFFFF == EN_CHANGE as usize => {
             let edit = HWND(lparam.0 as _);
+            let text = edit_text(edit);
+            if with_app(|a| a.batch_text_changed(edit, text)) == Some(true) {
+                return Some(LRESULT(0));
+            }
             let is_palette = with_app(|a| a.edit.as_ref().is_some_and(|e| e.hwnd == edit && matches!(e.kind, EditKind::Palette)));
             if is_palette == Some(true) {
                 let text = edit_text(edit);
                 with_app(|a| a.palette_query(text));
             }
+            Some(LRESULT(0))
+        }
+        WM_APP_BATCH => {
+            with_app(|a| a.batch_command(wparam.0, lparam.0));
             Some(LRESULT(0))
         }
         WM_APP_EDIT_DONE => {

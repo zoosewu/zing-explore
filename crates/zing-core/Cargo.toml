@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# 批次重新命名的規則運算式（為何不用 regex-lite：見 docs/decisions.md）
+regex = "1"
 serde.workspace = true
 toml.workspace = true
 

@@ -96,6 +96,11 @@ impl App {
     pub fn on_lbutton_down(&mut self, x: f32, y: f32) {
         let mods = Mods::current();
         let hit = self.fresh_hit(x, y);
+        // 批次重新命名面板：點面板外取消
+        if self.batch.is_some() {
+            self.batch_click(hit);
+            return;
+        }
         // 命令面板開啟時：點項目執行，點面板外關閉（不傳給底下的元件）
         if self.palette.is_some() {
             match hit {
@@ -129,6 +134,8 @@ impl App {
             }
             Hit::TreeEmpty => self.focus = Focus::Tree,
             Hit::Preview => {}
+            // 批次重新命名面板開啟時在函式開頭處理
+            Hit::BatchChip(_) | Hit::BatchField(_) | Hit::BatchRun | Hit::BatchCancel | Hit::Batch => {}
             Hit::PreviewSplitter => {
                 self.press = Some(Press::PreviewSplit { start_x: x, start_w: self.preview.width });
             }
@@ -228,6 +235,9 @@ impl App {
     }
 
     pub fn on_double_click(&mut self, x: f32, y: f32) {
+        if self.batch.is_some() {
+            return;
+        }
         match self.fresh_hit(x, y) {
             Hit::Row(p, i) => {
                 self.activate_pane(p);
@@ -245,6 +255,9 @@ impl App {
     }
 
     pub fn on_rbutton_up(&mut self, x: f32, y: f32, screen: POINT) {
+        if self.batch.is_some() {
+            return;
+        }
         match self.fresh_hit(x, y) {
             Hit::Row(p, i) => {
                 self.activate_pane(p);
@@ -291,6 +304,9 @@ impl App {
     }
 
     pub fn on_mbutton_up(&mut self, x: f32, y: f32) {
+        if self.batch.is_some() {
+            return;
+        }
         match self.fresh_hit(x, y) {
             Hit::Tab(p, t) | Hit::TabClose(p, t) => self.close_tab(p, t),
             Hit::Row(p, i) => {
@@ -314,6 +330,10 @@ impl App {
 
     /// `delta`：WHEEL_DELTA（120）的倍數，正值往上
     pub fn on_wheel(&mut self, x: f32, y: f32, delta: i16, ctrl: bool) {
+        if self.batch.is_some() {
+            self.batch_command(crate::batch::CMD_SCROLL, -3 * delta as isize / 120);
+            return;
+        }
         if self.palette_contains(x, y) {
             self.palette_move(-3 * delta as isize / 120);
             return;
@@ -353,6 +373,17 @@ impl App {
     /// 回傳 true 表示已處理
     pub fn on_key(&mut self, vk: u16, mods: Mods) -> bool {
         self.suppress_char = false;
+        // 批次重新命名面板開啟、但焦點不在它的輸入框（例如點了面板後）時
+        if self.batch.is_some() {
+            match vk {
+                0x1B => self.close_batch(),
+                0x0D => self.run_batch(),
+                0x09 => self.batch_command(crate::batch::CMD_TAB, 0),
+                _ => {}
+            }
+            self.suppress_char = true;
+            return true;
+        }
         const VK_BACK: u16 = 0x08;
         let plain = !mods.ctrl && !mods.alt && !mods.shift;
 
