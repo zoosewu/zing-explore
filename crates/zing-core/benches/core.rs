@@ -33,6 +33,9 @@ fn benches(c: &mut Criterion) {
     c.bench_function("sort_100k_modified", |b| {
         b.iter(|| sorted_order(black_box(&l), SortSpec { key: SortKey::Modified, ascending: false }))
     });
+    c.bench_function("sort_100k_size", |b| {
+        b.iter(|| sorted_order(black_box(&l), SortSpec { key: SortKey::Size, ascending: false }))
+    });
     let sorted = sorted_order(&l, SortSpec::default());
     let p = Pattern::new("report_99");
     c.bench_function("filter_100k_substring", |b| b.iter(|| filter_order(black_box(&l), &sorted, &p, true)));
@@ -44,6 +47,10 @@ fn benches(c: &mut Criterion) {
         let mut group = c.benchmark_group("enumerate");
         group.sample_size(20);
         group.bench_function("enumerate_bench_dir", |b| b.iter(|| enumerate(&dir, false, &cancel, |_| {}).unwrap()));
+        let interval = std::time::Duration::from_millis(150);
+        group.bench_function("dir_size_bench_dir", |b| {
+            b.iter(|| zing_core::dirsize::dir_size(&dir, &cancel, interval, |_| {}).unwrap())
+        });
         group.finish();
     }
 }

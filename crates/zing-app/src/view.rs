@@ -528,6 +528,7 @@ impl App {
         let visible = (list.h() / rh).ceil() as usize + 1;
         let list_focused = active_pane && self.focus == Focus::List;
         let drop_row = self.drop_hover.filter(|(dp, _)| *dp == p).and_then(|(_, r)| r);
+        let size_key = crate::sizes::key(&tab.path);
         for i in first..(first + visible).min(tab.view.len()) {
             let e = tab.view[i] as usize;
             let entry = &tab.listing.entries[e];
@@ -570,8 +571,13 @@ impl App {
                 g.text(&label, Font::Text, Rect::new(tl + 12.0, y, tr - 6.0, y + rh), c.text_secondary);
             }
             let (sl, sr) = pl.cols[3];
-            if !dir && sr - sl > 20.0 {
-                g.text(&format::size_kb(entry.size), Font::TextRight, Rect::new(sl + 6.0, y, sr - 12.0, y + rh), c.text_secondary);
+            if sr - sl > 20.0 {
+                let r = Rect::new(sl + 6.0, y, sr - 12.0, y + rh);
+                if !dir {
+                    g.text(&format::size_kb(entry.size), Font::TextRight, r, c.text_secondary);
+                } else if let Some((text, computing)) = self.folder_size_text(&size_key, &tab.listing.name_string(e)) {
+                    g.text(&text, Font::TextRight, r, if computing { c.accent } else { c.text_secondary });
+                }
             }
         }
         // 空狀態
@@ -627,6 +633,9 @@ impl App {
         }
         if tab.loading {
             left.push_str("　載入中…");
+        }
+        if self.sizes.pending > 0 {
+            left.push_str(&format!("　計算資料夾大小（剩 {} 個）", self.sizes.pending));
         }
         g.text(&left, Font::Small, Rect::new(12.0, s.t, s.r * 0.5, s.b), c.text_secondary);
         if let (Some(r), Some(text)) = (lay.jobs_indicator, self.jobs_indicator_text()) {

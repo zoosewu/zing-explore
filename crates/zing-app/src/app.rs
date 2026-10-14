@@ -27,6 +27,7 @@ use crate::services::{self, Msg, Notifier, Pool, TabId};
 use crate::settings::{self, Session};
 use crate::shell::{self, FileOp, FileOps};
 use crate::shellhost::{ShellHost, ShellJob};
+use crate::sizes::FolderSizes;
 use crate::view::{Hit, Layout};
 use crate::window;
 
@@ -99,6 +100,7 @@ pub struct App {
     rx: Receiver<Msg>,
     pub fileops: FileOps,
     pub jobs: Jobs,
+    pub sizes: FolderSizes,
     /// 已確認結束，等待檔案作業取消完成後關閉視窗
     pub pending_exit: bool,
     pub icons: Icons,
@@ -178,6 +180,7 @@ impl App {
             rx,
             fileops,
             jobs: Jobs::default(),
+            sizes: FolderSizes::default(),
             pending_exit: false,
             icons,
             shell_host,
@@ -347,6 +350,7 @@ impl App {
         tab.path = target;
         tab.reset_contents();
         tab.watcher = None;
+        tab.size_cancel = crate::sizes::new_cancel(&tab.size_cancel);
         let t = self.panes[p].active;
         self.load(p, t);
         if p == self.active_pane {
@@ -493,17 +497,28 @@ impl App {
         let tab = self.tab_mut();
         let asc = ascending.unwrap_or(if tab.spec.key == key { !tab.spec.ascending } else { key == SortKey::Name });
         tab.spec = SortSpec { key, ascending: asc };
+        let (p, t) = (self.active_pane, self.panes[self.active_pane].active);
+        self.resort(p, t);
+        self.ensure_visible(p);
+        self.invalidate();
+    }
+
+    /// 依分頁目前的排序方式重新排序（大量項目交給背景）
+    pub fn resort(&mut self, p: usize, t: usize) {
+        let show_hidden = self.show_hidden;
+        let tab = &mut self.panes[p].tabs[t];
         if tab.listing.len() <= INLINE_SORT_LIMIT {
             tab.sorted = sorted_order(&tab.listing, tab.spec);
-            let show_hidden = self.show_hidden;
-            self.tab_mut().rebuild_view(show_hidden);
-            let p = self.active_pane;
-            self.ensure_visible(p);
+            tab.rebuild_view(show_hidden);
         } else {
             let (id, generation, listing, spec) = (tab.id, tab.generation, tab.listing.clone(), tab.spec);
             services::sort_job(&self.pool, &self.notifier, id, generation, listing, spec);
         }
         self.invalidate();
+    }
+
+    fn sizes_dirty(&mut self, path_key: String) {
+        self.sizes.mark_dirty(path_key);
     }
 
     pub fn set_filter(&mut self, text: String) {
@@ -519,6 +534,7 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             self.on_service_msg(msg);
         }
+        self.apply_size_updates();
         self.invalidate();
     }
 
@@ -536,6 +552,13 @@ impl App {
                 tab.refreshing = false;
                 if done {
                     tab.loading = false;
+                    // 已知的資料夾大小寫進新清單；設定為自動時計算
+                    let path_key = crate::sizes::key(&tab.path);
+                    if self.sizes.has_parent(&path_key) {
+                        self.sizes_dirty(path_key);
+                    }
+                    self.auto_folder_sizes(p, t);
+                    let tab = &mut self.panes[p].tabs[t];
                     if let Some((name, rename)) = tab.pending_select.take() {
                         match tab.find_view(&name) {
                             Some(i) => {
@@ -586,6 +609,7 @@ impl App {
                 if let Some((p, t)) = self.find_tab(tab) {
                     let tab = &mut self.panes[p].tabs[t];
                     if generation == tab.nav_generation {
+                        self.sizes.mark_stale(&tab.path);
                         tab.refresh_due = true;
                         // 合併短時間內的大量變更
                         unsafe { SetTimer(Some(self.hwnd), TIMER_REFRESH, 250, None) };
@@ -595,6 +619,9 @@ impl App {
             Msg::FileOpDone { dirs, error, select } => {
                 if let Some(e) = error {
                     self.set_status(e, true);
+                }
+                for d in &dirs {
+                    self.sizes.mark_stale(d);
                 }
                 for p in 0..self.panes.len() {
                     for t in 0..self.panes[p].tabs.len() {
@@ -615,6 +642,8 @@ impl App {
             Msg::MenuRename => self.start_rename(),
             Msg::MenuExtra { id, target } => self.on_menu_extra(id, target),
             Msg::Job { id, event } => self.on_job_event(id, event),
+            Msg::FolderSize { parent, name, size, done } => self.on_folder_size(parent, name, size, done),
+            Msg::FolderSizesLoaded(lines) => self.on_size_cache_loaded(lines),
             Msg::Paste { sources, dest, cut } => self.submit_op(FileOp::Transfer { sources, dest, mov: cut }),
             Msg::ConfigLoaded { config, theme, warnings } => {
                 self.config = config;
@@ -887,6 +916,7 @@ impl App {
                 let asc = if inv.has("desc") { Some(false) } else if inv.has("asc") { Some(true) } else { None };
                 self.set_sort(key, asc);
             }
+            "view.foldersizes" => self.compute_folder_sizes(p, false, false),
             "view.togglehidden" => {
                 self.show_hidden = !self.show_hidden;
                 let show_hidden = self.show_hidden;

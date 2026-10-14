@@ -57,8 +57,8 @@ pub fn sorted_order(l: &Listing, spec: SortSpec) -> Vec<u32> {
         let ord = match spec.key {
             SortKey::Name => by_name(a, b),
             SortKey::Modified => ea.modified.cmp(&eb.modified).then_with(|| by_name(a, b)),
-            SortKey::Size if !ea.is_dir() => ea.size.cmp(&eb.size).then_with(|| by_name(a, b)),
-            SortKey::Size => by_name(a, b),
+            // 資料夾的大小在計算前是 0（同為 0 時依名稱）
+            SortKey::Size => ea.size.cmp(&eb.size).then_with(|| by_name(a, b)),
             SortKey::Type => natural_cmp(l.ext(a as usize), l.ext(b as usize))
                 .then_with(|| by_name(a, b)),
         };
@@ -203,5 +203,16 @@ mod tests {
         assert_eq!(names(&l, &o), ["zdir", "a.md", "b2.txt", "b10.txt"]);
         let f = filter_order(&l, &o, &Pattern::new("*.txt"), true);
         assert_eq!(names(&l, &f), ["b2.txt", "b10.txt"]);
+    }
+
+    #[test]
+    fn folders_sort_by_computed_size() {
+        let mut l = Listing::default();
+        l.push_str("小", ATTR_DIRECTORY, 10, 0);
+        l.push_str("大", ATTR_DIRECTORY, 900, 0);
+        l.push_str("未計算", ATTR_DIRECTORY, 0, 0);
+        l.push_str("f.txt", 0, 5000, 0);
+        let o = sorted_order(&l, SortSpec { key: SortKey::Size, ascending: false });
+        assert_eq!(names(&l, &o), ["大", "小", "未計算", "f.txt"]);
     }
 }

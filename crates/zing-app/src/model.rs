@@ -40,6 +40,8 @@ pub struct Tab {
     pub back: Vec<String>,
     pub forward: Vec<String>,
     pub cancel: Arc<AtomicBool>,
+    /// 資料夾大小計算的取消旗標：只在換資料夾時更換（自動重新整理不取消）
+    pub size_cancel: Arc<AtomicBool>,
     pub watcher: Option<Watcher>,
     /// 載入完成後要選取的項目（名稱、是否進入重新命名）
     pub pending_select: Option<(String, bool)>,
@@ -69,6 +71,7 @@ impl Tab {
             back: Vec::new(),
             forward: Vec::new(),
             cancel: Arc::new(AtomicBool::new(false)),
+            size_cancel: Arc::new(AtomicBool::new(false)),
             watcher: None,
             pending_select: None,
             refresh_due: false,
@@ -229,6 +232,14 @@ impl Tab {
     pub fn find_view(&self, name: &str) -> Option<usize> {
         let w: Vec<u16> = name.encode_utf16().collect();
         self.view.iter().position(|&v| zing_core::text::eq_ignore_case(self.listing.name(v as usize), &w))
+    }
+}
+
+impl Drop for Tab {
+    /// 關閉分頁或窗格時中止這個分頁的背景計算
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.size_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

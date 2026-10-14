@@ -665,6 +665,32 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         let icon = unsafe { SendMessageW(c.hwnd, WM_GETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(0))) };
         if icon.0 != 0 { Ok(()) } else { Err("沒有設定視窗圖示".into()) }
     }));
+    // ------------------------------------------------ 資料夾大小
+    v.push(step("資料夾大小：Ctrl+Shift+S 計算清單中的資料夾", |c| key(c, "cs", letter('s')), {
+        let d = d.clone();
+        move |_, a| {
+            expect("計算中", a.sizes.pending, 0)?;
+            let k = crate::sizes::key(&d);
+            let get = |n: &str| a.sizes.get(&k, n).map(|i| (i.state, i.size.bytes, i.size.files));
+            use crate::sizes::SizeState::Fresh;
+            // 資料夾A 的內層.txt 是 "inner" 加換行（7 bytes）；資料夾B 是 200 個空檔案
+            expect("資料夾A", get("資料夾A"), Some((Fresh, 7, 1)))?;
+            expect("資料夾B", get("資料夾B"), Some((Fresh, 0, 200)))?;
+            expect("顯示", a.folder_size_text(&k, "資料夾A").map(|t| t.0), Some("7 B".to_string()))
+        }
+    }));
+    v.push(step("資料夾大小：依大小遞減排序（資料夾也依大小）", |c| key(c, "c", VIRTUAL_KEY(b'4' as u16)), |_, a| {
+        let s = a.tab().spec;
+        expect("排序", (s.key, s.ascending), (SortKey::Size, false))?;
+        expect("前兩項", names(a)[..2].to_vec(), vec!["資料夾A".to_string(), "資料夾B".to_string()])
+    }));
+    v.push(step("資料夾大小：依大小遞增排序", |c| key(c, "c", VIRTUAL_KEY(b'4' as u16)), |_, a| {
+        expect("前兩項", names(a)[..2].to_vec(), vec!["資料夾B".to_string(), "資料夾A".to_string()])
+    }));
+    v.push(step("資料夾大小：Ctrl+1 回到名稱排序", |c| key(c, "c", VIRTUAL_KEY(b'1' as u16)), |_, a| {
+        let s = a.tab().spec;
+        expect("排序", (s.key, s.ascending), (SortKey::Name, true))
+    }));
     v.push(step("截圖：清單（深色）", |_| {}, |c, _| screenshot(c, "01-清單-深色")));
 
     // ------------------------------------------------ 鍵盤
@@ -1079,10 +1105,13 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     );
     v.push(
         step("檔案作業：繼續後完成", |c| click_job_button(c, false), {
-            let copied = path::join(&dir_a, "大檔案.bin");
+            let (copied, d) = (path::join(&dir_a, "大檔案.bin"), d.clone());
             move |_, a| {
                 expect("狀態", job_status(a), Some(crate::jobs::JobStatus::Done))?;
-                expect("大小", file_size(&copied), Some(BIG_BYTES))
+                expect("大小", file_size(&copied), Some(BIG_BYTES))?;
+                // 複製進資料夾A 後，先前算出的大小標為可能過時
+                let shown = a.folder_size_text(&crate::sizes::key(&d), "資料夾A").map(|t| t.0);
+                if shown.as_deref().is_some_and(|t| t.starts_with('≈')) { Ok(()) } else { Err(format!("資料夾A 顯示 {shown:?}")) }
             }
         })
         .slow(),

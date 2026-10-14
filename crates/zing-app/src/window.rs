@@ -412,6 +412,7 @@ fn set_window_icons(hwnd: HWND) {
 /// 第一幀之後才做的初始化：OLE（剪貼簿、拖放）、視窗圖示，不影響啟動時間
 fn deferred_init(hwnd: HWND) {
     set_window_icons(hwnd);
+    with_app(|a| a.load_size_cache());
     unsafe {
         let _ = OleInitialize(None);
         let target: IDropTarget = DropTarget::new(hwnd, drop_resolve, drop_hover, drop_transfer).into();

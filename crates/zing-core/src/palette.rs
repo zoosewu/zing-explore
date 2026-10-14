@@ -40,6 +40,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("view.sort --by=type", "依類型排序"),
     ("view.sort --by=size", "依大小排序"),
     ("view.togglehidden", "顯示／隱藏隱藏檔案"),
+    ("view.foldersizes", "計算資料夾大小"),
     ("filter.clear", "清除篩選"),
     ("jobs.toggle", "顯示／隱藏檔案作業"),
     ("jobs.clear", "清除已完成的檔案作業"),

@@ -16,6 +16,11 @@ tree = "left"
 # 命令面板（Ctrl+Shift+P）的位置：top（視窗上方）| center（視窗正中央）
 position = "top"
 
+[folder_sizes]
+# true：進入本機固定磁碟上的資料夾時自動計算子資料夾大小（網路磁碟、隨身碟不自動算）
+# false：只在按 Ctrl+Shift+S（view.foldersizes）時計算
+auto = false
+
 # ---- 導覽 ----
 [[key]]
 key = "Alt+Left"
@@ -127,6 +132,10 @@ key = "Ctrl+B"
 cmd = "tree.toggle"
 
 # ---- 檢視 ----
+[[key]]
+key = "Ctrl+Shift+S"
+cmd = "view.foldersizes"
+
 [[key]]
 key = "Ctrl+H"
 cmd = "view.togglehidden"

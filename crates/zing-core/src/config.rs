@@ -38,6 +38,13 @@ pub struct PaletteConfig {
     pub position: PalettePosition,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FolderSizesConfig {
+    /// 進入本機固定磁碟上的資料夾時自動計算子資料夾大小
+    pub auto: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyBinding {
     pub key: String,
@@ -59,6 +66,7 @@ pub struct RawConfig {
     pub favorites: Option<Vec<String>>,
     pub layout: Option<Layout>,
     pub palette: Option<PaletteConfig>,
+    pub folder_sizes: Option<FolderSizesConfig>,
     pub key: Vec<KeyBinding>,
     pub button: Option<Vec<Button>>,
 }
@@ -71,6 +79,7 @@ pub struct Config {
     pub favorites: Vec<String>,
     pub layout: Layout,
     pub palette: PaletteConfig,
+    pub folder_sizes: FolderSizesConfig,
     /// 解析後的快速鍵；後定義者優先
     pub keys: Vec<(KeyChord, String)>,
     pub buttons: Vec<Button>,
@@ -110,6 +119,7 @@ impl Config {
             favorites: user.favorites.or(base.favorites).unwrap_or_default(),
             layout: user.layout.or(base.layout).unwrap_or_default(),
             palette: user.palette.or(base.palette).unwrap_or_default(),
+            folder_sizes: user.folder_sizes.or(base.folder_sizes).unwrap_or_default(),
             keys,
             buttons: user.button.or(base.button).unwrap_or_default(),
         };

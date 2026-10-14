@@ -2,6 +2,7 @@
 
 pub mod command;
 pub mod config;
+pub mod dirsize;
 pub mod enumerate;
 pub mod format;
 pub mod guard;

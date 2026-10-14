@@ -78,7 +78,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   - 使用者的設定與習慣放在 `zing.exe` 所在的資料夾（可攜式，重灌系統不受影響）：`config.toml`（設定）、
     `themes\*.toml`（主題）、`session.toml`（視窗、分頁、我的最愛、命令面板最近使用）。路徑一律經 `settings::app_dir()`。
   - 系統產生、可重建的資料（資料夾大小快取、縮圖快取…）放在 `%LOCALAPPDATA%\zing-explore\`（只屬於這台電腦、不漫遊，
-    刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。
+    刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（資料夾大小，見 `sizes.rs`）。
   - 不要把 `zing.exe` 放在使用者無法寫入的位置（如 Program Files）；開發時從 `target\release` 執行，設定會在
     `cargo clean` 時一起被刪除。
 

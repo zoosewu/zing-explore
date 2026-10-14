@@ -50,6 +50,10 @@ pub enum Msg {
     AddressResolved { pane: usize, target: String, normalized: String, is_dir: bool, cwd: String },
     /// 作業佇列中某個工作的狀態或進度
     Job { id: crate::jobs::JobId, event: crate::jobs::JobEvent },
+    /// 資料夾大小：`done` 為 None 是途中回報，Some(true) 完成，Some(false) 取消或略過
+    FolderSize { parent: String, name: String, size: zing_core::dirsize::DirSize, done: Option<bool> },
+    /// 背景讀出的資料夾大小快取
+    FolderSizesLoaded(Vec<zing_core::dirsize::CacheLine>),
 }
 
 /// 檔案作業完成後要選取（並可能進入重新命名）的項目
