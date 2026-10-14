@@ -18,6 +18,7 @@ mod settings;
 mod shell;
 mod shellhost;
 mod sizes;
+mod themeedit;
 mod thumbs;
 #[cfg(feature = "smoke")]
 mod smoke;

@@ -101,6 +101,8 @@ pub struct Session {
     pub tree_visible: bool,
     pub tree_width: Option<f32>,
     pub preview_visible: bool,
+    /// 最後選用的主題（與設定檔相同時不記）
+    pub theme: Option<String>,
     pub preview_width: Option<f32>,
     pub columns: Option<[f32; 3]>,
     /// 用 Ctrl+D 加入的我的最愛（設定檔中的我的最愛另外合併）
@@ -118,6 +120,7 @@ impl Default for Session {
             tree_visible: true,
             tree_width: None,
             preview_visible: false,
+            theme: None,
             preview_width: None,
             columns: None,
             favorites: Vec::new(),

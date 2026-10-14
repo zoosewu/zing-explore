@@ -52,6 +52,8 @@ pub struct Layout {
     pub buttons: Vec<Rect>,
     pub tree: Option<Rect>,
     pub tree_splitter: Option<Rect>,
+    /// 主題編輯面板（窗格區域最右側）
+    pub theme_panel: Option<Rect>,
     /// 預覽窗格（窗格區域右側）
     pub preview: Option<Rect>,
     pub preview_splitter: Option<Rect>,
@@ -82,6 +84,11 @@ pub enum Hit {
     Batch,
     Preview,
     PreviewSplitter,
+    /// 主題編輯面板：欄位列、色塊、底部按鈕、面板其他位置
+    ThemeRow(usize),
+    ThemeSwatch(usize),
+    ThemeButton(usize),
+    ThemePanel,
     Tab(usize, usize),
     TabClose(usize, usize),
     TabNew(usize),
@@ -200,6 +207,11 @@ impl App {
                 lay.tree_splitter = Some(Rect::new(tw - SPLITTER_W / 2.0, body.t, tw + SPLITTER_W / 2.0, body.b));
                 panes_area.l = tw + 1.0;
             }
+        }
+        if self.theme_editor.is_some() {
+            let l = panes_area.r - crate::themeedit::PANEL_W.min(panes_area.w() * 0.5);
+            lay.theme_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
+            panes_area.r = l - 1.0;
         }
         if self.preview.visible {
             let pv = self.preview.width.clamp(200.0, (panes_area.w() * 0.6).max(200.0));
@@ -329,6 +341,9 @@ impl App {
         if lay.tree_splitter.is_some_and(|r| r.contains(x, y)) {
             return Hit::TreeSplitter;
         }
+        if let Some(tp) = lay.theme_panel.filter(|r| r.contains(x, y)) {
+            return self.theme_hit(tp, x, y);
+        }
         if lay.preview_splitter.is_some_and(|r| r.contains(x, y)) {
             return Hit::PreviewSplitter;
         }
@@ -426,6 +441,10 @@ impl App {
         if let Some(tr) = lay.tree {
             let x = if self.tree_side == TreeSide::Right { tr.l - 1.0 } else { tr.r };
             self.gfx.vline(x, tr.t, tr.b, c.border);
+        }
+        if let Some(tp) = lay.theme_panel {
+            self.paint_theme_editor(tp);
+            self.gfx.vline(tp.l - 1.0, tp.t, tp.b, c.border);
         }
         if let Some(pr) = lay.preview {
             self.paint_preview(pr);

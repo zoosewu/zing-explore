@@ -298,6 +298,12 @@ pub fn begin_address_edit(app: &mut App) {
     app.invalidate();
 }
 
+/// 一般的單行輸入框（主題編輯器的欄位、名稱）
+pub fn begin_edit(app: &mut App, rect: crate::gfx::Rect, text: &str, sel_end: usize, kind: EditKind) {
+    create_edit(app, rect, text, sel_end, kind);
+    app.invalidate();
+}
+
 pub fn begin_palette_edit(app: &mut App, rect: crate::gfx::Rect) {
     create_edit(app, rect, "", 0, EditKind::Palette);
 }
@@ -434,6 +440,30 @@ fn run_modal(hwnd: HWND, modal: Modal) {
                 a.invalidate();
             });
         }
+        Modal::PickColor { field, initial } => {
+            if let Some(hex) = crate::themeedit::pick_color(hwnd, &initial) {
+                with_app(|a| a.theme_pick_color(field, hex));
+            }
+        }
+        Modal::ImportTheme => {
+            if let Some(path) = crate::themeedit::theme_file_dialog(hwnd, false, "") {
+                with_app(|a| a.import_theme_file(path));
+            }
+        }
+        Modal::ExportTheme { name, text } => {
+            if let Some(path) = crate::themeedit::theme_file_dialog(hwnd, true, &name) {
+                with_app(|a| a.write_export(path, text));
+            }
+        }
+        Modal::ConfirmThemeOverwrite { name, text } => {
+            let msg = wide_z(&format!("已有名為「{name}」的主題，要覆蓋嗎？"));
+            let ok = unsafe {
+                MessageBoxW(Some(hwnd), PCWSTR(msg.as_ptr()), w!("匯入主題"), MB_YESNO | MB_ICONQUESTION)
+            } == IDYES;
+            if ok {
+                with_app(|a| a.write_theme(name, text, true));
+            }
+        }
     }
 }
 
@@ -462,6 +492,16 @@ fn drop_resolve(pt: POINT) -> Option<String> {
 
 /// 放下的檔案交給背景檔案作業佇列（完成後重新整理相關分頁）
 fn drop_transfer(sources: Vec<String>, dest: String, mov: bool) {
+    // 拖進來的全是 .zingtheme：匯入主題，不複製檔案
+    let theme = |p: &String| p.to_ascii_lowercase().ends_with(".zingtheme");
+    if !sources.is_empty() && sources.iter().all(theme) {
+        with_app(|a| {
+            for p in sources {
+                a.import_theme_file(p);
+            }
+        });
+        return;
+    }
     with_app(|a| a.submit_op(shell::FileOp::Transfer { sources, dest, mov }));
 }
 
@@ -754,6 +794,9 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                     with_app(crate::perf::after_paint);
                 }
                 TIMER_SMOKE => crate::smoke::tick(hwnd),
+                crate::app::TIMER_THEME_WATCH => {
+                    with_app(|a| a.on_theme_watch_timer());
+                }
                 crate::app::TIMER_PREVIEW => {
                     with_app(|a| a.on_preview_timer());
                 }

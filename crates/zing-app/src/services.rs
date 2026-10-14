@@ -51,7 +51,13 @@ pub enum Msg {
     /// 背景重新讀取的設定與主題
     ConfigLoaded { config: zing_core::config::Config, theme: zing_core::theme::Theme, warnings: Vec<String> },
     /// 背景讀取的主題（theme.set）
-    ThemeLoaded(Result<zing_core::theme::Theme, String>),
+    ThemeLoaded { name: String, result: Result<zing_core::theme::Theme, String> },
+    /// 主題檔寫入完成（另存、覆蓋、匯入）
+    ThemeSaved { name: String, result: Result<(), String> },
+    /// 監看中的主題檔目前的修改時間
+    ThemeFileTime { name: String, mtime: Option<std::time::SystemTime> },
+    /// 匯入：(名稱, 內容, 是否已有同名主題)
+    ThemeImport(Result<(String, String, bool), String>),
     /// 網址列輸入已在背景確認是否為資料夾
     AddressResolved { pane: usize, target: String, normalized: String, is_dir: bool, cwd: String },
     /// 作業佇列中某個工作的狀態或進度

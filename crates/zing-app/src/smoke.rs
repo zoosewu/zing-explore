@@ -429,6 +429,49 @@ fn palette_key(vk: VIRTUAL_KEY) {
     }
 }
 
+/// 主題編輯面板中某欄位的位置：`value` 為 true 時是數值處（點選項、輸入），否則是名稱處
+fn theme_row_pos(label: &str, value: bool) -> Option<(f32, f32)> {
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let panel = a.layout.theme_panel?;
+        let i = zing_core::theme::FIELDS.iter().position(|f| f.label == label)?;
+        let k = crate::themeedit::rows().iter().position(|r| *r == crate::themeedit::Row::Field(i))?;
+        let pl = a.theme_panel_layout(panel);
+        // 先把這一列捲進可見範圍
+        let rh = a.row_h();
+        let ed = a.theme_editor.as_mut()?;
+        let top = k as f32 * rh;
+        if top < ed.scroll || top + rh > ed.scroll + pl.list.h() {
+            ed.scroll = (top - pl.list.h() / 2.0).max(0.0);
+        }
+        let scroll = ed.scroll;
+        a.invalidate();
+        let (row, swatch, v) = a.theme_row_rects(pl.list, k, scroll);
+        let y = (row.t + row.b) / 2.0;
+        Some(if value { (if swatch.r < v.r { swatch.r + 30.0 } else { v.l + 20.0 }, y) } else { (row.l + 20.0, y) })
+    })
+    .flatten()
+}
+
+fn theme_button_pos(k: usize) -> Option<(f32, f32)> {
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let panel = a.layout.theme_panel?;
+        let b = a.theme_panel_layout(panel).buttons[k];
+        Some(((b.l + b.r) / 2.0, (b.t + b.b) / 2.0))
+    })
+    .flatten()
+}
+
+/// 直接執行命令腳本
+fn exec(cmd: &str) {
+    with_app(|a| a.exec(cmd));
+}
+
+fn theme_path(name: &str) -> PathBuf {
+    crate::settings::themes_dir().join(format!("{name}.toml"))
+}
+
 /// 批次重新命名的兩個輸入框
 fn batch_edits() -> (HWND, HWND) {
     with_app(|a| a.batch.as_ref().map(|b| (b.edits[0], b.edits[1]))).flatten().unwrap_or_default()
@@ -1776,6 +1819,111 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         {
             let d = d.clone();
             move |_, a| at(a, &d)
+        },
+    ));
+
+    // ------------------------------------------------ 主題編輯器
+    v.push(step("主題：開啟編輯面板", |_| exec("theme.edit"), |_, a| {
+        if a.theme_editor.is_none() || a.layout.theme_panel.is_none() {
+            return Err("面板沒有開啟".into());
+        }
+        expect("目前主題", a.theme_name.as_str(), "dark")
+    }));
+    v.push(step("主題：滾輪調整列高（即時套用）", |c| wheel(c, theme_row_pos("列高", false), 120), |_, a| {
+        expect("列高", a.theme.metrics.row_height, 23.0)
+    }));
+    v.push(step("主題：點選項切換網址列樣式", |c| click(c, "", theme_row_pos("網址列", true)), |_, a| {
+        expect("網址列", a.theme.chrome.address, zing_core::theme::AddressStyle::Breadcrumb)
+    }));
+    v.push(step(
+        "主題：輸入強調色",
+        |c| {
+            click(c, "", theme_row_pos("強調色", true));
+            if let Some(e) = edit_hwnd() {
+                set_text(e, "#ff0000");
+                key_to(e, "", VK_RETURN);
+            }
+        },
+        |_, a| expect("強調色", a.theme.color.accent, zing_core::theme::Color::rgb(0xff0000)),
+    ));
+    v.push(step("截圖：主題編輯器", |_| {}, |c, _| screenshot(c, "10-主題編輯器")));
+    v.push(
+        step(
+            "主題：另存新主題（只存差異）",
+            |c| {
+                click(c, "", theme_button_pos(0));
+                if let Some(e) = edit_hwnd() {
+                    set_text(e, "smoke-theme");
+                    key_to(e, "", VK_RETURN);
+                }
+            },
+            |_, a| {
+                expect("主題名稱", a.theme_name.as_str(), "smoke-theme")?;
+                let text = std::fs::read_to_string(theme_path("smoke-theme")).map_err(|e| e.to_string())?;
+                if !text.contains("#ff0000") || !text.contains("row_height") || text.contains("background") {
+                    return Err(format!("主題檔內容：{text}"));
+                }
+                Ok(())
+            },
+        )
+        .slow(),
+    );
+    v.push(step(
+        "主題：取消時還原到上次儲存",
+        |c| {
+            wheel(c, theme_row_pos("列高", false), 120);
+            click(c, "", theme_button_pos(2));
+        },
+        |_, a| {
+            expect("面板關閉", a.theme_editor.is_none(), true)?;
+            expect("列高", a.theme.metrics.row_height, 23.0)
+        },
+    ));
+    v.push(
+        step(
+            "主題：匯入 .zingtheme",
+            |_| {
+                let f = std::env::temp_dir().join("smoke-import.zingtheme");
+                let _ = std::fs::write(&f, "name = \"smoke-import\"\nstyle = \"fluent\"\n[color]\naccent = \"#00ff00\"\n");
+                with_app(|a| a.import_theme_file(f.to_string_lossy().into_owned()));
+            },
+            |_, a| {
+                expect("主題名稱", a.theme_name.as_str(), "smoke-import")?;
+                expect("強調色", a.theme.color.accent, zing_core::theme::Color::rgb(0x00ff00))?;
+                expect("風格", a.theme.style, zing_core::theme::Style::Fluent)
+            },
+        )
+        .slow(),
+    );
+    v.push(step("主題：開始監看主題檔（記下目前的修改時間）", |_| with_app(|a| a.watch_theme_file()).unwrap_or(()), |_, a| {
+        match &a.theme_watch {
+            Some((name, Some(_))) if name == "smoke-import" => Ok(()),
+            _ => Err("還沒讀到修改時間".into()),
+        }
+    }));
+    v.push(
+        step(
+            "主題：文字編輯器存檔後自動重新載入",
+            |_| {
+                let _ = std::fs::write(theme_path("smoke-import"), "name = \"smoke-import\"\nstyle = \"fluent\"\n[color]\naccent = \"#0000ff\"\n");
+            },
+            |_, a| expect("強調色", a.theme.color.accent, zing_core::theme::Color::rgb(0x0000ff)),
+        )
+        .slow(),
+    );
+    v.push(step(
+        "主題：清除測試主題、回到深色",
+        |_| {
+            with_app(|a| a.stop_theme_watch());
+            for n in ["smoke-theme", "smoke-import"] {
+                let _ = std::fs::remove_file(theme_path(n));
+            }
+            let _ = std::fs::remove_file(std::env::temp_dir().join("smoke-import.zingtheme"));
+            exec("theme.set dark");
+        },
+        |_, a| {
+            expect("主題名稱", a.theme_name.as_str(), "dark")?;
+            expect("列高", a.theme.metrics.row_height, 22.0)
         },
     ));
 

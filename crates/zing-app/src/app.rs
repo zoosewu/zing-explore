@@ -44,6 +44,8 @@ pub const TIMER_INDEX: usize = 8;
 pub const INDEX_POLL_MS: u32 = 2000;
 /// 預覽窗格：焦點停留一段時間才讀取
 pub const TIMER_PREVIEW: usize = 9;
+/// 以文字編輯器修改主題檔時，每秒檢查是否已存檔
+pub const TIMER_THEME_WATCH: usize = 10;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -71,12 +73,21 @@ pub enum Press {
 /// 有自己訊息迴圈的動作：必須在釋放 App 借用後才執行（見 window.rs）
 pub enum Modal {
     DragOut { paths: Vec<String> },
+    /// 主題編輯器：選色對話框
+    PickColor { field: usize, initial: String },
+    ImportTheme,
+    ExportTheme { name: String, text: String },
+    /// 匯入的主題與現有的同名：詢問是否覆蓋
+    ConfirmThemeOverwrite { name: String, text: String },
 }
 
 pub enum EditKind {
     Rename { tab: TabId, path: String },
     Address,
     Palette,
+    /// 主題編輯器：欄位的值、另存新主題的名稱
+    ThemeField { field: usize },
+    ThemeSaveAs,
 }
 
 pub struct Edit {
@@ -101,6 +112,11 @@ pub struct App {
     pub preview: crate::preview::Preview,
     /// 批次重新命名面板
     pub batch: Option<crate::batch::Batch>,
+    /// 目前主題的名稱（內建名稱或 themes 資料夾中的檔名）
+    pub theme_name: String,
+    pub theme_editor: Option<crate::themeedit::ThemeEditor>,
+    /// 以文字編輯器修改中的主題檔：(主題名稱, 上次看到的修改時間)
+    pub theme_watch: Option<(String, Option<std::time::SystemTime>)>,
     pub tree_side: TreeSide,
     pub tree_width: f32,
     pub focus: Focus,
@@ -146,15 +162,17 @@ impl App {
     pub fn new(hwnd: HWND, dpi: f32, perf: Option<Perf>, smoke_dir: Option<String>) -> windows::core::Result<Self> {
         let isolated = perf.is_some() || smoke_dir.is_some();
         // 第一幀之前必須知道設定與主題；檔案很小且在本機，屬於明確的例外
-        let (config, warnings, session, theme, theme_warning) = if smoke_dir.is_some() {
+        let (config, warnings, session, theme, theme_warning, theme_name) = if smoke_dir.is_some() {
             let (config, warnings) = Config::load(None);
-            (config, warnings, Session::default(), Theme::dark(), None)
+            (config, warnings, Session::default(), Theme::dark(), None, "dark".to_string())
         } else {
             let _allow = zing_core::guard::allow_io("啟動時讀取設定、主題與工作階段");
             let (config, warnings) = settings::load_config();
             let session = if isolated { Session::default() } else { Session::load() };
-            let (theme, theme_warning) = settings::resolve_theme(&config.theme);
-            (config, warnings, session, theme, theme_warning)
+            // 最後選用的主題優先於設定檔
+            let theme_name = session.theme.clone().unwrap_or_else(|| config.theme.clone());
+            let (theme, theme_warning) = settings::resolve_theme(&theme_name);
+            (config, warnings, session, theme, theme_warning, theme_name)
         };
         crate::perf::mark("config");
         let gfx = Gfx::new(hwnd, dpi, &theme, perf.is_some())?;
@@ -184,6 +202,9 @@ impl App {
             tree_side: config.layout.tree,
             tree_visible: session.tree_visible,
             batch: None,
+            theme_name,
+            theme_editor: None,
+            theme_watch: None,
             preview: crate::preview::Preview::new(session.preview_visible, session.preview_width.unwrap_or(360.0)),
             tree_width: session.tree_width.unwrap_or(theme.metrics.tree_width),
             cols: session.columns.unwrap_or([150.0, 120.0, 100.0]),
@@ -271,6 +292,7 @@ impl App {
             tree_visible: self.tree_visible,
             tree_width: Some(self.tree_width),
             preview_visible: self.preview.visible,
+            theme: (self.theme_name != self.config.theme).then(|| self.theme_name.clone()),
             preview_width: Some(self.preview.width),
             columns: Some(self.cols),
             favorites: self.session.favorites.clone(),
@@ -739,6 +761,8 @@ impl App {
                     self.thumbs.set_thumbnailers(config.thumbnailers.clone());
                 }
                 self.config = config;
+                // 重新載入設定時以設定檔的主題為準
+                self.theme_name = self.config.theme.clone();
                 self.tree_side = self.config.layout.tree;
                 self.apply_theme(theme);
                 match warnings.into_iter().next() {
@@ -746,8 +770,10 @@ impl App {
                     None => self.set_status("已重新載入設定", false),
                 }
             }
-            Msg::ThemeLoaded(Ok(theme)) => self.apply_theme(theme),
-            Msg::ThemeLoaded(Err(e)) => self.set_status(e, true),
+            Msg::ThemeLoaded { name, result } => self.on_theme_loaded(name, result),
+            Msg::ThemeSaved { name, result } => self.on_theme_saved(name, result),
+            Msg::ThemeFileTime { name, mtime } => self.on_theme_file_time(name, mtime),
+            Msg::ThemeImport(result) => self.on_theme_import(result),
             Msg::AddressResolved { pane, target, normalized, is_dir, cwd } => {
                 if is_dir && pane < self.panes.len() {
                     self.navigate(pane, normalized, true);
@@ -1023,6 +1049,10 @@ impl App {
             }
             "view.foldersizes" => self.compute_folder_sizes(p, false, false),
             "view.preview" => self.toggle_preview(),
+            "theme.edit" => self.open_theme_editor(),
+            "theme.editfile" => self.open_theme_file(),
+            "theme.import" => self.modal = Some(Modal::ImportTheme),
+            "theme.export" => self.export_theme(),
             "view.mode" => {
                 let mode = inv.flag("mode").or_else(|| inv.positional().next()).unwrap_or("list").to_string();
                 self.set_view_mode(p, &mode)?;
@@ -1055,18 +1085,12 @@ impl App {
             }
             "theme.set" => {
                 let name = inv.flag("name").or_else(|| inv.positional().next()).ok_or("theme.set 需要 --name=")?.to_string();
-                let n = self.notifier.clone();
-                self.pool.spawn(move || {
-                    let (theme, warn) = settings::resolve_theme(&name);
-                    n.send(Msg::ThemeLoaded(match warn {
-                        Some(w) => Err(w),
-                        None => Ok(theme),
-                    }));
-                });
+                self.load_theme_by_name(name);
             }
             "theme.toggle" => {
                 // 同一風格的另一種深淺色
                 let theme = self.theme.toggled();
+                self.theme_name = theme.name.clone();
                 self.apply_theme(theme);
             }
             "config.edit" => {
@@ -1260,6 +1284,8 @@ impl App {
                 }
                 // 命令面板在函式開頭已處理
                 EditKind::Palette => {}
+                EditKind::ThemeField { field } => self.commit_theme_field(field, &text),
+                EditKind::ThemeSaveAs => self.save_theme_as(&text),
             }
         }
         window::focus_main(self.hwnd);

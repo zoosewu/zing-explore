@@ -134,6 +134,7 @@ impl App {
             }
             Hit::TreeEmpty => self.focus = Focus::Tree,
             Hit::Preview => {}
+            Hit::ThemeRow(_) | Hit::ThemeSwatch(_) | Hit::ThemeButton(_) | Hit::ThemePanel => self.theme_click(hit),
             // 批次重新命名面板開啟時在函式開頭處理
             Hit::BatchChip(_) | Hit::BatchField(_) | Hit::BatchRun | Hit::BatchCancel | Hit::Batch => {}
             Hit::PreviewSplitter => {
@@ -345,6 +346,10 @@ impl App {
         }
         let lines = 3.0 * delta as f32 / 120.0;
         let step = lines * self.row_h();
+        if let Some(tp) = self.layout.theme_panel.filter(|r| r.contains(x, y)) {
+            self.theme_wheel(tp, x, y, delta);
+            return;
+        }
         if let Some(pr) = self.layout.preview.filter(|r| r.contains(x, y)) {
             let (_, content, _) = self.preview_rects(pr);
             let max = self.preview_max_scroll(content.h());
