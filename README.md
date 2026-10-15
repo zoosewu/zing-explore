@@ -95,7 +95,13 @@ end
 - 中斷點除錯：執行 `pwsh tools/install-vscode-ext.ps1` 安裝 VS Code 擴充功能，以 VS Code 開啟 `scripts` 資料夾，開著 zing 按 F5 附加；
   支援中斷點、條件中斷點、記錄點、單步、呼叫堆疊、變數、求值，腳本出錯時停在錯誤發生處
 
-範例：[examples/scripts/extract.lua](examples/scripts/extract.lua)（批次解壓縮，使用 Windows 內建的 tar.exe）。
+範例（複製到 `zing.exe` 旁的 `scripts\`，命令面板執行「重新載入 Lua 腳本」）：
+
+- [extract.lua](examples/scripts/extract.lua)：批次解壓縮到指定資料夾，使用 Windows 內建的 tar.exe
+- [rename_pattern.lua](examples/scripts/rename_pattern.lua)：以 Lua 樣式批次重新命名（保留副檔名、名稱衝突加序號），可復原
+- [checksum.lua](examples/scripts/checksum.lua)：計算 SHA-256 寫成 `.sha256` 檔，或以 `.sha256` 檔驗證（certutil、`io.popen`）
+- [organize.lua](examples/scripts/organize.lua)：依副檔名把檔案移到「圖片」「影片」「文件」等子資料夾
+- [folder_view.lua](examples/scripts/folder_view.lua)：事件函式，相片資料夾自動切換成縮圖、資料夾以封面圖片當縮圖
 
 完整的函式說明見 [docs/lua.md](docs/lua.md)（由程式碼產生，永遠與程式一致）。
 

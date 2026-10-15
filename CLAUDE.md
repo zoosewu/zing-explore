@@ -85,9 +85,10 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
     時不可寫成尾呼叫（`return stop(...)`），否則框架層級會錯。
   - API 的說明只寫在 `zing_core::scriptapi`：新增或修改命令、全域函式、prelude 函式時同步更新，再以
     `ZING_UPDATE_DOCS=1 cargo test -p zing-core` 重新產生 `docs/lua.md`（測試會檢查是否最新）；
-    `app_commands_match_scriptapi` 測試檢查命令清單與 `App::run` 一致。修改 API 後執行 `pwsh tools/check-lua-api.ps1`：
+    `app_commands_match_scriptapi` 測試檢查命令清單與 `App::run` 一致。`tools/smoke.ps1` 每次先執行 `tools/check-lua-api.ps1`：
     以 Lua Language Server 檢查定義檔、`examples/scripts` 與 `docs/lua.md` 的每個範例，必須沒有任何問題
-    （範例必須是合法的 Lua：管線是運算式，不能單獨成為一行）。
+    （範例必須是合法的 Lua：管線是運算式，不能單獨成為一行）；沒有安裝 LuaLS 時只警告，修改 API 時務必安裝後執行。
+  - `examples/scripts` 的每個範例在 `script.rs` 都有單元測試（`example_*`，以真的檔案與外部程式執行）。
 - 啟動路徑上不放非必要初始化，能延後的就延後（OLE、拖放在第一幀之後初始化）。
 - 第一幀用 WARP 繪製，硬體 GPU 裝置在第一幀呈現後於背景建立再切換；不要在第一幀前碰硬體裝置（驅動初始化約 130 ms，且會鎖住 DXGI）。
 - 分析工具：`--perf-out` 模式的 `phase_*` 時間點、Windows Performance Recorder/Analyzer（ETW）、`criterion`；需要符號時用 `cargo build --profile profiling`。

@@ -8,7 +8,7 @@
     截圖存在 target\smoke\（BMP），失敗時可以對照。
 
 .EXAMPLE
-    pwsh tools/smoke.ps1             # 建置 debug 並測試
+    pwsh tools/smoke.ps1             # 建置 debug 並測試（先以 check-lua-api.ps1 檢查 Lua API）
     pwsh tools/smoke.ps1 -Release    # 測 release build（沒有 I/O 防呆；之後 perf.ps1 會重新建置不含測試的版本）
     pwsh tools/smoke.ps1 -Keep       # 保留測試資料夾以便檢查
 #>
@@ -34,6 +34,10 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw 'cargo build 失敗' }
     Pop-Location
 }
+
+# Lua API：以 Lua Language Server 檢查定義檔、範例腳本與文件範例（約 3 秒；沒有安裝 LuaLS 時只警告）
+& pwsh -NoProfile (Join-Path $PSScriptRoot 'check-lua-api.ps1') -IfAvailable
+if ($LASTEXITCODE -ne 0) { throw 'Lua API 檢查失敗（見上方訊息）' }
 
 # 測試資料夾：環境變數 ZING_TEST_DIR（與 zing_core::testdir 相同），沒有設定時用系統的暫存資料夾
 $testRoot = if ($env:ZING_TEST_DIR) { $env:ZING_TEST_DIR } else { $env:TEMP }

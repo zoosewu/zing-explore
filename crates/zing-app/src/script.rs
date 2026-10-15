@@ -1100,6 +1100,189 @@ mod tests {
         assert_eq!(run(&l, src), "1|2.5|中😀\n|niltrue0|{\"x\":\"a\\\"\\n\"}");
     }
 
+    /// 載入範例腳本：is_dir 查真的檔案系統，msg 存在 last_msg，命令（__invoke）記在 __calls（「名稱|位置參數;…|to」），
+    /// ask()、pick_folder() 依序回答 __answers
+    fn example_lua(name: &str, src: &str) -> Lua {
+        let l = lua();
+        let g = l.globals();
+        g.set("__is_dir", l.create_function(|_, p: String| Ok(Path::new(&p).is_dir())).unwrap()).unwrap();
+        g.set("__msg", l.create_function(|l, m: String| l.globals().set("last_msg", m)).unwrap()).unwrap();
+        drop(g);
+        l.load(
+            "function __ask() return table.remove(__answers, 1) end; __pick_folder = __ask
+             __calls = {}
+             function __invoke(name, pos, flags)
+               __calls[#__calls + 1] = name .. '|' .. table.concat(pos, ';') .. '|' .. tostring(flags.to)
+             end",
+        )
+        .exec()
+        .unwrap();
+        l.load(src).set_name(format!("@{name}")).exec().unwrap();
+        l
+    }
+
+    /// 目前資料夾與選取項目（dir 裡的名稱）
+    fn set_ctx(l: &Lua, dir: &Path, sel: &[&str]) {
+        let ctx = l.create_table().unwrap();
+        ctx.set("cwd", dir.to_string_lossy().as_ref()).unwrap();
+        ctx.set("sel", sel.iter().map(|n| dir.join(n).to_string_lossy().into_owned()).collect::<Vec<_>>()).unwrap();
+        l.globals().set("__ctx", ctx).unwrap();
+    }
+
+    /// 執行命令並回傳最後的 msg
+    fn example_run(l: &Lua, code: &str, answers: &[&str]) -> String {
+        l.globals().set("last_msg", "").unwrap();
+        l.globals().set("__answers", answers.to_vec()).unwrap();
+        l.load(code).exec().unwrap();
+        l.globals().get("last_msg").unwrap()
+    }
+
+    fn example_dir(name: &str) -> std::path::PathBuf {
+        let dir = zing_core::testdir::dir().join(format!("zing-{name}-測試-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// examples/scripts/rename_pattern.lua：樣式取代、保留副檔名、名稱衝突、只改大小寫、錯誤的樣式、復原
+    #[test]
+    fn example_rename_pattern_script() {
+        let _allow = zing_core::guard::allow_io("測試");
+        let dir = example_dir("rename");
+        for n in ["IMG_0012.jpg", "IMG_0013.JPG", "相片 0013.JPG", "說明.txt", "abc.txt"] {
+            std::fs::write(dir.join(n), n).unwrap();
+        }
+        std::fs::create_dir(dir.join("IMG_資料夾.v2")).unwrap();
+        let l = example_lua("rename_pattern.lua", include_str!("../../../examples/scripts/rename_pattern.lua"));
+        let names = || {
+            let mut v: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        let before = names();
+
+        // 主檔名：副檔名保留原本的大小寫；與既有的「相片 0013.JPG」衝突時加序號；資料夾的名稱整個套用
+        set_ctx(&l, &dir, &["IMG_0012.jpg", "IMG_0013.JPG", "說明.txt", "IMG_資料夾.v2"]);
+        let m = example_run(&l, "rename_pattern()", &["^IMG_(.+)", "相片 %1", "1", "是"]);
+        assert!(m.contains("已重新命名 3 個"), "{m}");
+        assert_eq!(names(), ["abc.txt", "相片 0012.jpg", "相片 0013 (2).JPG", "相片 0013.JPG", "相片 資料夾.v2", "說明.txt"]);
+
+        // 復原
+        let m = example_run(&l, "rename_undo()", &[]);
+        assert!(m.contains("已復原 3 個"), "{m}");
+        assert_eq!(names(), before);
+        assert!(example_run(&l, "rename_undo()", &[]).contains("沒有可以復原"));
+
+        // 只改大小寫、完整名稱
+        set_ctx(&l, &dir, &["abc.txt"]);
+        let m = example_run(&l, "rename_pattern()", &["abc%.txt", "ABC.TXT", "2", "是"]);
+        assert!(m.contains("已重新命名 1 個"), "{m}");
+        assert!(names().contains(&"ABC.TXT".to_string()));
+        example_run(&l, "rename_undo()", &[]);
+        assert!(names().contains(&"abc.txt".to_string()));
+
+        // 錯誤的樣式、沒有變更、取消
+        let m = example_run(&l, "rename_pattern()", &["[abc", "x", "1"]);
+        assert!(m.contains("樣式有誤"), "{m}");
+        assert!(example_run(&l, "rename_pattern()", &["zzz", "x", "1"]).contains("沒有名稱需要變更"));
+        example_run(&l, "rename_pattern()", &["abc", "x", "1", "否"]);
+        assert_eq!(names(), before);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// examples/scripts/checksum.lua：以真的 certutil 計算（含空檔案、中文檔名），再驗證（相符、不符、找不到）
+    #[test]
+    fn example_checksum_script() {
+        let _allow = zing_core::guard::allow_io("測試");
+        let dir = example_dir("sha256");
+        std::fs::write(dir.join("甲 1.txt"), "abc").unwrap();
+        std::fs::write(dir.join("空.txt"), "").unwrap();
+        std::fs::create_dir(dir.join("子資料夾")).unwrap();
+        let l = example_lua("checksum.lua", include_str!("../../../examples/scripts/checksum.lua"));
+
+        set_ctx(&l, &dir, &["甲 1.txt", "空.txt", "子資料夾"]);
+        let m = example_run(&l, "sha256_create()", &["校驗.sha256"]);
+        assert!(m.contains("2 個檔案"), "{m}");
+        let sums = std::fs::read_to_string(dir.join("校驗.sha256")).unwrap();
+        assert_eq!(
+            sums,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  甲 1.txt\n\
+             e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  空.txt\n"
+        );
+
+        set_ctx(&l, &dir, &["校驗.sha256", "甲 1.txt"]);
+        let m = example_run(&l, "sha256_verify()", &[]);
+        assert!(m.contains("驗證通過：2 個"), "{m}");
+
+        std::fs::write(dir.join("甲 1.txt"), "abd").unwrap();
+        std::fs::remove_file(dir.join("空.txt")).unwrap();
+        let m = example_run(&l, "sha256_verify()", &[]);
+        assert!(m.contains("0 個相符、1 個不符、1 個找不到"), "{m}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// examples/scripts/organize.lua：依副檔名分組、建立子資料夾、每組一個移動命令，資料夾不移動
+    #[test]
+    fn example_organize_script() {
+        let _allow = zing_core::guard::allow_io("測試");
+        let dir = example_dir("organize");
+        for n in ["a.JPG", "b.png", "c.pdf", "d.xyz", "e.mp4"] {
+            std::fs::write(dir.join(n), "").unwrap();
+        }
+        std::fs::create_dir(dir.join("資料夾")).unwrap();
+        let l = example_lua("organize.lua", include_str!("../../../examples/scripts/organize.lua"));
+        set_ctx(&l, &dir, &["a.JPG", "b.png", "c.pdf", "d.xyz", "e.mp4", "資料夾"]);
+        let m = example_run(&l, "organize_by_type()", &[&dir.to_string_lossy()]);
+        assert!(m.contains("5 個檔案到 4 個分類"), "{m}");
+        let d = dir.to_string_lossy();
+        let calls: Vec<String> = l.load("return __calls").eval().unwrap();
+        assert_eq!(
+            calls,
+            [
+                format!(r"copy|{d}\a.JPG;{d}\b.png|{d}\圖片"),
+                format!(r"copy|{d}\e.mp4|{d}\影片"),
+                format!(r"copy|{d}\c.pdf|{d}\文件"),
+                format!(r"copy|{d}\d.xyz|{d}\其他"),
+            ]
+        );
+        for k in ["圖片", "影片", "文件", "其他"] {
+            assert!(dir.join(k).is_dir(), "{k}");
+        }
+        assert!(!dir.join("音樂").exists());
+        // 沒有選取檔案
+        set_ctx(&l, &dir, &["資料夾"]);
+        assert!(example_run(&l, "organize_by_type()", &[]).contains("請先選取"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// examples/scripts/folder_view.lua：相片資料夾切換成縮圖、資料夾封面
+    #[test]
+    fn example_folder_view_script() {
+        let _allow = zing_core::guard::allow_io("測試");
+        let dir = example_dir("folderview");
+        let album = dir.join("專輯");
+        std::fs::create_dir(&album).unwrap();
+        std::fs::write(album.join("cover.jpg"), "").unwrap();
+        std::fs::create_dir(dir.join("空的")).unwrap();
+        let l = example_lua("folder_view.lua", include_str!("../../../examples/scripts/folder_view.lua"));
+
+        l.load(r#"on_navigate([[D:\Photos\2024]]); on_navigate([[C:\Users\a\Pictures]]); on_navigate([[D:\相片]]); on_navigate([[D:\Code\photoshop]])"#)
+            .exec()
+            .unwrap();
+        let calls: Vec<String> = l.load("return __calls").eval().unwrap();
+        assert_eq!(calls, ["view.mode|thumbnails|nil"; 3]);
+
+        let thumb = |p: &Path| -> Option<String> { l.load(format!("return thumbnail([[{}]])", p.display())).eval().unwrap() };
+        assert_eq!(thumb(&album), Some(album.join("cover.jpg").to_string_lossy().into_owned()));
+        assert_eq!(thumb(&dir.join("空的")), None);
+        assert_eq!(thumb(&album.join("cover.jpg")), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// examples/scripts/extract.lua：以真的 tar.exe 解壓縮（中文路徑、子資料夾、損壞的檔案）
     #[test]
     fn example_extract_script() {
@@ -1120,24 +1303,9 @@ mod tests {
         std::fs::write(dir.join("壞掉.zip"), "not a zip").unwrap();
         std::fs::write(dir.join("說明.txt"), "x").unwrap();
 
-        let l = lua();
-        let g = l.globals();
-        g.set("__is_dir", l.create_function(|_, p: String| Ok(Path::new(&p).is_dir())).unwrap()).unwrap();
-        g.set("__msg", l.create_function(|l, m: String| l.globals().set("last_msg", m)).unwrap()).unwrap();
-        // pick_folder()、ask() 依序回答 __answers 的內容
-        l.load("function __ask() return table.remove(__answers, 1) end; __pick_folder = __ask").exec().unwrap();
-        l.load(include_str!("../../../examples/scripts/extract.lua")).set_name("@extract.lua").exec().unwrap();
-        let sel = ["壓縮 1.zip", "資料.tar.gz", "壞掉.zip", "說明.txt"].map(|n| dir.join(n).to_string_lossy().into_owned());
-        let ctx = l.create_table().unwrap();
-        ctx.set("cwd", dir.to_string_lossy().as_ref()).unwrap();
-        ctx.set("sel", sel.to_vec()).unwrap();
-        g.set("__ctx", ctx).unwrap();
-        drop(g);
-        let run = |answers: [&str; 2]| -> String {
-            l.globals().set("__answers", answers.to_vec()).unwrap();
-            l.load("extract_to()").exec().unwrap();
-            l.globals().get("last_msg").unwrap()
-        };
+        let l = example_lua("extract.lua", include_str!("../../../examples/scripts/extract.lua"));
+        set_ctx(&l, &dir, &["壓縮 1.zip", "資料.tar.gz", "壞掉.zip", "說明.txt"]);
+        let run = |answers: [&str; 2]| example_run(&l, "extract_to()", &answers);
 
         // 每個壓縮檔各自的子資料夾；損壞的檔案回報失敗，其他照常完成
         let out = dir.join("輸出");
