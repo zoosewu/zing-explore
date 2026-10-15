@@ -1,0 +1,14 @@
+# Lua 的錯誤不可穿過 Rust 的堆疊框架：release 是 panic = "abort"，穿過就會直接結束程序（見 crates/zing-app/src/script.rs 開頭）
+disallowed-methods = [
+  { path = "mlua::Lua::create_function", reason = "改用 script::lua_fn：參數只收 Value、不回傳錯誤" },
+  { path = "mlua::Lua::create_function_mut", reason = "改用 script::lua_fn：參數只收 Value、不回傳錯誤" },
+  { path = "mlua::Lua::set_hook", reason = "鉤子回傳錯誤會從 Rust 丟出 Lua 錯誤；時間上限用 prelude 的 debug.sethook" },
+  { path = "mlua::Table::get", reason = "會觸發腳本設的 __index；改用 raw_get" },
+  { path = "mlua::Table::set", reason = "會觸發腳本設的 __newindex；改用 raw_set" },
+  { path = "mlua::Table::len", reason = "會觸發腳本設的 __len；改用 raw_len" },
+  { path = "mlua::Table::contains_key", reason = "會觸發腳本設的 __index；改用 raw_get" },
+  { path = "mlua::Table::push", reason = "會觸發腳本設的 metamethod；改用 raw_push" },
+  { path = "mlua::Table::pop", reason = "會觸發腳本設的 metamethod；改用 raw_pop" },
+  { path = "mlua::Table::equals", reason = "會觸發腳本設的 __eq" },
+  { path = "mlua::Lua::coerce_string", reason = "改用 script::text" },
+]

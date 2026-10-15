@@ -9,6 +9,7 @@ mod index;
 mod views;
 mod input;
 mod jobs;
+mod luadebug;
 mod model;
 mod palette;
 mod perf;

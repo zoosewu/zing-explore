@@ -32,8 +32,8 @@ function extract_to()
   local archives = picked | filter(is_archive) | list
   if #archives == 0 then return msg("選擇的檔案中沒有壓縮檔") end
 
-  local dest = ask("解壓縮 " .. #archives .. " 個壓縮檔到：", cwd())
-  if not dest or dest == "" then return end
+  local dest = pick_folder("解壓縮 " .. #archives .. " 個壓縮檔到", cwd())
+  if not dest then return end
 
   local answer = ask("為每個壓縮檔建立子資料夾？（是／否）", "是")
   if not answer then return end

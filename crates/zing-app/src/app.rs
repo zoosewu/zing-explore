@@ -81,6 +81,8 @@ pub enum Modal {
     ExportTheme { name: String, text: String },
     /// 匯入的主題與現有的同名：詢問是否覆蓋
     ConfirmThemeOverwrite { name: String, text: String },
+    /// Lua 的 pick_folder()
+    PickFolder { title: String, default: String, reply: std::sync::mpsc::SyncSender<Option<String>> },
 }
 
 pub enum EditKind {
@@ -774,6 +776,7 @@ impl App {
             }
             Msg::ScriptExec(script) => self.exec(&script),
             Msg::ScriptAsk { prompt, default, reply } => self.open_ask(prompt, default, reply),
+            Msg::ScriptPickFolder { title, default, reply } => self.open_pick_folder(title, default, reply),
             Msg::ScriptsLoaded(l) => self.on_scripts_loaded(l),
             Msg::Thumb { id, pixels, source } => {
                 self.thumbs.store(id, pixels, source);
@@ -1138,7 +1141,7 @@ impl App {
             "config.reload" => self.reload_config(),
             "script.reload" => {
                 let n = self.notifier.clone();
-                self.scripts.load(&n);
+                self.scripts.load(&n, self.isolated);
             }
             "app.exit" => window::close(self.hwnd),
             // Lua 腳本定義的命令（全域函式）

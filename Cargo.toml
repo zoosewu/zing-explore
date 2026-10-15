@@ -20,6 +20,12 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# 冒煙測試用的 debug build：與 release 相同的 panic = "abort"，Lua 的錯誤若穿過 Rust 的框架，
+# debug 的冒煙測試就會當掉，不必等到 release（見 crates/zing-app/src/script.rs 開頭）
+[profile.debug-abort]
+inherits = "dev"
+panic = "abort"
+
 # 保留符號的 release，供 WPR/Tracy 效能分析使用
 [profile.profiling]
 inherits = "release"

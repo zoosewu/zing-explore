@@ -102,6 +102,12 @@ pub const GLOBALS: &[Spec] = &[
     spec("go", &["path string 資料夾"], "切換到資料夾", "go(\"D:\\\\Photos\")"),
     spec("msg", &["text string"], "在狀態列顯示訊息", "msg(\"完成\")"),
     spec("ask", &["prompt string 提示", "default? string 預設值", "return string? 輸入的文字；取消時為 nil"], "詢問使用者輸入（等待到使用者回答）", "local name = ask(\"新資料夾名稱\", \"新增資料夾\")"),
+    spec(
+        "pick_folder",
+        &["title? string 對話方塊的標題", "default? string 一開始顯示的資料夾", "return string? 選取的資料夾；取消時為 nil"],
+        "顯示選擇資料夾的對話方塊（等待到使用者選擇）",
+        "local dest = pick_folder(\"解壓縮到\", cwd())",
+    ),
     spec("exec", &["script string 命令腳本（同設定檔的 cmd，可用 {sel} 等變數）"], "執行命令腳本", "exec(\"copy {sel} --to={dest}\")"),
     spec("log", &["... any"], "寫入 scripts\\zing.log（除錯用）", "log(\"選取\", #sel())"),
 ];
@@ -200,7 +206,7 @@ const MD_HEAD: &str = r#"# Lua 腳本
 腳本放在 `zing.exe` 旁的 `scripts\*.lua`，啟動後在背景載入（依檔名順序），「重新載入 Lua 腳本」（`script.reload`）可重新載入。
 腳本在專用的執行緒執行，不會讓畫面卡住；單次執行用掉的 CPU 時間超過 30 秒會被中止（等待 `ask()`、外部程式、檔案 I/O 不算在內，只攔下失控的迴圈）。錯誤顯示在狀態列，並記錄在 `scripts\error.log`（含檔名、行號與呼叫堆疊）。
 腳本可以使用 Lua 5.4 完整的標準函式庫（含 `io`、`os`）。`os.execute`、`io.popen` 改為在目前資料夾執行且不顯示主控台視窗
-（`io.popen` 的讀取模式會等命令結束後一次取得全部輸出）。
+（`io.popen` 的讀取模式可以邊執行邊讀取輸出，寫入模式寫進命令的標準輸入；`close()` 等命令結束並回傳結束狀態）。
 
 ## 自訂命令
 
@@ -223,7 +229,21 @@ end
 - 載入腳本時會在 `scripts\.zing\zing.d.lua` 寫入所有 API 的型別定義，並在 `scripts\.luarc.json` 設定好。
   以 VS Code 開啟 `scripts` 資料夾並安裝 Lua 擴充功能（Lua Language Server），即有自動補全、說明與型別檢查。
 - 命令面板輸入 `=` 開頭的 Lua 運算式會立即執行並在狀態列顯示結果，例如 `= #sel()`、`= sel() | map(path.ext) | list`。
-- `log(...)` 寫入 `scripts\zing.log`。
+- `log(...)` 寫入 `scripts\zing.log`；除錯器連線時也顯示在 VS Code 的「偵錯主控台」。
+
+### 中斷點除錯
+
+zing 內建 Lua 除錯器（Debug Adapter Protocol），以 VS Code 連線：
+
+1. 安裝擴充功能：在 zing 的原始碼資料夾執行 `pwsh tools/install-vscode-ext.ps1`，重新載入 VS Code。
+2. 以 VS Code 開啟 `scripts` 資料夾（zing 已寫好 `.vscode\launch.json`），開著 zing 按 F5 附加。
+3. 在腳本設定中斷點，然後在 zing 執行命令：停在中斷點時可以看呼叫堆疊、區域變數、上值、全域變數，
+   在「偵錯主控台」或監看式對目前的框架求值，單步執行（不進入、進入、跳出）、繼續或暫停。
+
+- 支援條件中斷點、記錄點（`{運算式}` 會代入值）；「腳本錯誤時暫停」預設開啟，在錯誤發生的當下停住，堆疊還在。
+- 暫停期間 zing 的畫面照常可以操作，其他腳本命令排隊等繼續後才執行；暫停的時間不計入 CPU 時間上限。
+- 重新載入腳本時中斷點會保留。
+- 只有目前的 Windows 使用者能連線（具名管道 `\\.\pipe\zing-lua-debug-使用者名稱`，拒絕遠端連線）；同時只能有一個 zing 接受除錯連線。
 "#;
 
 /// Lua Language Server 的定義檔（scripts\.zing\zing.d.lua）
@@ -272,6 +292,15 @@ pub fn luals_meta() -> String {
     }
     s
 }
+
+/// scripts\.vscode\launch.json：以 F5 附加到 zing 的除錯器（tools/vscode-zing-lua）
+pub const LAUNCH_JSON: &str = r#"{
+  "version": "0.2.0",
+  "configurations": [
+    { "type": "zing-lua", "request": "attach", "name": "附加到 zing" }
+  ]
+}
+"#;
 
 /// scripts\.luarc.json：讓 Lua Language Server 認得 Lua 5.4 與定義檔
 pub const LUARC: &str = r#"{

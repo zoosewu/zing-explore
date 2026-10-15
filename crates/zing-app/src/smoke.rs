@@ -67,6 +67,17 @@ function smoke_proc()
   msg("proc:" .. tostring(c) .. ":" .. tostring(e) .. ":" .. out)
 end
 
+-- 選擇資料夾（冒煙測試以 TEST_PICK_FOLDER 代答，不顯示對話方塊）
+function smoke_pick()
+  msg("pick:" .. tostring(pick_folder("選擇", cwd())))
+end
+
+-- 除錯器：在 msg 那一行設中斷點（行號由冒煙測試從這段文字算出）
+function smoke_dbg()
+  local n = 21
+  msg("dbg:" .. n * 2) -- 中斷點
+end
+
 -- 全域表設了會報錯的 metatable：Rust 端只做 raw 存取，不受影響
 function smoke_strict()
   setmetatable(_G, {
@@ -76,6 +87,82 @@ function smoke_strict()
   msg("strict")
 end
 "#;
+
+/// 冒煙測試的除錯器用戶端：以真的具名管道連到自己（luadebug.rs），依序對話
+mod dbg_client {
+    use std::io::{Read, Write};
+    use std::sync::Mutex;
+
+    static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    pub fn log() -> Vec<String> {
+        LOG.lock().unwrap().clone()
+    }
+
+    pub fn start() {
+        std::thread::spawn(|| {
+            if let Err(e) = run() {
+                LOG.lock().unwrap().push(format!("錯誤：{e}"));
+            }
+        });
+    }
+
+    fn run() -> std::io::Result<()> {
+        let name = crate::luadebug::pipe_name(true);
+        let mut pipe = std::fs::OpenOptions::new().read(true).write(true).open(&name)?;
+        let line = super::SMOKE_LUA[..super::SMOKE_LUA.find("-- 中斷點").unwrap()].matches('\n').count() + 1;
+        let file = crate::script::scripts_dir().join("smoke.lua").to_string_lossy().replace('\\', "\\\\");
+        let mut buf = Vec::new();
+        let mut seq = 0;
+        let mut request = |pipe: &mut std::fs::File, cmd: &str, args: &str| -> std::io::Result<()> {
+            seq += 1;
+            let body = format!(r#"{{"seq":{seq},"type":"request","command":"{cmd}","arguments":{args}}}"#);
+            pipe.write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
+        };
+        request(&mut pipe, "initialize", r#"{"adapterID":"zing-lua"}"#)?;
+        request(&mut pipe, "attach", "{}")?;
+        request(&mut pipe, "setBreakpoints", &format!(r#"{{"source":{{"path":"{file}"}},"breakpoints":[{{"line":{line}}}]}}"#))?;
+        request(&mut pipe, "configurationDone", "{}")?;
+        until(&mut pipe, &mut buf, |m| m.contains(r#""command":"configurationDone""#))?;
+        // 等冒煙測試執行命令後停在中斷點
+        until(&mut pipe, &mut buf, |m| m.contains(r#""event":"stopped""#))?;
+        request(&mut pipe, "stackTrace", r#"{"threadId":1}"#)?;
+        until(&mut pipe, &mut buf, |m| m.contains(r#""command":"stackTrace""#))?;
+        request(&mut pipe, "evaluate", r#"{"expression":"n * 2","frameId":1,"context":"repl"}"#)?;
+        until(&mut pipe, &mut buf, |m| m.contains(r#""command":"evaluate""#))?;
+        request(&mut pipe, "continue", r#"{"threadId":1}"#)?;
+        until(&mut pipe, &mut buf, |m| m.contains(r#""command":"continue""#))?;
+        request(&mut pipe, "disconnect", "{}")?;
+        until(&mut pipe, &mut buf, |m| m.contains(r#""command":"disconnect""#))?;
+        Ok(())
+    }
+
+    /// 讀取訊息（記錄下來）直到符合條件
+    fn until(pipe: &mut std::fs::File, buf: &mut Vec<u8>, done: impl Fn(&str) -> bool) -> std::io::Result<()> {
+        loop {
+            while let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..end]).to_string();
+                let len: usize = head.trim_start_matches("Content-Length:").trim().parse().unwrap_or(0);
+                if buf.len() < end + 4 + len {
+                    break;
+                }
+                let body = String::from_utf8_lossy(&buf[end + 4..end + 4 + len]).to_string();
+                buf.drain(..end + 4 + len);
+                let hit = done(&body);
+                LOG.lock().unwrap().push(body);
+                if hit {
+                    return Ok(());
+                }
+            }
+            let mut chunk = [0u8; 4096];
+            let n = pipe.read(&mut chunk)?;
+            if n == 0 {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+    }
+}
 
 /// 狀態列目前的訊息
 fn status(a: &App) -> Option<String> {
@@ -204,6 +291,10 @@ struct Driver {
     /// 執行期間狀態列出現過的錯誤
     errors: Vec<String>,
     last_status: String,
+    /// 防呆回報（I/O、卡頓），附上當時進行中的步驟
+    violations: Vec<String>,
+    /// 上一個計時器週期處理的步驟（卡頓是在訊息處理完後才回報的）
+    last_step: String,
 }
 
 thread_local! {
@@ -226,6 +317,8 @@ pub fn start(hwnd: HWND, smoke: Smoke) {
         results: Vec::new(),
         errors: Vec::new(),
         last_status: String::new(),
+        violations: Vec::new(),
+        last_step: String::new(),
     };
     DRIVER.with(|d| *d.borrow_mut() = Some(driver));
     unsafe { SetTimer(Some(hwnd), TIMER_SMOKE, 10, None) };
@@ -248,6 +341,12 @@ pub fn tick(hwnd: HWND) {
 impl Driver {
     /// 推進一步；全部完成或失敗時回傳 true
     fn advance(&mut self) -> bool {
+        for v in zing_core::guard::take_violations() {
+            self.violations.push(format!("{v}（步驟：{}）", self.last_step));
+        }
+        if let Some(step) = self.steps.front() {
+            self.last_step.clone_from(&step.name);
+        }
         let Some(step) = self.steps.front_mut() else { return true };
         if let Some(act) = step.act.take() {
             // 動作與檢查分在不同的計時器週期，讓動作引發的訊息（繪製、背景結果）先處理
@@ -293,7 +392,8 @@ impl Driver {
         let _allow = zing_core::guard::allow_io("冒煙測試寫出報告");
         let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
         let list = |v: &[String]| v.iter().map(|s| format!("\"{}\"", esc(s))).collect::<Vec<_>>().join(", ");
-        let violations = zing_core::guard::take_violations();
+        let mut violations = self.violations.clone();
+        violations.extend(zing_core::guard::take_violations());
         let skipped: Vec<String> = self.steps.iter().skip(1).map(|s| s.name.clone()).collect();
         let ok = self.steps.is_empty() && self.errors.is_empty() && violations.is_empty();
         let steps: Vec<String> = self
@@ -2218,6 +2318,51 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         step("Lua：執行外部程式（不顯示主控台視窗，取得結束代碼與輸出）", |_| exec("smoke_proc"), |_, a| {
             expect("狀態列", status(a).as_deref(), Some("proc:3:5:hi"))
         })
+        .slow(),
+    );
+    v.push(
+        step(
+            "Lua：pick_folder() 選擇資料夾",
+            {
+                let dir_a = dir_a.clone();
+                move |_| {
+                    *crate::script::TEST_PICK_FOLDER.lock().unwrap() = Some(dir_a.clone());
+                    exec("smoke_pick");
+                }
+            },
+            {
+                let dir_a = dir_a.clone();
+                move |_, a| expect("狀態列", status(a), Some(format!("pick:{dir_a}")))
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step("Lua 除錯：連線並設定中斷點", |_| dbg_client::start(), |_, _| {
+            let log = dbg_client::log();
+            if log.iter().any(|m| m.contains(r#""command":"setBreakpoints""#) && m.contains(r#""verified":true"#)) {
+                Ok(())
+            } else {
+                Err(format!("除錯器回應：{log:?}"))
+            }
+        })
+        .slow(),
+    );
+    v.push(
+        step(
+            "Lua 除錯：命令停在中斷點，求值後繼續（暫停期間畫面照常）",
+            |_| exec("smoke_dbg"),
+            |_, a| {
+                let log = dbg_client::log();
+                let stopped = log.iter().any(|m| m.contains(r#""event":"stopped""#) && m.contains(r#""reason":"breakpoint""#));
+                let frame = log.iter().any(|m| m.contains(r#""name":"smoke_dbg""#) && m.contains("smoke.lua"));
+                let value = log.iter().any(|m| m.contains(r#""result":"42""#));
+                if !(stopped && frame && value) {
+                    return Err(format!("停住 {stopped}、堆疊 {frame}、求值 {value}：{log:?}"));
+                }
+                expect("狀態列", status(a).as_deref(), Some("dbg:42"))
+            },
+        )
         .slow(),
     );
     v.push(

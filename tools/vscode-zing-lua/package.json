@@ -1,0 +1,30 @@
+{
+  "name": "zing-lua",
+  "displayName": "zing-explore Lua 除錯",
+  "description": "連到 zing-explore 內建的 Lua 腳本除錯器：中斷點、條件中斷點、記錄點、單步、呼叫堆疊、變數、求值",
+  "version": "0.1.0",
+  "publisher": "zing",
+  "license": "MIT",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Debuggers"],
+  "main": "./extension.js",
+  "activationEvents": ["onDebugResolve:zing-lua", "onDebugDynamicConfigurations:zing-lua", "onLanguage:lua"],
+  "contributes": {
+    "breakpoints": [{ "language": "lua" }],
+    "debuggers": [
+      {
+        "type": "zing-lua",
+        "label": "zing Lua",
+        "languages": ["lua"],
+        "configurationAttributes": { "attach": { "properties": {} } },
+        "initialConfigurations": [{ "type": "zing-lua", "request": "attach", "name": "附加到 zing" }],
+        "configurationSnippets": [
+          {
+            "label": "zing Lua：附加到 zing",
+            "body": { "type": "zing-lua", "request": "attach", "name": "附加到 zing" }
+          }
+        ]
+      }
+    ]
+  }
+}

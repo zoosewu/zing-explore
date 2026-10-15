@@ -89,8 +89,11 @@ end
 ```
 
 - 每次執行有 CPU 時間上限（命令 30 秒、縮圖規則 0.3 秒；等待輸入、外部程式不算），腳本在背景執行，不會卡住視窗
+- `pick_folder()` 顯示選擇資料夾的對話方塊；`run{ ..., wait = true }`、`os.execute`、`io.popen` 執行外部程式時不顯示主控台視窗
 - 錯誤顯示在狀態列，完整的呼叫堆疊記在 `scripts\error.log`；`log()` 寫入 `scripts\zing.log`
 - 載入時在 `scripts\.zing\` 產生 LuaLS 定義檔與 `.luarc.json`：用 VS Code 的 Lua 擴充功能開啟 `scripts` 資料夾就有自動補全與說明
+- 中斷點除錯：執行 `pwsh tools/install-vscode-ext.ps1` 安裝 VS Code 擴充功能，以 VS Code 開啟 `scripts` 資料夾，開著 zing 按 F5 附加；
+  支援中斷點、條件中斷點、記錄點、單步、呼叫堆疊、變數、求值，腳本出錯時停在錯誤發生處
 
 範例：[examples/scripts/extract.lua](examples/scripts/extract.lua)（批次解壓縮，使用 Windows 內建的 tar.exe）。
 

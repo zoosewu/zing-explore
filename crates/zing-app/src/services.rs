@@ -76,6 +76,8 @@ pub enum Msg {
     ScriptExec(String),
     /// Lua 腳本的 ask()：顯示輸入框，回答送回 `reply`（取消為 None）
     ScriptAsk { prompt: String, default: String, reply: std::sync::mpsc::SyncSender<Option<String>> },
+    /// Lua 的 pick_folder()：顯示選擇資料夾的對話方塊，結果送回 reply
+    ScriptPickFolder { title: String, default: String, reply: std::sync::mpsc::SyncSender<Option<String>> },
     ScriptsLoaded(crate::script::Loaded),
     /// 預覽處理常式顯示完成（ok 為 false：處理常式失敗）
     PreviewHost { generation: u64, ok: bool },

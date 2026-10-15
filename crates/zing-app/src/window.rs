@@ -461,6 +461,9 @@ fn run_modal(hwnd: HWND, modal: Modal) {
                 with_app(|a| a.write_export(path, text));
             }
         }
+        Modal::PickFolder { title, default, reply } => {
+            let _ = reply.send(crate::script::folder_dialog(hwnd, &title, &default));
+        }
         Modal::ConfirmThemeOverwrite { name, text } => {
             let msg = wide_z(&format!("已有名為「{name}」的主題，要覆蓋嗎？"));
             let ok = unsafe {
@@ -543,7 +546,7 @@ fn deferred_init(hwnd: HWND) {
         // 效能模式不載入腳本，結果才可重現
         if a.perf.is_none() {
             let n = a.notifier.clone();
-            a.scripts.load(&n);
+            a.scripts.load(&n, a.isolated);
         }
         a.probes_enabled = true;
         a.invalidate();

@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    zing-explore 自動化 UI 冒煙測試。建立暫存測試資料夾，以 --smoke 模式執行 zing（debug build，含 UI 執行緒 I/O 防呆），
+    zing-explore 自動化 UI 冒煙測試。建立暫存測試資料夾，以 --smoke 模式執行 zing（debug build，含 UI 執行緒 I/O 防呆；
+    使用 Cargo.toml 的 debug-abort profile，與 release 同為 panic = "abort"），
     印出每一步的結果；任一步失敗、狀態列出現錯誤或防呆有回報時結束代碼為 1。
 
     測試在程序內送出視窗訊息，不移動真實游標、視窗不搶前景，使用電腦時也可以執行。
@@ -20,7 +21,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$profileDir = if ($Release) { 'release' } else { 'debug' }
+$profileDir = if ($Release) { 'release' } else { 'debug-abort' }
 $exe = Join-Path $root "target\$profileDir\zing.exe"
 $shots = Join-Path $root 'target\smoke'
 
@@ -29,7 +30,7 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 }
 if (-not $SkipBuild) {
     Push-Location $root
-    if ($Release) { cargo build --release -p zing-app --features smoke } else { cargo build -p zing-app --features smoke }
+    if ($Release) { cargo build --release -p zing-app --features smoke } else { cargo build --profile debug-abort -p zing-app --features smoke }
     if ($LASTEXITCODE -ne 0) { throw 'cargo build 失敗' }
     Pop-Location
 }

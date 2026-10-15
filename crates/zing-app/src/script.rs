@@ -18,13 +18,14 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mlua::{Lua, LuaOptions, StdLib, Table, Value};
+use mlua::{FromLuaMulti, IntoLuaMulti, Lua, LuaOptions, StdLib, Table, Value};
 use zing_core::command::{Arg, Invocation, quote_arg};
 use zing_core::scriptapi;
 
 use crate::services::{self, Msg, Notifier, Show};
 
 const PRELUDE: &str = include_str!("prelude.lua");
+const DEBUGGER: &str = include_str!("debugger.lua");
 /// 一次命令、事件、運算式的 CPU 時間上限
 const CALL_LIMIT: Duration = Duration::from_secs(30);
 /// 縮圖規則的 CPU 時間上限（每個縮圖呼叫一次）
@@ -49,6 +50,39 @@ enum Job {
     Event { hook: &'static str, arg: String, ctx: Ctx },
     Eval { expr: String, ctx: Ctx },
     Thumb { path: String, reply: SyncSender<Option<String>> },
+    /// 除錯器（luadebug.rs）收到的 DAP 訊息
+    Debug(String),
+    /// 除錯器的連線中斷
+    DebugEnd,
+}
+
+/// 腳本執行緒的工作佇列。除錯器暫停時只取除錯訊息，其他工作留到繼續之後
+struct Queue {
+    rx: Receiver<Job>,
+    pending: std::cell::RefCell<std::collections::VecDeque<Job>>,
+}
+
+impl Queue {
+    fn next(&self) -> Option<Job> {
+        let job = self.pending.borrow_mut().pop_front();
+        job.or_else(|| self.rx.recv().ok())
+    }
+
+    /// 下一個除錯訊息。`block` 時等到有訊息（暫停中）；否則只看已收到的（執行中），沒有時回傳 None。
+    /// 連線中斷：等待時回傳 None，不等待時回傳空字串。縮圖規則直接回答 None（縮圖執行緒在等）
+    fn debug_message(&self, block: bool) -> Option<String> {
+        loop {
+            let job = if block { self.rx.recv().ok()? } else { self.rx.try_recv().ok()? };
+            match job {
+                Job::Debug(m) => return Some(m),
+                Job::DebugEnd => return if block { None } else { Some(String::new()) },
+                Job::Thumb { reply, .. } => {
+                    let _ = reply.send(None);
+                }
+                other => self.pending.borrow_mut().push_back(other),
+            }
+        }
+    }
 }
 
 /// 載入完成的結果
@@ -66,6 +100,8 @@ pub struct Scripts {
     pub commands: Vec<(String, String)>,
     pub on_navigate: bool,
     pub loaded: bool,
+    /// 隔離模式（冒煙測試）：除錯器的管道名稱加上程序 ID
+    isolated: bool,
 }
 
 /// 縮圖執行緒用：腳本有 `thumbnail` 時才送出請求
@@ -93,13 +129,18 @@ impl Scripts {
             let (tx, rx) = channel();
             let n = n.clone();
             let _ = std::thread::Builder::new().name("zing-script".into()).spawn(move || worker(rx, n));
+            let dbg = tx.clone();
+            crate::luadebug::start(crate::luadebug::pipe_name(self.isolated), move |m| {
+                let _ = dbg.send(m.map_or(Job::DebugEnd, Job::Debug));
+            });
             *THUMB_TX.lock().unwrap() = Some(tx.clone());
             self.tx = Some(tx);
         }
         let _ = self.tx.as_ref().unwrap().send(job);
     }
 
-    pub fn load(&mut self, n: &Notifier) {
+    pub fn load(&mut self, n: &Notifier, isolated: bool) {
+        self.isolated = isolated;
         self.send(n, Job::Load(scripts_dir()));
     }
 
@@ -171,14 +212,38 @@ fn worker(rx: Receiver<Job>, n: Notifier) {
     }
     let mut lua: Option<Lua> = None;
     let deadline = Deadline(Arc::new(AtomicU64::new(u64::MAX)));
-    for job in rx {
+    let q = std::rc::Rc::new(Queue { rx, pending: Default::default() });
+    while let Some(job) = q.next() {
         match job {
             Job::Load(dir) => {
+                PIPES.with(|p| p.borrow_mut().1.clear());
                 THUMB_HOOK.store(false, Ordering::Relaxed);
-                let (state, loaded) = load(&dir, &n, &deadline);
+                // 除錯器的連線狀態（中斷點）帶到新的 Lua 狀態
+                let debug_state = match lua.as_ref().and_then(|l| debugger_call(l, "export", Value::Nil)) {
+                    Some(Value::String(s)) => Some(s.to_string_lossy()),
+                    _ => None,
+                };
+                let (state, loaded) = load(&dir, &n, &deadline, &q);
                 THUMB_HOOK.store(state.as_ref().is_some_and(|l| has_fn(l, "thumbnail")), Ordering::Relaxed);
+                if let (Some(l), Some(s)) = (&state, debug_state)
+                    && let Ok(s) = l.create_string(&s)
+                {
+                    debugger_call(l, "import", Value::String(s));
+                }
                 lua = state;
                 n.send(Msg::ScriptsLoaded(loaded));
+            }
+            Job::Debug(m) => {
+                if let Some(l) = &lua {
+                    deadline.set(call_limit());
+                    let m = l.create_string(&m).map(Value::String).unwrap_or(Value::Nil);
+                    debugger_call(l, "handle", m);
+                }
+            }
+            Job::DebugEnd => {
+                if let Some(l) = &lua {
+                    debugger_call(l, "handle", Value::Nil);
+                }
             }
             Job::Call { name, ctx } => {
                 if let Some(l) = &lua {
@@ -227,6 +292,13 @@ fn worker(rx: Receiver<Job>, n: Notifier) {
             }
         }
     }
+}
+
+/// 呼叫 debugger.lua 的函式（__debugger.名稱）
+fn debugger_call(l: &Lua, name: &str, arg: Value) -> Option<Value> {
+    let d: Table = l.globals().raw_get("__debugger").ok()?;
+    let f: mlua::Function = d.raw_get(name).ok()?;
+    f.call(arg).ok()
 }
 
 fn has_fn(l: &Lua, name: &str) -> bool {
@@ -341,15 +413,28 @@ fn titles(src: &str) -> Vec<(String, String)> {
     out
 }
 
-fn new_lua(n: &Notifier, deadline: &Deadline) -> mlua::Result<Lua> {
+/// Rust 提供給 Lua 的函式一律經過這裡（clippy.toml 禁止直接呼叫 `create_function`）：
+/// 參數只能是轉換不會失敗的 `Value` 組合（`SafeArgs`），回傳值不含錯誤，Lua 的錯誤就不會從 Rust 框架丟出（見檔案開頭）
+#[allow(clippy::disallowed_methods)]
+fn lua_fn<A: SafeArgs, R: IntoLuaMulti>(lua: &Lua, f: impl Fn(&Lua, A) -> R + 'static) -> mlua::Result<mlua::Function> {
+    lua.create_function(move |l, a: A| Ok(f(l, a)))
+}
+
+/// 從 Lua 轉換時不會失敗的參數型別（缺少的參數是 nil，多的忽略）
+trait SafeArgs: FromLuaMulti {}
+impl SafeArgs for () {}
+impl SafeArgs for Value {}
+impl SafeArgs for (Value, Value) {}
+impl SafeArgs for (Value, Value, Value) {}
+
+fn new_lua(n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -> mlua::Result<Lua> {
     // 腳本是使用者自己放的檔案，可信度與設定檔相同：開放完整的標準函式庫
     let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
     let g = lua.globals();
-    // 以下函式的參數都收 Value、不回傳 Err（見檔案開頭）
     let tx = n.clone();
     g.raw_set(
         "__invoke",
-        lua.create_function(move |_, (name, pos, flags): (Value, Value, Value)| {
+        lua_fn(&lua, move |_, (name, pos, flags): (Value, Value, Value)| {
             let mut args: Vec<Arg> = seq_texts(&pos).into_iter().map(Arg::Positional).collect();
             if let Value::Table(t) = flags {
                 for (k, v) in t.pairs::<Value, Value>().flatten() {
@@ -358,92 +443,252 @@ fn new_lua(n: &Notifier, deadline: &Deadline) -> mlua::Result<Lua> {
                 }
             }
             tx.send(Msg::ScriptRun(vec![Invocation { name: text(&name), args }]));
-            Ok(())
         })?,
     )?;
     let tx = n.clone();
-    g.raw_set("__msg", lua.create_function(move |_, v: Value| {
-        tx.status(text(&v), false);
-        Ok(())
-    })?)?;
+    g.raw_set("__msg", lua_fn(&lua, move |_, v: Value| tx.status(text(&v), false))?)?;
     let tx = n.clone();
-    g.raw_set("__exec", lua.create_function(move |_, v: Value| {
-        tx.send(Msg::ScriptExec(text(&v)));
-        Ok(())
-    })?)?;
+    g.raw_set("__exec", lua_fn(&lua, move |_, v: Value| tx.send(Msg::ScriptExec(text(&v))))?)?;
+    // ask()、pick_folder()：等使用者回答（不耗 CPU，不計入時間上限）
     let tx = n.clone();
     g.raw_set(
         "__ask",
-        lua.create_function(move |_, (prompt, default): (Value, Value)| {
+        lua_fn(&lua, move |_, (prompt, default): (Value, Value)| {
             let (reply, rx) = sync_channel(1);
             tx.send(Msg::ScriptAsk { prompt: text(&prompt), default: text(&default), reply });
-            // 等使用者回答（不耗 CPU，不計入時間上限）
-            Ok(rx.recv().ok().flatten())
+            rx.recv().ok().flatten()
         })?,
     )?;
-    g.raw_set("__log", lua.create_function(|_, v: Value| {
-        append(&scripts_dir().join("zing.log"), &text(&v));
-        Ok(())
-    })?)?;
-    g.raw_set("__is_dir", lua.create_function(|_, v: Value| Ok(Path::new(&text(&v)).is_dir()))?)?;
+    let tx = n.clone();
+    g.raw_set(
+        "__pick_folder",
+        lua_fn(&lua, move |_, (title, default): (Value, Value)| {
+            let (reply, rx) = sync_channel(1);
+            tx.send(Msg::ScriptPickFolder { title: text(&title), default: text(&default), reply });
+            rx.recv().ok().flatten()
+        })?,
+    )?;
+    g.raw_set("__log", lua_fn(&lua, |_, v: Value| append(&scripts_dir().join("zing.log"), &text(&v)))?)?;
+    g.raw_set("__is_dir", lua_fn(&lua, |_, v: Value| Path::new(&text(&v)).is_dir())?)?;
     add_process_fns(&lua)?;
     // 時間上限：prelude 的鉤子每執行一段指令問一次，超過時由 Lua 丟出錯誤
     let d = deadline.0.clone();
-    g.raw_set("__expired", lua.create_function(move |_, ()| Ok(thread_cpu() > d.load(Ordering::Relaxed)))?)?;
+    g.raw_set("__expired", lua_fn(&lua, move |_, ()| thread_cpu() > d.load(Ordering::Relaxed))?)?;
     g.raw_set("__commands", lua.create_sequence_from(scriptapi::COMMANDS.iter().map(|c| c.name))?)?;
     drop(g);
     deadline.set(CALL_LIMIT);
     lua.load(PRELUDE).set_name("@prelude.lua").exec()?;
+    add_debug_fns(&lua, q.clone(), crate::luadebug::send)?;
     Ok(lua)
+}
+
+/// 除錯器（debugger.lua）與它的傳輸函式。`send` 送出一個 DAP 訊息（測試用自己的版本）
+fn add_debug_fns(lua: &Lua, q: std::rc::Rc<Queue>, send: impl Fn(&str) -> bool + 'static) -> mlua::Result<()> {
+    let g = lua.globals();
+    g.raw_set("__dbg_send", lua_fn(lua, move |_, v: Value| send(&text(&v)))?)?;
+    let q2 = q.clone();
+    g.raw_set("__dbg_wait", lua_fn(lua, move |_, ()| q2.debug_message(true))?)?;
+    g.raw_set("__dbg_poll", lua_fn(lua, move |_, ()| q.debug_message(false))?)?;
+    g.raw_set("__scripts_dir", scripts_dir().to_string_lossy().as_ref())?;
+    g.raw_set("__prelude_source", PRELUDE)?;
+    drop(g);
+    lua.load(DEBUGGER).set_name("=debugger").exec()
+}
+
+/// io.popen 開啟的程序（腳本執行緒）。重新載入腳本時全部放掉
+struct Pipe {
+    child: std::process::Child,
+    out: Option<std::io::BufReader<std::process::ChildStdout>>,
+    inp: Option<std::process::ChildStdin>,
+}
+
+thread_local! {
+    static PIPES: std::cell::RefCell<(i64, std::collections::HashMap<i64, Pipe>)> = Default::default();
+}
+
+fn with_pipe<R>(id: &Value, f: impl FnOnce(&mut Pipe) -> R) -> Option<R> {
+    let Value::Integer(id) = id else { return None };
+    PIPES.with(|p| p.borrow_mut().1.get_mut(id).map(f))
+}
+
+/// io.popen 的 read：格式同 Lua（"l"、"L"、"a"、"n"、位元組數）；文字模式，\r\n 轉成 \n
+fn pipe_read(l: &Lua, r: &mut std::io::BufReader<std::process::ChildStdout>, fmt: &Value) -> Value {
+    use std::io::{BufRead, Read};
+    let string = |b: Vec<u8>| l.create_string(b).map_or(Value::Nil, Value::String);
+    let count = match fmt {
+        Value::Integer(n) => Some((*n).max(0) as u64),
+        Value::Number(n) => Some(n.max(0.0) as u64),
+        _ => None,
+    };
+    if let Some(n) = count {
+        let mut b = Vec::new();
+        let eof = r.fill_buf().map_or(true, |x| x.is_empty());
+        if eof || r.by_ref().take(n).read_to_end(&mut b).is_err() {
+            return Value::Nil;
+        }
+        return string(b);
+    }
+    let f = text(fmt);
+    match f.trim_start_matches('*').chars().next().unwrap_or('l') {
+        'a' => {
+            let mut b = Vec::new();
+            let _ = r.read_to_end(&mut b);
+            string(crlf_to_lf(&b))
+        }
+        'n' => {
+            let mut tok = Vec::new();
+            while let Ok(buf) = r.fill_buf() {
+                let Some(&c) = buf.first() else { break };
+                if c.is_ascii_whitespace() && !tok.is_empty() {
+                    break;
+                }
+                if !c.is_ascii_whitespace() {
+                    tok.push(c);
+                }
+                r.consume(1);
+            }
+            let t = String::from_utf8_lossy(&tok);
+            t.parse::<i64>().map(Value::Integer).or_else(|_| t.parse::<f64>().map(Value::Number)).unwrap_or(Value::Nil)
+        }
+        c => {
+            let mut b = Vec::new();
+            if r.read_until(b'\n', &mut b).map_or(true, |n| n == 0) {
+                return Value::Nil;
+            }
+            let newline = b.last() == Some(&b'\n');
+            if newline {
+                b.pop();
+                if b.last() == Some(&b'\r') {
+                    b.pop();
+                }
+                if c == 'L' {
+                    b.push(b'\n');
+                }
+            }
+            string(b)
+        }
+    }
+}
+
+fn crlf_to_lf(b: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(b.len());
+    for (i, &c) in b.iter().enumerate() {
+        if !(c == b'\r' && b.get(i + 1) == Some(&b'\n')) {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// run{ wait = true }、os.execute、io.popen 用的程序函式（測試也用真的實作）
 fn add_process_fns(lua: &Lua) -> mlua::Result<()> {
+    use std::process::Stdio;
     let g = lua.globals();
     // run{ ..., wait = true }：在腳本執行緒啟動並等程式結束（等待不耗 CPU，不計入時間上限）。回傳結束代碼，無法啟動時為 nil 與錯誤訊息
     g.raw_set(
         "__spawn",
-        lua.create_function(|_, (pos, console, dir): (Value, Value, Value)| {
+        lua_fn(lua, |_, (pos, console, dir): (Value, Value, Value)| {
             let args = seq_texts(&pos);
             let Some((program, rest)) = args.split_first() else {
-                return Ok((None, Some("run 需要程式名稱".to_string())));
+                return (None, Some("run 需要程式名稱".to_string()));
             };
             let params = rest.iter().map(|a| quote_arg(a)).collect::<Vec<_>>().join(" ");
             let how = if matches!(console, Value::Boolean(true)) { Show::Normal } else { Show::HideConsole };
             match services::start(program, Some(&params), Some(&text(&dir)), None, how, Default::default()) {
-                Ok(s) => Ok((s.wait().map(i64::from), None)),
-                Err(e) => Ok((None, Some(format!("無法執行 {program}：{e}")))),
+                Ok(s) => (s.wait().map(i64::from), None),
+                Err(e) => (None, Some(format!("無法執行 {program}：{e}"))),
             }
         })?,
     )?;
-    // os.execute、io.popen 的替代：經 cmd.exe 執行、不顯示主控台視窗。回傳 (結束代碼, 輸出)，無法啟動時為 (nil, 錯誤訊息)
+    // os.execute：經 cmd.exe 執行、不顯示主控台視窗。回傳結束代碼，無法啟動時為 nil 與錯誤訊息
     g.raw_set(
         "__shell",
-        lua.create_function(|l, (line, capture, dir): (Value, Value, Value)| {
+        lua_fn(lua, |_, (line, dir): (Value, Value)| {
             zing_core::guard::io("Lua 執行命令");
             let mut c = services::shell_command(&text(&line), Some(&text(&dir)));
-            let r = if matches!(capture, Value::Boolean(true)) {
-                c.stderr(std::process::Stdio::null()).output().map(|o| (o.status.code(), Some(o.stdout)))
+            match c.stdout(Stdio::null()).stderr(Stdio::null()).status() {
+                Ok(s) => (s.code().map(i64::from), None),
+                Err(e) => (None, Some(e.to_string())),
+            }
+        })?,
+    )?;
+    // io.popen：mode 為 "r" 時讀取命令的輸出（邊執行邊讀），"w" 時寫入命令的輸入。回傳代號，無法啟動時為 nil 與錯誤訊息
+    g.raw_set(
+        "__popen_open",
+        lua_fn(lua, |_, (line, mode, dir): (Value, Value, Value)| {
+            zing_core::guard::io("Lua 執行命令");
+            let write = text(&mode) == "w";
+            let mut c = services::shell_command(&text(&line), Some(&text(&dir)));
+            c.stderr(Stdio::null());
+            if write {
+                c.stdin(Stdio::piped()).stdout(Stdio::null());
             } else {
-                c.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| (s.code(), None))
+                c.stdout(Stdio::piped());
+            }
+            match c.spawn() {
+                Ok(mut child) => {
+                    let out = child.stdout.take().map(std::io::BufReader::new);
+                    let inp = child.stdin.take();
+                    let id = PIPES.with(|p| {
+                        let mut p = p.borrow_mut();
+                        p.0 += 1;
+                        let id = p.0;
+                        p.1.insert(id, Pipe { child, out, inp });
+                        id
+                    });
+                    (Some(id), None)
+                }
+                Err(e) => (None, Some(e.to_string())),
+            }
+        })?,
+    )?;
+    g.raw_set(
+        "__popen_read",
+        lua_fn(lua, |l, (id, fmt): (Value, Value)| {
+            with_pipe(&id, |p| p.out.as_mut().map_or(Value::Nil, |r| pipe_read(l, r, &fmt))).unwrap_or(Value::Nil)
+        })?,
+    )?;
+    g.raw_set(
+        "__popen_write",
+        lua_fn(lua, |_, (id, data): (Value, Value)| {
+            use std::io::Write;
+            let bytes = match &data {
+                Value::String(s) => s.as_bytes().to_vec(),
+                v => text(v).into_bytes(),
             };
-            Ok(match r {
-                Ok((code, out)) => (code.map(|c| Value::Integer(c.into())), out.and_then(|o| l.create_string(o).ok()).map(Value::String)),
-                Err(e) => (None, l.create_string(e.to_string()).ok().map(Value::String)),
-            })
+            with_pipe(&id, |p| p.inp.as_mut().is_some_and(|w| w.write_all(&bytes).is_ok())).unwrap_or(false)
+        })?,
+    )?;
+    // 關閉：wait 時等命令結束並回傳結束代碼；否則（被回收時）只放掉，不等待
+    g.raw_set(
+        "__popen_close",
+        lua_fn(lua, |_, (id, wait): (Value, Value)| {
+            let Value::Integer(key) = id else { return None };
+            let mut p = PIPES.with(|p| p.borrow_mut().1.remove(&key))?;
+            if !matches!(wait, Value::Boolean(true)) {
+                return None;
+            }
+            drop(p.inp.take());
+            drop(p.out.take());
+            p.child.wait().ok().and_then(|s| s.code()).map(i64::from)
         })?,
     )?;
     Ok(())
 }
 
-fn load(dir: &Path, n: &Notifier, deadline: &Deadline) -> (Option<Lua>, Loaded) {
+fn load(dir: &Path, n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -> (Option<Lua>, Loaded) {
     let mut loaded = Loaded { commands: Vec::new(), on_navigate: false, errors: Vec::new() };
     let _ = std::fs::create_dir_all(dir.join(".zing"));
     write_if_changed(&dir.join(".zing").join("zing.d.lua"), &scriptapi::luals_meta());
     if !dir.join(".luarc.json").exists() {
         let _ = std::fs::write(dir.join(".luarc.json"), scriptapi::LUARC);
     }
-    let lua = match new_lua(n, deadline) {
+    let launch = dir.join(".vscode").join("launch.json");
+    if !launch.exists() {
+        let _ = std::fs::create_dir_all(dir.join(".vscode"));
+        let _ = std::fs::write(launch, scriptapi::LAUNCH_JSON);
+    }
+    let lua = match new_lua(n, deadline, q) {
         Ok(l) => l,
         Err(e) => {
             loaded.errors.push(format!("內建函式庫載入失敗：{e}"));
@@ -562,6 +807,12 @@ impl crate::app::App {
         self.invalidate();
     }
 
+    /// pick_folder()：在 UI 執行緒的模態動作中顯示（見 window.rs 的 run_modal）
+    pub fn open_pick_folder(&mut self, title: String, default: String, reply: SyncSender<Option<String>>) {
+        self.close_palette();
+        self.modal = Some(crate::app::Modal::PickFolder { title, default, reply });
+    }
+
     pub fn paint_ask(&self) {
         let (Some((prompt, _)), Some((card, pr, input))) = (self.ask.as_ref(), self.ask_layout()) else { return };
         let c = &self.theme.color;
@@ -577,20 +828,62 @@ impl crate::app::App {
     }
 }
 
+/// 冒煙測試：下一個資料夾選擇對話方塊直接回答這個路徑（不顯示對話方塊）
+#[cfg(feature = "smoke")]
+pub static TEST_PICK_FOLDER: Mutex<Option<String>> = Mutex::new(None);
+
+/// 選擇資料夾的對話方塊（模態，UI 執行緒）；取消時為 None
+pub fn folder_dialog(owner: windows::Win32::Foundation::HWND, title: &str, default: &str) -> Option<String> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::{
+        FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName,
+        SIGDN_FILESYSPATH,
+    };
+    use windows::core::PCWSTR;
+    use zing_core::text::wide_z;
+    #[cfg(feature = "smoke")]
+    if let Some(p) = TEST_PICK_FOLDER.lock().ok().and_then(|mut t| t.take()) {
+        return Some(p);
+    }
+    unsafe {
+        let d: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let opts = d.GetOptions().unwrap_or_default();
+        let _ = d.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        if !title.is_empty() {
+            let t = wide_z(title);
+            let _ = d.SetTitle(PCWSTR(t.as_ptr()));
+        }
+        if !default.is_empty() {
+            let p = wide_z(default);
+            if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(p.as_ptr()), None) {
+                let _ = d.SetFolder(&item);
+            }
+        }
+        d.Show(Some(owner)).ok()?;
+        let item = d.GetResult().ok()?;
+        let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as _));
+        s
+    }
+}
+
+// 測試在 unwind 下執行，直接操作 Lua 狀態不受 clippy.toml 的限制
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
     fn lua() -> Lua {
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
         let g = lua.globals();
-        for name in ["__invoke", "__msg", "__exec", "__ask", "__log", "__is_dir", "__expired"] {
+        for name in ["__invoke", "__msg", "__exec", "__ask", "__pick_folder", "__log", "__is_dir", "__expired"] {
             g.set(name, lua.create_function(|_, _: mlua::MultiValue| Ok(())).unwrap()).unwrap();
         }
         add_process_fns(&lua).unwrap();
         g.set("__commands", lua.create_sequence_from(scriptapi::COMMANDS.iter().map(|c| c.name)).unwrap()).unwrap();
         drop(g);
-        lua.load(PRELUDE).exec().unwrap();
+        lua.load(PRELUDE).set_name("@prelude.lua").exec().unwrap();
         lua
     }
 
@@ -680,6 +973,130 @@ mod tests {
         assert_eq!(run(&l, "local c, e = run{ '不存在的程式-zing', wait = true }; return tostring(c) .. (e and 'err' or '')"), "nilerr");
     }
 
+    /// io.popen：邊執行邊讀取、各種讀取格式、寫入模式、結束狀態
+    #[test]
+    fn popen_streams() {
+        let _allow = zing_core::guard::allow_io("測試");
+        let l = lua();
+        // 第一行在命令結束（約 2 秒）前就讀得到
+        let t = std::time::Instant::now();
+        let first = run(&l, "pf = io.popen('echo first& ping -n 3 127.0.0.1 >nul& echo second& exit 2'); return pf:read()");
+        assert_eq!(first, "first");
+        assert!(t.elapsed() < std::time::Duration::from_millis(1500), "{:?}", t.elapsed());
+        assert_eq!(run(&l, "local s = pf:read('L'); local ok, kind, code = pf:close(); return s .. tostring(ok) .. kind .. code"), "second\nnilexit2");
+        assert_eq!(run(&l, "local a, b, c = io.popen('echo 12 3.5'):read('n', 'n', 'n'); return a + b .. tostring(c)"), "15.5nil");
+        assert_eq!(run(&l, "local f = io.popen('echo ab& echo cd'); return f:read(1) .. '|' .. f:read('a')"), "a|b\ncd\n");
+        assert_eq!(run(&l, "local f <close> = io.popen('echo x'); return f:read()"), "x");
+        assert_eq!(run(&l, "return select(2, pcall(io.popen, 'echo', 'rw')):match('模式') ~= nil"), "true");
+        // 寫入模式：寫進命令的標準輸入
+        let out = zing_core::testdir::dir().join(format!("zing-popen-{}.txt", std::process::id()));
+        let lua_path = out.display().to_string().replace('\\', "\\\\");
+        let src = format!("local f = io.popen('findstr /r \"^\" > \"{lua_path}\"', 'w'); f:write('甲\\n', 2, '\\n'); return tostring(f:close())");
+        assert_eq!(run(&l, &src), "true");
+        let got = std::fs::read_to_string(&out).unwrap().replace("\r\n", "\n");
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(got, "甲\n2\n");
+    }
+
+    /// 除錯器：以預先排好的 DAP 請求驅動（暫停時依序取用），驗證中斷點、條件、堆疊、變數、求值、單步、錯誤與執行中暫停
+    #[test]
+    fn debugger_session() {
+        let (tx, rx) = channel();
+        let q = std::rc::Rc::new(Queue { rx, pending: Default::default() });
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        // 每次暫停（送出 stopped 事件）時才放入那次要用的請求，執行中的輪詢不會提早取走
+        let batches = std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::<Vec<String>>::new()));
+        let l = lua();
+        let (out, pending, feed) = (sent.clone(), batches.clone(), tx.clone());
+        add_debug_fns(&l, q, move |m| {
+            out.borrow_mut().push(m.to_string());
+            if m.contains(r#""event":"stopped""#)
+                && let Some(batch) = pending.borrow_mut().pop_front()
+            {
+                for r in batch {
+                    feed.send(Job::Debug(r)).unwrap();
+                }
+            }
+            true
+        })
+        .unwrap();
+        let req = |seq: u32, cmd: &str, args: &str| format!(r#"{{"seq":{seq},"type":"request","command":"{cmd}","arguments":{args}}}"#);
+        let file = scripts_dir().join("dbgtest.lua").to_string_lossy().replace('\\', "\\\\");
+        let idle = |m: String| {
+            let m = l.create_string(&m).unwrap();
+            debugger_call(&l, "handle", Value::String(m));
+        };
+        idle(req(1, "initialize", "{}"));
+        idle(req(2, "attach", "{}"));
+        idle(req(3, "setBreakpoints", &format!(r#"{{"source":{{"path":"{file}"}},"breakpoints":[{{"line":4,"condition":"i == 3"}},{{"line":7}}]}}"#)));
+        l.load(
+            "function target(n)\n  local total = 0\n  for i = 1, n do\n    total = total + i\n  end\n  local t = { name = 'zing', list = { 1, 2 } }\n  local r = helper(total, t)\n  r = r + 1\n  return r\nend\nfunction helper(x, t)\n  return x * 2\nend\nfunction boom() error('壞了') end\n",
+        )
+        .set_name("@dbgtest.lua")
+        .exec()
+        .unwrap();
+        // 每次暫停時的請求
+        batches.borrow_mut().extend([
+            vec![
+                req(10, "stackTrace", r#"{"threadId":1}"#),
+                req(11, "scopes", r#"{"frameId":1}"#),
+                req(12, "variables", r#"{"variablesReference":1}"#),
+                req(13, "evaluate", r#"{"expression":"total + i","frameId":1,"context":"watch"}"#),
+                req(14, "continue", "{}"),
+            ],
+            vec![req(20, "stepIn", "{}")],
+            vec![req(21, "stackTrace", r#"{"threadId":1}"#), req(22, "stepOut", "{}")],
+            vec![req(23, "evaluate", r#"{"expression":"r","frameId":1}"#), req(24, "continue", "{}")],
+            vec![req(30, "stackTrace", r#"{"threadId":1}"#), req(31, "continue", "{}")],
+            vec![req(41, "continue", "{}")],
+        ]);
+        assert_eq!(run(&l, "local ok, r = __call(target, 3); return tostring(ok) .. r"), "true13");
+        assert_eq!(run(&l, "local ok, e = __call(boom); return tostring(ok) .. tostring(e:find('壞了') ~= nil)"), "falsetrue");
+        // 執行中收到暫停請求（指令計數鉤子輪詢時處理）
+        tx.send(Job::Debug(req(40, "pause", "{}"))).unwrap();
+        assert_eq!(run(&l, "local ok, r = __call(function() local x = 0 for i = 1, 200000 do x = x + i end return x end); return r"), "20000100000");
+        idle(req(50, "disconnect", "{}"));
+
+        let sent = sent.borrow();
+        // 對某個請求的回應（JSON 欄位順序不固定）
+        let resp = |n: u32| {
+            let (a, b) = (format!(r#""request_seq":{n},"#), format!(r#""request_seq":{n}}}"#));
+            sent.iter().find(|m| m.contains(&a) || m.contains(&b)).cloned().unwrap_or_else(|| panic!("找不到 {n} 的回應：{sent:#?}"))
+        };
+        let has = |m: &str, parts: &[&str]| {
+            for p in parts {
+                assert!(m.contains(p), "{p} 不在 {m}");
+            }
+        };
+        has(&resp(1), &[r#""supportsConditionalBreakpoints":true"#]);
+        has(&resp(3), &[r#""verified":true"#, r#""line":4"#, r#""line":7"#]);
+        let stops: Vec<&String> = sent.iter().filter(|m| m.contains(r#""event":"stopped""#)).collect();
+        let reasons: Vec<&str> = stops
+            .iter()
+            .map(|m| ["breakpoint", "step", "exception", "pause"].into_iter().find(|r| m.contains(&format!(r#""reason":"{r}""#))).unwrap_or("?"))
+            .collect();
+        assert_eq!(reasons, ["breakpoint", "breakpoint", "step", "step", "exception", "pause"], "{stops:#?}");
+        has(stops[4], &["壞了"]);
+        // 條件中斷點只在 i == 3 時停：堆疊頂端是 target 第 4 行
+        has(&resp(10), &[r#""name":"target""#, r#""line":4"#, "dbgtest.lua"]);
+        has(&resp(12), &[r#""name":"i""#, r#""value":"3""#, r#""name":"total""#, r#""name":"n""#]);
+        has(&resp(13), &[r#""result":"6""#]);
+        // 單步進入 helper，再跳出回到 target 的下一行
+        has(&resp(21), &[r#""name":"helper""#, r#""line":12"#]);
+        has(&resp(23), &[r#""result":"12""#]);
+        has(&resp(30), &[r#""name":"boom""#]);
+    }
+
+    #[test]
+    fn debugger_json() {
+        let l = lua();
+        let (_tx, rx) = channel();
+        add_debug_fns(&l, std::rc::Rc::new(Queue { rx, pending: Default::default() }), |_| true).unwrap();
+        let src = r#"local d = __debugger.decode('{"a":[1,2.5,{"b":"\\u4e2d\\ud83d\\ude00\\n"}],"c":null,"d":true,"e":[]}')
+            return d.a[1] .. '|' .. d.a[2] .. '|' .. d.a[3].b .. '|' .. tostring(d.c) .. tostring(d.d) .. #d.e .. '|' .. __debugger.encode({ x = 'a"\n' })"#;
+        assert_eq!(run(&l, src), "1|2.5|中😀\n|niltrue0|{\"x\":\"a\\\"\\n\"}");
+    }
+
     /// examples/scripts/extract.lua：以真的 tar.exe 解壓縮（中文路徑、子資料夾、損壞的檔案）
     #[test]
     fn example_extract_script() {
@@ -704,8 +1121,8 @@ mod tests {
         let g = l.globals();
         g.set("__is_dir", l.create_function(|_, p: String| Ok(Path::new(&p).is_dir())).unwrap()).unwrap();
         g.set("__msg", l.create_function(|l, m: String| l.globals().set("last_msg", m)).unwrap()).unwrap();
-        // ask() 依序回答 __answers 的內容
-        l.load("function __ask() return table.remove(__answers, 1) end").exec().unwrap();
+        // pick_folder()、ask() 依序回答 __answers 的內容
+        l.load("function __ask() return table.remove(__answers, 1) end; __pick_folder = __ask").exec().unwrap();
         l.load(include_str!("../../../examples/scripts/extract.lua")).set_name("@extract.lua").exec().unwrap();
         let sel = ["壓縮 1.zip", "資料.tar.gz", "壞掉.zip", "說明.txt"].map(|n| dir.join(n).to_string_lossy().into_owned());
         let ctx = l.create_table().unwrap();

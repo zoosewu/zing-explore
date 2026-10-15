@@ -1,18 +1,41 @@
 -- zing-explore 內建函式庫：惰性串流、不可變、純函式、組合。說明見 docs/lua.md（由 scriptapi.rs 產生）。
--- 由 Rust 提供：__invoke(名稱, 位置參數, 旗標)、__msg、__exec、__ask、__log、__is_dir、__expired、__spawn、__shell、__commands、__ctx
+-- 由 Rust 提供：__invoke(名稱, 位置參數, 旗標)、__msg、__exec、__ask、__pick_folder、__log、__is_dir、__expired、
+-- __spawn、__shell、__popen_open/read/write/close、__commands、__ctx
 -- Rust 提供的函式不會丟錯；錯誤一律在 Lua 這邊丟出（見 script.rs 開頭）
 
--- CPU 時間上限：每 10000 個指令問一次 Rust，超過時中止。鉤子是每個協程各自設定的，新建的協程也要設
+-- 鉤子：CPU 時間上限（每 10000 個指令問一次 Rust，超過時中止）；除錯器連線時另外處理行事件與執行中收到的請求。
+-- 鉤子是每個協程各自設定的，新建的協程也要設
 local expired, sethook = __expired, debug.sethook
-local function limit()
-  if expired() then error("執行超過 CPU 時間上限，已中止", 2) end
+local dbg = nil        -- debugger.lua（__attach_debugger）
+local mask = ""        -- 除錯器需要時為 "l"（每行觸發）
+local main = coroutine.running()
+local threads = setmetatable({}, { __mode = "k" })
+local function hook(event, line)
+  if event == "count" then
+    if expired() then error("執行超過 CPU 時間上限，已中止", 2) end
+    if dbg then dbg.count() end
+  elseif dbg then
+    dbg.line(line)
+  end
 end
-sethook(limit, "", 10000)
+local function apply(co) sethook(co, hook, mask, 10000) end
+apply(main)
+function __attach_debugger(d) dbg = d end
+function __set_line_hook(on)
+  local m = on and "l" or ""
+  if m == mask then return end
+  mask = m
+  apply(main)
+  for co in pairs(threads) do
+    if coroutine.status(co) ~= "dead" then apply(co) end
+  end
+end
 do
   local create, resume = coroutine.create, coroutine.resume
   coroutine.create = function(f)
     local co = create(f)
-    sethook(co, limit, "", 10000)
+    threads[co] = true
+    apply(co)
     return co
   end
   coroutine.wrap = function(f)
@@ -292,12 +315,17 @@ function focus() return ctx().focus end
 function msg(text) __msg(tostring(text)) end
 function exec(script) __exec(tostring(script)) end
 function ask(prompt, default) return __ask(tostring(prompt), default and tostring(default) or "") end
+function pick_folder(title, default)
+  return __pick_folder(title and tostring(title) or "", default and tostring(default) or "")
+end
 function is_dir(p) return __is_dir(p) end
 
 function log(...)
   local parts = table.pack(...)
   for i = 1, parts.n do parts[i] = tostring(parts[i]) end
-  __log(table.concat(parts, " ", 1, parts.n))
+  local text = table.concat(parts, " ", 1, parts.n)
+  __log(text)
+  if dbg then dbg.output(text) end
 end
 
 -- ---------------------------------------------------------------- 內建命令
@@ -373,68 +401,75 @@ do
   end
 end
 
--- os.execute、io.popen：經 cmd.exe 在目前資料夾執行，不顯示主控台視窗（標準版本會閃出主控台視窗）。
--- io.popen 的讀取模式等命令結束後一次取得全部輸出；寫入模式沿用標準版本
+-- os.execute、io.popen：經 cmd.exe 在目前資料夾執行，不顯示主控台視窗（標準版本會閃出主控台視窗）
 do
-  local shell, popen = __shell, io.popen
+  local shell, open, read, write, close = __shell, __popen_open, __popen_read, __popen_write, __popen_close
   local function status(code)
+    if code == nil then return nil, "exit", -1 end
     if code == 0 then return true, "exit", 0 end
     return nil, "exit", code
   end
   os.execute = function(cmd)
     if cmd == nil then return true end
-    local code, err = shell(tostring(cmd), false, ctx().cwd)
-    if code == nil then return nil, err end
+    local code, err = shell(tostring(cmd), ctx().cwd)
+    if code == nil and err then return nil, err end
     return status(code)
   end
+  -- 讀取模式邊執行邊讀；寫入模式寫進命令的標準輸入。close 時等命令結束並回傳結束狀態
   io.popen = function(cmd, mode)
-    if mode ~= nil and mode ~= "r" then return popen(cmd, mode) end
-    local code, out = shell(tostring(cmd), true, ctx().cwd)
-    if code == nil then return nil, out end
-    out = out:gsub("\r\n", "\n")
-    local pos, f = 1, {}
-    local function read(fmt)
-      if type(fmt) == "number" then
-        if pos > #out then return nil end
-        local r = out:sub(pos, pos + fmt - 1)
-        pos = pos + #r
-        return r
-      end
-      fmt = tostring(fmt or "l"):gsub("^%*", ""):sub(1, 1)
-      if fmt == "a" then
-        local r = out:sub(pos)
-        pos = #out + 1
-        return r
-      end
-      if pos > #out then return nil end
-      if fmt == "n" then
-        local num, after = out:match("^%s*(%S+)()", pos)
-        pos = after or #out + 1
-        return tonumber(num)
-      end
-      local nl = out:find("\n", pos, true)
-      local line = out:sub(pos, nl and (fmt == "L" and nl or nl - 1) or #out)
-      pos = nl and nl + 1 or #out + 1
-      return line
-    end
+    mode = mode or "r"
+    if mode ~= "r" and mode ~= "w" then error('io.popen 的模式只能是 "r" 或 "w"', 2) end
+    local id, err = open(tostring(cmd), mode, ctx().cwd)
+    if not id then return nil, err end
+    local f, closed = {}, false
     function f:read(...)
       local n = select("#", ...)
-      if n <= 1 then return read((...)) end
+      if n == 0 then return read(id, "l") end
       local r = {}
-      for i = 1, n do r[i] = read((select(i, ...))) end
+      for i = 1, n do
+        r[i] = read(id, (select(i, ...)))
+        if r[i] == nil then return table.unpack(r, 1, i) end
+      end
       return table.unpack(r, 1, n)
     end
-    function f:lines(fmt) return function() return read(fmt) end end
-    function f:close() return status(code) end
-    return f
+    function f:lines(...)
+      local fmts = table.pack(...)
+      if fmts.n == 0 then return function() return read(id, "l") end end
+      return function() return f:read(table.unpack(fmts, 1, fmts.n)) end
+    end
+    function f:write(...)
+      for i = 1, select("#", ...) do
+        if not write(id, (select(i, ...))) then return nil, "寫入失敗" end
+      end
+      return f
+    end
+    function f:flush() return f end
+    function f:setvbuf() return true end
+    function f:close()
+      if closed then return nil, "已經關閉" end
+      closed = true
+      return status(close(id, true))
+    end
+    -- 沒有 close 就被回收：放掉程序（不等待）
+    return setmetatable(f, {
+      __name = "FILE*",
+      __close = function() if not closed then f:close() end end,
+      __gc = function() if not closed then closed = true; close(id, false) end end,
+    })
   end
 end
 
 -- ---------------------------------------------------------------- 給 Rust 用
 
 -- 呼叫並附上呼叫堆疊
+-- 除錯器連線時，錯誤發生的當下（堆疊還在）先暫停；呼叫結束時清除單步
 function __call(f, ...)
-  return xpcall(f, debug.traceback, ...)
+  local r = table.pack(xpcall(f, function(e)
+    if dbg then dbg.error(e) end
+    return debug.traceback(e, 2)
+  end, ...))
+  if dbg then dbg.finished() end
+  return table.unpack(r, 1, r.n)
 end
 
 -- REPL：把結果轉成一行文字

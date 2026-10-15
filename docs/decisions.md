@@ -2,6 +2,27 @@
 
 技術取捨的原因，供日後查詢。新的在上面。
 
+## 2026-10-15　Lua 除錯器：DAP 邏輯用 Lua 寫、具名管道、自行打包的 VS Code 擴充功能
+
+**決定**：zing 內建 DAP（Debug Adapter Protocol）除錯器，以 VS Code 附加（attach）。傳輸是 Rust 的具名管道
+（`luadebug.rs`），協定處理、JSON、中斷點、單步、變數、求值都寫在 `debugger.lua`；VS Code 端是 repo 裡的小型擴充功能
+（`tools/vscode-zing-lua`，約 30 行），由 `tools/install-vscode-ext.ps1` 直接打包成 .vsix 安裝。
+
+**原因**：
+- 現成的 Lua 除錯擴充功能（例如 actboy168 的 lua-debug）要注入自己的執行環境、依賴 Lua 的匯出符號；zing 的 Lua 是靜態連結的，
+  沒有符號可用。VS Code 只能透過已註冊的除錯類型連線，所以需要自己的擴充功能。
+- 除錯邏輯用 Lua 寫：`debug.getinfo`／`getlocal`／`sethook` 本來就在 Lua 端，寫在 Rust 要經過 mlua 繞一圈；
+  JSON 也用 Lua 寫，不必為除錯加入 serde_json。執行檔約增加 0.15 MB。
+- 具名管道而不是 TCP：可以用 DACL 限定目前使用者、拒絕遠端連線；TCP 的 localhost 埠同一台電腦的其他使用者也連得到，
+  而除錯器能在 zing 裡執行任意 Lua。
+- 打包 .vsix 不用 vsce：避免要求安裝 Node.js；.vsix 只是 zip 加上兩個 XML 檔。
+
+**代價與處理**：
+- 只支援附加，不支援由 VS Code 啟動 zing；同時只有一個 zing 接受除錯連線（第一個建立管道的）。
+- 每行的鉤子只在連線且有中斷點、單步或暫停請求時開啟，平常只有原本的指令計數鉤子（多一次 Rust 的非阻塞查詢）。
+- 暫停時其他腳本工作排隊，縮圖規則直接回答「沒有」（縮圖執行緒在等）。
+- VS Code 端的整合（按 F5、在編輯器設中斷點）需要手動驗證；冒煙測試以真的管道走完一次連線、中斷點、求值、繼續。
+
 ## 2026-10-15　`run` 預設不顯示主控台視窗
 
 **決定**：`run`（設定檔、命令面板、Lua）執行主控台程式（PE 子系統為主控台、DOS 程式、`.bat`、`.cmd`）時以 CREATE_NO_WINDOW
@@ -37,6 +58,9 @@ Lua 的 `os.execute`、`io.popen` 換成不顯示主控台視窗的版本。開�
 - Rust 提供給 Lua 的函式參數一律收 `Value`、不回傳 `Err`；時間上限用 prelude 裡的 Lua 鉤子（`debug.sethook`，並包裝
   `coroutine.create`／`wrap` 讓協程也受限制）；Rust 端讀寫全域變數只用 `raw_get`／`raw_set`。
 - 冒煙測試涵蓋：錯誤、無窮迴圈、協程裡的無窮迴圈、型別錯誤的參數、全域表設了會報錯的 metatable，並以 release 執行。
+- 規則由工具把關（2026-10-15 補上）：`clippy.toml` 禁止 `create_function`、`set_hook`、會觸發 metamethod 的 `Table` 方法，
+  Rust 函式一律經 `script::lua_fn`（參數型別以 `SafeArgs` 限制為 `Value` 組合）；冒煙測試的 debug build 改用
+  `panic = "abort"` 的 `debug-abort` profile，實測放入違規後 debug 冒煙測試即以 0xC0000409 結束。
 - 腳本可以自己呼叫 `debug.sethook` 拿掉時間上限；腳本與設定檔同等可信，不另外防範。
 
 ## 2026-10-14　預覽處理常式以「沒有擁有者」的頂層視窗承載

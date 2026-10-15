@@ -75,9 +75,14 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   在 prelude 換成不顯示主控台視窗的版本。
 - Lua 腳本（`script.rs`、`prelude.lua`）：
   - 腳本只在腳本執行緒執行；UI 只送工作，腳本要求的動作以訊息送回。每次呼叫都要設定時間上限。
-  - release 是 `panic = "abort"`，Lua 的錯誤不可穿過 Rust 的堆疊框架：Rust 提供給 Lua 的函式參數一律收 `Value`、
-    不回傳 `Err`；不用 mlua 的 `set_hook`（時間上限在 prelude 用 `debug.sethook`）；Rust 端讀寫全域變數只用 `raw_get`／`raw_set`。
-    改動 Lua 邊界後要跑 `pwsh tools/smoke.ps1 -Release`。
+  - release 是 `panic = "abort"`，Lua 的錯誤不可穿過 Rust 的堆疊框架：Rust 提供給 Lua 的函式一律經 `script::lua_fn`
+    （參數只收 `Value`、不回傳錯誤）；不用 mlua 的 `set_hook`（時間上限在 prelude 用 `debug.sethook`）；Rust 端讀寫表格只用
+    `raw_get`／`raw_set`。`clippy.toml` 的 `disallowed-methods` 會擋下違規；冒煙測試的 debug build 用 `debug-abort` profile
+    （同為 abort），違規在 debug 冒煙測試就會當掉。
+  - 除錯器：傳輸在 `luadebug.rs`（具名管道，只允許目前使用者、拒絕遠端），除錯邏輯（DAP、JSON、中斷點、單步、變數）在
+    `debugger.lua`，VS Code 擴充功能在 `tools/vscode-zing-lua`（管道名稱兩邊要一致）。暫停時腳本執行緒只處理除錯訊息，
+    其他工作排隊（`Queue`）、縮圖規則直接回答 None。prelude 的鉤子同時負責時間上限與除錯器，`debugger.lua` 呼叫 `stop`
+    時不可寫成尾呼叫（`return stop(...)`），否則框架層級會錯。
   - API 的說明只寫在 `zing_core::scriptapi`：新增或修改命令、全域函式、prelude 函式時同步更新，再以
     `ZING_UPDATE_DOCS=1 cargo test -p zing-core` 重新產生 `docs/lua.md`（測試會檢查是否最新）；
     `app_commands_match_scriptapi` 測試檢查命令清單與 `App::run` 一致。
@@ -103,7 +108,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 
 - `crates/zing-core`：與 UI 無關、可測試的核心（列舉、排序／篩選、命令語言、快速鍵、主題、設定）。
 - `crates/zing-app`：Win32 視窗、繪製（`gfx`、`view`）、輸入、Shell 整合（`shell`）、背景服務（`services`）、效能模式（`perf`）、
-  索引服務用戶端（`index`）、Lua 腳本（`script`、`prelude.lua`）。
+  索引服務用戶端（`index`）、Lua 腳本（`script`、`prelude.lua`、除錯器 `luadebug`、`debugger.lua`）。
 - `crates/zing-index`：NTFS 索引服務 `zing-index.exe`（Windows 服務）。讀取 MFT 建立資料夾大小索引、跟著變更日誌更新，
   經 named pipe（協定在 `zing_core::indexproto`）回答查詢；MFT 解析與索引資料結構在 `zing_core::ntfs`、`zing_core::volindex`，
   以構造的記錄做單元測試與基準測試（`cargo bench -p zing-core --bench core -- ntfs`）。讀取磁碟區需要系統管理員權限，
