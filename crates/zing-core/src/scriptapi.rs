@@ -26,7 +26,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("nav.open", &[], "開啟焦點項目（資料夾進入、檔案以預設程式開啟）", "nav.open()"),
     spec("nav.refresh", &[], "重新整理", "nav.refresh()"),
     spec("nav.home", &[], "回到使用者資料夾", "nav.home()"),
-    spec("nav.goto", &["path string 路徑"], "切換到資料夾（同 `go`）", "nav.goto(\"C:\\\\Windows\")"),
+    spec("nav.goto", &["path string 路徑"], "切換到資料夾（同 `go`）", "nav[\"goto\"](\"C:\\\\Windows\") -- goto 是 Lua 的保留字，要這樣寫；也可以用 go()"),
     spec("address.edit", &[], "編輯網址列", "address.edit()"),
     spec("palette.open", &[], "開啟命令面板", "palette.open()"),
     spec("jobs.toggle", &[], "顯示／隱藏檔案作業面板", "jobs.toggle()"),
@@ -43,7 +43,10 @@ pub const COMMANDS: &[Spec] = &[
     spec("file.copypath", &[], "複製選取項目的完整路徑", "file.copypath()"),
     spec(
         "copy",
-        &["args {to: string, move?: boolean, [integer]: string} to 為目的資料夾；位置參數為來源（省略時為選取項目）"],
+        &[
+            "args {to: string, move?: boolean, [integer]: string} to 為目的資料夾；位置參數為來源（省略時為選取項目）",
+            "overload fun(sources: string[]|string, opts: {to: string, move?: boolean})",
+        ],
         "複製或移動到指定資料夾（經檔案作業佇列）",
         "copy{ to = \"D:\\\\備份\", move = true }",
     ),
@@ -53,6 +56,7 @@ pub const COMMANDS: &[Spec] = &[
             "program string 程式",
             "... string|{wait?: boolean, console?: boolean} 參數；表格的 wait = true 等程式結束並回傳結束代碼（只在腳本中，等待不計入時間上限），console = true 顯示主控台視窗（互動式終端機）",
             "return integer?, string? 結束代碼（wait 時）；無法啟動時為 nil 與錯誤訊息",
+            "overload fun(args: {[integer]: string, wait?: boolean, console?: boolean}): integer?, string?",
         ],
         "執行程式（在目前資料夾）。主控台程式（含 .bat、.cmd）不顯示主控台視窗，視窗程式照常顯示；設定檔中以 `run --console 程式` 顯示主控台",
         "run(\"code\", cwd())\nlocal code = run{ \"tar\", \"-xf\", \"a.zip\", \"-C\", \"D:\\\\out\", wait = true }\nrun{ \"pwsh\", console = true }",
@@ -114,23 +118,23 @@ pub const GLOBALS: &[Spec] = &[
 
 /// 函數式函式庫：惰性串流、不可變、純函式、組合
 pub const PRELUDE: &[Spec] = &[
-    spec("seq", &["source table|function 清單或迭代函式", "return Seq"], "建立惰性串流：串接的步驟在取值時才逐項計算，不產生中間清單", "seq(sel()):filter(is_image):take(10):list()"),
-    spec("map", &["f fun(x: any): any", "return Stage"], "管線步驟：轉換每一項", "sel() | map(path.name) | list"),
-    spec("filter", &["pred fun(x: any): boolean", "return Stage"], "管線步驟：只留下符合的項目", "sel() | filter(function(p) return path.ext(p) == \"jpg\" end) | list"),
-    spec("take", &["n integer", "return Stage"], "管線步驟：取前 n 項", "sel() | take(3) | list"),
-    spec("skip", &["n integer", "return Stage"], "管線步驟：略過前 n 項", "sel() | skip(1) | list"),
-    spec("take_while", &["pred fun(x: any): boolean", "return Stage"], "管線步驟：取到第一個不符合的為止", "seq({1, 2, 5, 1}) | take_while(function(x) return x < 3 end) | list"),
-    spec("sort_by", &["key fun(x: any): any 排序鍵", "return Stage"], "管線步驟：依鍵排序（需要讀完整個串流）", "sel() | sort_by(path.name) | list"),
-    spec("each", &["f fun(x: any)", "return Stage"], "管線終點：對每一項執行（有副作用的動作放這裡）", "sel() | each(msg)"),
-    spec("reduce", &["f fun(acc: any, x: any): any", "init any", "return Stage"], "管線終點：累積成一個值", "seq({1, 2, 3}) | reduce(function(a, x) return a + x end, 0)"),
-    spec("list", &["s Seq|table", "return table 不可變清單"], "管線終點：取出所有項目成為不可變清單", "sel() | map(path.name) | list"),
-    spec("count", &["s Seq|table", "return integer"], "管線終點：項目數", "sel() | filter(is_dir) | count"),
-    spec("first", &["s Seq|table", "return any"], "管線終點：第一項（沒有時為 nil）", "sel() | first"),
+    spec("seq", &["source table|function 清單或迭代函式", "return Seq"], "建立惰性串流：串接的步驟在取值時才逐項計算，不產生中間清單", "local jpgs = seq(sel()):filter(function(p) return path.ext(p) == \"jpg\" end):take(10):list()"),
+    spec("map", &["f fun(x: any): any", "return Stage"], "管線步驟：轉換每一項", "local names = sel() | map(path.name) | list"),
+    spec("filter", &["pred fun(x: any): boolean", "return Stage"], "管線步驟：只留下符合的項目", "local jpgs = sel() | filter(function(p) return path.ext(p) == \"jpg\" end) | list"),
+    spec("take", &["n integer", "return Stage"], "管線步驟：取前 n 項", "local first3 = sel() | take(3) | list"),
+    spec("skip", &["n integer", "return Stage"], "管線步驟：略過前 n 項", "local rest = sel() | skip(1) | list"),
+    spec("take_while", &["pred fun(x: any): boolean", "return Stage"], "管線步驟：取到第一個不符合的為止", "local small = seq({1, 2, 5, 1}) | take_while(function(x) return x < 3 end) | list"),
+    spec("sort_by", &["key fun(x: any): any 排序鍵", "return Stage"], "管線步驟：依鍵排序（需要讀完整個串流）", "local sorted = sel() | sort_by(path.name) | list"),
+    spec("each", &["f fun(x: any)", "return Stage"], "管線終點：對每一項執行（有副作用的動作放這裡）", "seq(sel()):each(msg) -- 只為了副作用時用方法呼叫：Lua 不允許單獨一行 a | b"),
+    spec("reduce", &["f fun(acc: any, x: any): any", "init any", "return Stage"], "管線終點：累積成一個值", "local sum = seq({1, 2, 3}) | reduce(function(a, x) return a + x end, 0)"),
+    spec("list", &["s Seq|table", "return table 不可變清單"], "管線終點：取出所有項目成為不可變清單", "local names = sel() | map(path.name) | list"),
+    spec("count", &["s Seq|table", "return integer"], "管線終點：項目數", "local dirs = sel() | filter(is_dir) | count"),
+    spec("first", &["s Seq|table", "return any"], "管線終點：第一項（沒有時為 nil）", "local f = sel() | first"),
     spec("compose", &["... function", "return function"], "組合函式（由右到左）：compose(f, g)(x) == f(g(x))", "local stem = compose(string.lower, path.stem)"),
     spec("pipe", &["x any", "... function", "return any"], "把值依序傳過函式（由左到右）：pipe(x, f, g) == g(f(x))", "pipe(focus(), path.name, string.upper)"),
     spec("partial", &["f function", "... any 先套用的參數", "return function"], "固定前幾個參數", "local to_backup = partial(path.join, \"D:\\\\備份\")"),
     spec("freeze", &["t table", "return table"], "回傳不可變的唯讀版本（修改時產生錯誤）", "local cfg = freeze({ dest = \"D:\\\\\" })"),
-    spec("is_dir", &["p string", "return boolean"], "是否為資料夾（讀取檔案系統）", "sel() | filter(is_dir) | list"),
+    spec("is_dir", &["p string", "return boolean"], "是否為資料夾（讀取檔案系統）", "local dirs = sel() | filter(is_dir) | list"),
     spec("path.name", &["p string", "return string"], "檔名（含副檔名）", "path.name(\"C:\\\\a\\\\b.txt\") --> \"b.txt\""),
     spec("path.stem", &["p string", "return string"], "主檔名（不含副檔名）", "path.stem(\"b.tar.gz\") --> \"b.tar\""),
     spec("path.ext", &["p string", "return string"], "副檔名（小寫、不含點；沒有時為空字串）", "path.ext(\"A.JPG\") --> \"jpg\""),
@@ -149,6 +153,49 @@ fn lua_type(sig: &str) -> (&str, &str) {
     sig.split_once(' ').unwrap_or((sig, "any"))
 }
 
+/// 「型別 說明」→ (型別, 說明)。型別裡可以有括號、大括號與「: 」「, 」後的空白
+fn split_type(rest: &str) -> (&str, &str) {
+    let mut depth = 0i32;
+    let mut prev = ' ';
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' | '{' | '<' | '[' => depth += 1,
+            ')' | '}' | '>' | ']' => depth -= 1,
+            ' ' if depth == 0 && prev != ':' && prev != ',' => return (&rest[..i], rest[i + 1..].trim()),
+            _ => {}
+        }
+        prev = c;
+    }
+    (rest, "")
+}
+
+/// 以 sig 組出 LuaLS 的函式型別：fun(a: T, b?: U): R
+fn fun_type(it: &Spec) -> String {
+    let mut params = Vec::new();
+    let mut ret = String::new();
+    for x in it.sig {
+        let (n, rest) = lua_type(x);
+        match n {
+            "return" => ret = format!(": {}", split_type(rest).0),
+            "overload" => {}
+            _ => params.push(format!("{n}: {}", split_type(rest).0)),
+        }
+    }
+    format!("fun({}){ret}", params.join(", "))
+}
+
+/// Lua 的保留字不能用在 `a.名稱`，要寫成 `a["名稱"]`
+fn lua_field(name: &str) -> String {
+    const KEYWORDS: &[&str] = &[
+        "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in", "local", "nil", "not",
+        "or", "repeat", "return", "then", "true", "until", "while",
+    ];
+    match name.split_once('.') {
+        Some((t, f)) if KEYWORDS.contains(&f) => format!("{t}[\"{f}\"]"),
+        _ => name.to_string(),
+    }
+}
+
 /// docs/lua.md 的內容
 pub fn markdown() -> String {
     let mut s = String::new();
@@ -159,16 +206,16 @@ pub fn markdown() -> String {
             let args: Vec<String> = it
                 .sig
                 .iter()
-                .filter(|x| !x.starts_with("return "))
+                .filter(|x| !x.starts_with("return ") && !x.starts_with("overload "))
                 .map(|x| lua_type(x).0.to_string())
                 .collect();
             s.push_str(&format!("\n### `{}({})`\n\n{}\n", it.name, args.join(", "), it.summary));
             for x in it.sig {
                 let (n, rest) = lua_type(x);
-                if n == "return" {
-                    s.push_str(&format!("\n- 回傳：{rest}"));
-                } else {
-                    s.push_str(&format!("\n- `{n}`：{rest}"));
+                match n {
+                    "return" => s.push_str(&format!("\n- 回傳：{rest}")),
+                    "overload" => s.push_str(&format!("\n- 另一種寫法：`{rest}`")),
+                    _ => s.push_str(&format!("\n- `{n}`：{rest}")),
                 }
             }
             if !it.sig.is_empty() {
@@ -183,7 +230,9 @@ pub fn markdown() -> String {
         "函數式函式庫",
         "惰性求值、不可變、純函式、組合。管線以 `|` 串接：`來源 | 步驟 | 步驟 | 終點`；來源可以是清單（如 `sel()`）或 `seq(...)`。\
          步驟（`map`、`filter`…）只描述要做什麼，到終點（`list`、`each`、`reduce`…）才逐項計算。\
-         除了 `each` 與 `is_dir`，這些函式都是純函式；回傳的清單不可修改。",
+         除了 `each` 與 `is_dir`，這些函式都是純函式；回傳的清單不可修改。\
+         管線是運算式，Lua 不允許單獨寫成一行（`sel() | each(f)` 是語法錯誤）：把結果指定給變數，\
+         或只為副作用時用方法呼叫 `seq(sel()):each(f)`。",
         PRELUDE,
     );
     section(&mut s, "事件", "在腳本中定義這些名稱的全域函式即生效。", HOOKS);
@@ -218,9 +267,8 @@ const MD_HEAD: &str = r#"# Lua 腳本
 function sort_photos()
   local dest = ask("目的資料夾", path.join(cwd(), "相片"))
   if not dest then return end
-  sel() | filter(function(p) return path.ext(p) == "jpg" end) | each(function(p)
-    copy{ p, to = dest, move = true }
-  end)
+  local photos = sel() | filter(function(p) return path.ext(p) == "jpg" end) | list
+  copy(photos, { to = dest, move = true })
 end
 ```
 
@@ -235,7 +283,7 @@ end
 
 zing 內建 Lua 除錯器（Debug Adapter Protocol），以 VS Code 連線：
 
-1. 安裝擴充功能：在 zing 的原始碼資料夾執行 `pwsh tools/install-vscode-ext.ps1`，重新載入 VS Code。
+1. 安裝擴充功能：在 zing 的原始碼資料夾執行 `pwsh tools/install-vscode-ext.ps1`（會一起安裝 Lua Language Server），重新載入 VS Code。
 2. 以 VS Code 開啟 `scripts` 資料夾（zing 已寫好 `.vscode\launch.json`），開著 zing 按 F5 附加。
 3. 在腳本設定中斷點，然後在 zing 執行命令：停在中斷點時可以看呼叫堆疊、區域變數、上值、全域變數，
    在「偵錯主控台」或監看式對目前的框架求值，單步執行（不進入、進入、跳出）、繼續或暫停。
@@ -267,27 +315,46 @@ pub fn luals_meta() -> String {
             }
         }
     }
+    let all = || [GLOBALS, PRELUDE, HOOKS, COMMANDS].into_iter().flatten();
+    let doc = |s: &mut String, it: &Spec| {
+        s.push_str(&format!("--- {}\n", it.summary));
+        for line in it.example.lines() {
+            s.push_str(&format!("--- `{line}`\n"));
+        }
+    };
     for t in &tables {
-        s.push_str(&format!("{t} = {t} or {{}}\n"));
+        // 同名的函式（sel()、filter()）：命名空間是可以呼叫的 class
+        if let Some(f) = all().find(|it| it.name == *t) {
+            doc(&mut s, f);
+            s.push_str(&format!("---@class zing.{t}\n---@overload {}\n{t} = {{}}\n\n", fun_type(f)));
+        } else {
+            // 宣告成 class：拼錯的欄位（path.nmae）才會有警告
+            s.push_str(&format!("---@class zing.{t}\n{t} = {{}}\n"));
+        }
     }
     s.push('\n');
-    for group in [GLOBALS, PRELUDE, HOOKS, COMMANDS] {
-        for it in group {
-            s.push_str(&format!("--- {}\n", it.summary));
-            for line in it.example.lines() {
-                s.push_str(&format!("--- `{line}`\n"));
-            }
-            let mut params = Vec::new();
-            for x in it.sig {
-                let (n, rest) = lua_type(x);
-                if n == "return" {
-                    s.push_str(&format!("---@return {rest}\n"));
-                } else {
+    for it in all() {
+        if tables.contains(&it.name) {
+            continue;
+        }
+        doc(&mut s, it);
+        let mut params = Vec::new();
+        for x in it.sig {
+            let (n, rest) = lua_type(x);
+            match n {
+                "return" => s.push_str(&format!("---@return {rest}\n")),
+                "overload" => s.push_str(&format!("---@overload {rest}\n")),
+                _ => {
                     s.push_str(&format!("---@param {n} {rest}\n"));
                     params.push(n.trim_end_matches('?'));
                 }
             }
-            s.push_str(&format!("function {}({}) end\n\n", it.name, params.join(", ")));
+        }
+        let name = lua_field(it.name);
+        if name == it.name {
+            s.push_str(&format!("function {name}({}) end\n\n", params.join(", ")));
+        } else {
+            s.push_str(&format!("{name} = function({}) end\n\n", params.join(", ")));
         }
     }
     s
@@ -306,9 +373,18 @@ pub const LAUNCH_JSON: &str = r#"{
 pub const LUARC: &str = r#"{
   "runtime.version": "Lua 5.4",
   "workspace.library": [".zing"],
-  "diagnostics.globals": []
+  "diagnostics.globals": [],
+  "diagnostics.disable": ["lowercase-global"]
 }
 "#;
+
+/// 舊版 zing 寫的 .luarc.json：內容完全相同（使用者沒改過）時換成新版
+pub const LUARC_OLD: &[&str] = &[r#"{
+  "runtime.version": "Lua 5.4",
+  "workspace.library": [".zing"],
+  "diagnostics.globals": []
+}
+"#];
 
 #[cfg(test)]
 mod tests {
@@ -321,6 +397,13 @@ mod tests {
         if std::env::var_os("ZING_UPDATE_DOCS").is_some() {
             std::fs::write(path, &want).unwrap();
         }
+        // tools/check-lua-api.ps1：匯出定義檔給 Lua Language Server 檢查
+        if let Some(dir) = std::env::var_os("ZING_EXPORT_LUA_META") {
+            let dir = std::path::Path::new(&dir);
+            std::fs::create_dir_all(dir.join(".zing")).unwrap();
+            std::fs::write(dir.join(".zing").join("zing.d.lua"), luals_meta()).unwrap();
+            std::fs::write(dir.join(".luarc.json"), LUARC).unwrap();
+        }
         let have = std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n");
         assert!(have == want, "docs/lua.md 與 scriptapi.rs 不一致：執行 ZING_UPDATE_DOCS=1 cargo test -p zing-core 更新");
     }
@@ -332,7 +415,11 @@ mod tests {
         for group in [GLOBALS, PRELUDE, HOOKS, COMMANDS] {
             for it in group {
                 assert!(names.insert(it.name), "重複：{}", it.name);
-                assert!(meta.contains(&format!("function {}(", it.name)), "{}", it.name);
+                let field = lua_field(it.name);
+                let found = meta.contains(&format!("function {field}("))
+                    || meta.contains(&format!("{field} = function("))
+                    || meta.contains(&format!("---@class zing.{field}\n"));
+                assert!(found, "{}", it.name);
             }
         }
     }

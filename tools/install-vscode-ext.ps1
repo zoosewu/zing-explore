@@ -2,6 +2,7 @@
 .SYNOPSIS
     安裝 zing-explore 的 Lua 除錯擴充功能（tools/vscode-zing-lua）到 VS Code。
     打包成 .vsix（不需要 Node.js 或 vsce）後以 `code --install-extension` 安裝；VS Code 與 VS Code Insiders 有安裝的都會裝。
+    相依的 Lua Language Server（sumneko.lua，自動補全與型別檢查）會一起從擴充功能市集安裝。
     安裝後重新載入 VS Code 視窗，用 VS Code 開啟 zing 旁的 scripts 資料夾，按 F5 即可附加到 zing。
 
 .EXAMPLE

@@ -680,8 +680,11 @@ fn load(dir: &Path, n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -
     let mut loaded = Loaded { commands: Vec::new(), on_navigate: false, errors: Vec::new() };
     let _ = std::fs::create_dir_all(dir.join(".zing"));
     write_if_changed(&dir.join(".zing").join("zing.d.lua"), &scriptapi::luals_meta());
-    if !dir.join(".luarc.json").exists() {
-        let _ = std::fs::write(dir.join(".luarc.json"), scriptapi::LUARC);
+    // 沒有或仍是舊版 zing 寫的（使用者沒改過）時寫入新版
+    let luarc = dir.join(".luarc.json");
+    let current = std::fs::read_to_string(&luarc).ok().map(|s| s.replace("\r\n", "\n"));
+    if current.as_deref().is_none_or(|c| scriptapi::LUARC_OLD.contains(&c)) {
+        let _ = std::fs::write(&luarc, scriptapi::LUARC);
     }
     let launch = dir.join(".vscode").join("launch.json");
     if !launch.exists() {

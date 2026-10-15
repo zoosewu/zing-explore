@@ -18,9 +18,8 @@
 function sort_photos()
   local dest = ask("目的資料夾", path.join(cwd(), "相片"))
   if not dest then return end
-  sel() | filter(function(p) return path.ext(p) == "jpg" end) | each(function(p)
-    copy{ p, to = dest, move = true }
-  end)
+  local photos = sel() | filter(function(p) return path.ext(p) == "jpg" end) | list
+  copy(photos, { to = dest, move = true })
 end
 ```
 
@@ -35,7 +34,7 @@ end
 
 zing 內建 Lua 除錯器（Debug Adapter Protocol），以 VS Code 連線：
 
-1. 安裝擴充功能：在 zing 的原始碼資料夾執行 `pwsh tools/install-vscode-ext.ps1`，重新載入 VS Code。
+1. 安裝擴充功能：在 zing 的原始碼資料夾執行 `pwsh tools/install-vscode-ext.ps1`（會一起安裝 Lua Language Server），重新載入 VS Code。
 2. 以 VS Code 開啟 `scripts` 資料夾（zing 已寫好 `.vscode\launch.json`），開著 zing 按 F5 附加。
 3. 在腳本設定中斷點，然後在 zing 執行命令：停在中斷點時可以看呼叫堆疊、區域變數、上值、全域變數，
    在「偵錯主控台」或監看式對目前的框架求值，單步執行（不進入、進入、跳出）、繼續或暫停。
@@ -145,7 +144,7 @@ log("選取", #sel())
 
 ## 函數式函式庫
 
-惰性求值、不可變、純函式、組合。管線以 `|` 串接：`來源 | 步驟 | 步驟 | 終點`；來源可以是清單（如 `sel()`）或 `seq(...)`。步驟（`map`、`filter`…）只描述要做什麼，到終點（`list`、`each`、`reduce`…）才逐項計算。除了 `each` 與 `is_dir`，這些函式都是純函式；回傳的清單不可修改。
+惰性求值、不可變、純函式、組合。管線以 `|` 串接：`來源 | 步驟 | 步驟 | 終點`；來源可以是清單（如 `sel()`）或 `seq(...)`。步驟（`map`、`filter`…）只描述要做什麼，到終點（`list`、`each`、`reduce`…）才逐項計算。除了 `each` 與 `is_dir`，這些函式都是純函式；回傳的清單不可修改。管線是運算式，Lua 不允許單獨寫成一行（`sel() | each(f)` 是語法錯誤）：把結果指定給變數，或只為副作用時用方法呼叫 `seq(sel()):each(f)`。
 
 ### `seq(source)`
 
@@ -155,7 +154,7 @@ log("選取", #sel())
 - 回傳：Seq
 
 ```lua
-seq(sel()):filter(is_image):take(10):list()
+local jpgs = seq(sel()):filter(function(p) return path.ext(p) == "jpg" end):take(10):list()
 ```
 
 ### `map(f)`
@@ -166,7 +165,7 @@ seq(sel()):filter(is_image):take(10):list()
 - 回傳：Stage
 
 ```lua
-sel() | map(path.name) | list
+local names = sel() | map(path.name) | list
 ```
 
 ### `filter(pred)`
@@ -177,7 +176,7 @@ sel() | map(path.name) | list
 - 回傳：Stage
 
 ```lua
-sel() | filter(function(p) return path.ext(p) == "jpg" end) | list
+local jpgs = sel() | filter(function(p) return path.ext(p) == "jpg" end) | list
 ```
 
 ### `take(n)`
@@ -188,7 +187,7 @@ sel() | filter(function(p) return path.ext(p) == "jpg" end) | list
 - 回傳：Stage
 
 ```lua
-sel() | take(3) | list
+local first3 = sel() | take(3) | list
 ```
 
 ### `skip(n)`
@@ -199,7 +198,7 @@ sel() | take(3) | list
 - 回傳：Stage
 
 ```lua
-sel() | skip(1) | list
+local rest = sel() | skip(1) | list
 ```
 
 ### `take_while(pred)`
@@ -210,7 +209,7 @@ sel() | skip(1) | list
 - 回傳：Stage
 
 ```lua
-seq({1, 2, 5, 1}) | take_while(function(x) return x < 3 end) | list
+local small = seq({1, 2, 5, 1}) | take_while(function(x) return x < 3 end) | list
 ```
 
 ### `sort_by(key)`
@@ -221,7 +220,7 @@ seq({1, 2, 5, 1}) | take_while(function(x) return x < 3 end) | list
 - 回傳：Stage
 
 ```lua
-sel() | sort_by(path.name) | list
+local sorted = sel() | sort_by(path.name) | list
 ```
 
 ### `each(f)`
@@ -232,7 +231,7 @@ sel() | sort_by(path.name) | list
 - 回傳：Stage
 
 ```lua
-sel() | each(msg)
+seq(sel()):each(msg) -- 只為了副作用時用方法呼叫：Lua 不允許單獨一行 a | b
 ```
 
 ### `reduce(f, init)`
@@ -244,7 +243,7 @@ sel() | each(msg)
 - 回傳：Stage
 
 ```lua
-seq({1, 2, 3}) | reduce(function(a, x) return a + x end, 0)
+local sum = seq({1, 2, 3}) | reduce(function(a, x) return a + x end, 0)
 ```
 
 ### `list(s)`
@@ -255,7 +254,7 @@ seq({1, 2, 3}) | reduce(function(a, x) return a + x end, 0)
 - 回傳：table 不可變清單
 
 ```lua
-sel() | map(path.name) | list
+local names = sel() | map(path.name) | list
 ```
 
 ### `count(s)`
@@ -266,7 +265,7 @@ sel() | map(path.name) | list
 - 回傳：integer
 
 ```lua
-sel() | filter(is_dir) | count
+local dirs = sel() | filter(is_dir) | count
 ```
 
 ### `first(s)`
@@ -277,7 +276,7 @@ sel() | filter(is_dir) | count
 - 回傳：any
 
 ```lua
-sel() | first
+local f = sel() | first
 ```
 
 ### `compose(...)`
@@ -334,7 +333,7 @@ local cfg = freeze({ dest = "D:\\" })
 - 回傳：boolean
 
 ```lua
-sel() | filter(is_dir) | list
+local dirs = sel() | filter(is_dir) | list
 ```
 
 ### `path.name(p)`
@@ -483,7 +482,7 @@ nav.home()
 - `path`：string 路徑
 
 ```lua
-nav.goto("C:\\Windows")
+nav["goto"]("C:\\Windows") -- goto 是 Lua 的保留字，要這樣寫；也可以用 go()
 ```
 
 ### `address.edit()`
@@ -605,6 +604,7 @@ file.copypath()
 複製或移動到指定資料夾（經檔案作業佇列）
 
 - `args`：{to: string, move?: boolean, [integer]: string} to 為目的資料夾；位置參數為來源（省略時為選取項目）
+- 另一種寫法：`fun(sources: string[]|string, opts: {to: string, move?: boolean})`
 
 ```lua
 copy{ to = "D:\\備份", move = true }
@@ -617,6 +617,7 @@ copy{ to = "D:\\備份", move = true }
 - `program`：string 程式
 - `...`：string|{wait?: boolean, console?: boolean} 參數；表格的 wait = true 等程式結束並回傳結束代碼（只在腳本中，等待不計入時間上限），console = true 顯示主控台視窗（互動式終端機）
 - 回傳：integer?, string? 結束代碼（wait 時）；無法啟動時為 nil 與錯誤訊息
+- 另一種寫法：`fun(args: {[integer]: string, wait?: boolean, console?: boolean}): integer?, string?`
 
 ```lua
 run("code", cwd())
