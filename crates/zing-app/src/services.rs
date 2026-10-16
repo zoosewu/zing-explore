@@ -43,11 +43,14 @@ pub enum Msg {
     /// 全磁碟搜尋的結果（search.rs）
     SearchResults { generation: u64, result: Result<zing_core::indexproto::Response, zing_core::indexproto::QueryError> },
     DirChanged { tab: TabId, generation: u64 },
-    FileOpDone { dirs: Vec<String>, error: Option<String>, select: Option<Select> },
+    /// `renamed`：成功改名的項目（舊的完整路徑, 新的完整路徑）
+    FileOpDone { dirs: Vec<String>, error: Option<String>, select: Option<Select>, renamed: Option<(String, String)> },
     Status { text: String, error: bool },
     Icon { id: u32, pixels: Option<crate::icons::IconPixels> },
     /// 縮圖（None：沒有縮圖，畫圖示）
     Thumb { id: u32, pixels: Option<crate::icons::IconPixels>, source: crate::thumbs::Source },
+    /// 手動指定（`set`）或移除縮圖完成
+    ThumbCustom { path: String, set: bool, result: Result<(), String> },
     /// 右鍵選單選了「重新命名」
     MenuRename,
     /// 右鍵選單選了程式自訂的項目

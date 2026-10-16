@@ -1350,6 +1350,15 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         let d = d.clone();
         move |_, a| {
             expect("（窗格數, 使用中）", (a.panes.len(), a.active_pane), (2, 1))?;
+            // 窗格變窄時整欄收起（類型欄先收），留下的欄位不縮小
+            for pl in &a.compute_layout().panes {
+                let w: Vec<f32> = pl.cols[1..].iter().map(|(l, r)| r - l).collect();
+                for (i, &x) in w.iter().enumerate() {
+                    if x != 0.0 && (x - a.cols[i]).abs() > 0.5 {
+                        return Err(format!("欄寬 {w:?}，設定 {:?}", a.cols));
+                    }
+                }
+            }
             at(a, &d)
         }
     }));
@@ -1605,6 +1614,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             }
         },
     ));
+    v.push(step("截圖：重新命名", |_| {}, |c, _| screenshot(c, "12-重新命名")));
     v.push(step("命令面板：取消重新命名", |_| palette_key(VK_ESCAPE), |_, a| {
         if a.edit.is_none() { Ok(()) } else { Err("編輯框沒有關閉".into()) }
     }));
@@ -1695,7 +1705,12 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             },
             |_, a| {
                 let j = last_job(a).ok_or("沒有工作")?;
-                if j.fraction > 0.02 && j.fraction < 0.9 { Ok(()) } else { Err(format!("進度 {:.2}", j.fraction)) }
+                if !(j.fraction > 0.02 && j.fraction < 0.9) {
+                    return Err(format!("進度 {:.2}", j.fraction));
+                }
+                // 另一條執行緒算出來源的總大小後，以進度換算速度
+                expect("總大小", j.total, Some(BIG_BYTES))?;
+                if j.speed().is_some_and(|v| v > 0.0) { Ok(()) } else { Err("沒有速度".into()) }
             },
         )
         .slow(),
@@ -1747,6 +1762,54 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("截圖：命令面板（置中）", |_| {}, |c, _| screenshot(c, "05-命令面板-置中")));
     v.push(step(
         "命令面板：關閉並還原設定",
+        |_| {
+            palette_key(VK_ESCAPE);
+            with_app(|a| a.config.palette.position = zing_core::config::PalettePosition::Top);
+        },
+        |_, a| palette_closed(a),
+    ));
+    // position = middle：整個面板永遠置中，輸入框（子視窗）跟著移動
+    let centered = |a: &App| -> Result<f32, String> {
+        let lay = a.palette_layout().ok_or("沒有版面")?;
+        let (_, h) = a.gfx.size();
+        let (top_gap, bottom_gap) = (lay.card.t, h - lay.card.b);
+        if (top_gap - bottom_gap).abs() > 2.0 {
+            return Err(format!("上方留白 {top_gap:.0}，下方 {bottom_gap:.0}"));
+        }
+        // 輸入框子視窗與面板的輸入區對齊
+        let hwnd = a.edit.as_ref().ok_or("沒有輸入框")?.hwnd;
+        let mut wr = windows::Win32::Foundation::RECT::default();
+        let mut pt = windows::Win32::Foundation::POINT::default();
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut wr);
+            pt.y = (wr.top + wr.bottom) / 2;
+            let _ = windows::Win32::Graphics::Gdi::ScreenToClient(a.hwnd, &mut pt);
+        }
+        let cy = (lay.input.t + lay.input.b) / 2.0 * a.gfx.scale();
+        if (pt.y as f32 - cy).abs() > 2.0 {
+            return Err(format!("輸入框中心 {}，輸入區中心 {cy:.0}", pt.y));
+        }
+        Ok(lay.input.t)
+    };
+    v.push(step(
+        "命令面板：position = middle 時整個面板置中",
+        |c| {
+            with_app(|a| a.config.palette.position = zing_core::config::PalettePosition::Middle);
+            key(c, "cs", letter('p'));
+        },
+        move |c, a| {
+            palette_open(a)?;
+            let t = centered(a)?;
+            c.notes.push(("palette_middle_t", t.to_string()));
+            Ok(())
+        },
+    ));
+    v.push(step("命令面板：篩選後仍置中（輸入框跟著移動）", |_| palette_type("重新整理"), move |c, a| {
+        let t = centered(a)?;
+        if c.note("palette_middle_t") == Some(t.to_string().as_str()) { Err("輸入框沒有移動".into()) } else { Ok(()) }
+    }));
+    v.push(step(
+        "命令面板：關閉並還原設定（middle）",
         |_| {
             palette_key(VK_ESCAPE);
             with_app(|a| a.config.palette.position = zing_core::config::PalettePosition::Top);
@@ -1930,6 +1993,137 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
     ));
 
+    // 收合中的節點不在資料夾監看裡：改名後要丟掉預先載入的舊名稱；我的最愛跟著改
+    let renamed_b = path::join(&d, "資料夾B改");
+    v.push(step(
+        "樹狀列：改名資料夾後收合中的節點與我的最愛更新",
+        {
+            let dir_b = dir_b.clone();
+            move |_| {
+                with_app(|a| {
+                    a.exec(&format!("favorites.add --path=\"{dir_b}\""));
+                    a.submit_op(crate::shell::FileOp::Rename { path: dir_b.clone(), new_name: "資料夾B改".into() });
+                });
+            }
+        },
+        {
+            let (d, renamed_b) = (d.clone(), renamed_b.clone());
+            move |_, a| {
+                let i = a.tree.find(&d).ok_or("找不到節點")?;
+                let names = a.tree.nodes[i].prefetched.as_ref().map(|c| c.names.clone()).unwrap_or_default();
+                if !names.iter().any(|n| n == "資料夾B改") || names.iter().any(|n| n == "資料夾B") {
+                    return Err(format!("預先載入的子資料夾：{names:?}"));
+                }
+                expect("我的最愛", a.favorites.contains(&renamed_b), true)
+            }
+        },
+    ));
+    v.push(step(
+        "樹狀列：改回原名（清掉我的最愛）",
+        {
+            let renamed_b = renamed_b.clone();
+            move |_| {
+                with_app(|a| {
+                    a.submit_op(crate::shell::FileOp::Rename { path: renamed_b.clone(), new_name: "資料夾B".into() });
+                });
+            }
+        },
+        {
+            let dir_b = dir_b.clone();
+            move |_, a| {
+                if !exists(&dir_b) || !a.favorites.contains(&dir_b) {
+                    return Err("沒有改回".into());
+                }
+                Ok(())
+            }
+        },
+    ));
+    v.push(step(
+        "樹狀列：移除測試用的我的最愛",
+        {
+            let dir_b = dir_b.clone();
+            move |_| {
+                with_app(|a| a.exec(&format!("favorites.remove --path=\"{dir_b}\"")));
+            }
+        },
+        {
+            let dir_b = dir_b.clone();
+            move |_, a| expect("我的最愛", a.favorites.contains(&dir_b), false)
+        },
+    ));
+
+    // ------------------------------------------------ 我的最愛的順序
+    let fav_order = |a: &App| -> Vec<String> {
+        a.tree.nodes.iter().filter(|n| n.kind == crate::model::NodeKind::Favorite).map(|n| n.name.clone()).collect()
+    };
+    v.push(step(
+        "我的最愛：加入兩個資料夾",
+        {
+            let (dir_a, dir_b) = (dir_a.clone(), dir_b.clone());
+            move |_| {
+                with_app(|a| {
+                    a.exec(&format!("favorites.add --path=\"{dir_a}\""));
+                    a.exec(&format!("favorites.add --path=\"{dir_b}\""));
+                });
+            }
+        },
+        // 重建樹狀列後要再展開到目前資料夾（完成時焦點會移到它）
+        move |_, a| {
+            let names = fav_order(a);
+            expect("順序", &names[names.len() - 2..], &["資料夾A".to_string(), "資料夾B".to_string()][..])?;
+            expect("展開到目前資料夾", a.tree.reveal.is_none(), true)
+        },
+    ));
+    v.push(step(
+        "我的最愛：樹狀列 Ctrl+↑ 上移",
+        {
+            let dir_b = dir_b.clone();
+            move |c| {
+                with_app(|a| {
+                    a.focus = Focus::Tree;
+                    let k = a.tree.nodes.iter().position(|n| n.kind == crate::model::NodeKind::Favorite && n.path == dir_b);
+                    a.tree.focus = k.unwrap_or(0);
+                });
+                key(c, "c", VIRTUAL_KEY(0x26));
+            }
+        },
+        move |_, a| {
+            let names = fav_order(a);
+            expect("順序", &names[names.len() - 2..], &["資料夾B".to_string(), "資料夾A".to_string()][..])?;
+            expect("焦點", a.tree.nodes.get(a.tree.focus).map(|n| n.name.as_str()), Some("資料夾B"))?;
+            expect("記在工作階段", a.session_snapshot().favorite_order.len(), a.favorites.len())
+        },
+    ));
+    v.push(step(
+        "我的最愛：favorites.move 下移",
+        {
+            let dir_b = dir_b.clone();
+            move |_| {
+                with_app(|a| a.exec(&format!("favorites.move --by=1 --path=\"{dir_b}\"")));
+            }
+        },
+        move |_, a| {
+            let names = fav_order(a);
+            expect("順序", &names[names.len() - 2..], &["資料夾A".to_string(), "資料夾B".to_string()][..])
+        },
+    ));
+    v.push(step(
+        "我的最愛：移除測試項目",
+        {
+            let (dir_a, dir_b) = (dir_a.clone(), dir_b.clone());
+            move |_| {
+                with_app(|a| {
+                    a.exec(&format!("favorites.remove --path=\"{dir_a}\""));
+                    a.exec(&format!("favorites.remove --path=\"{dir_b}\""));
+                    a.focus = Focus::List;
+                });
+            }
+        },
+        move |_, a| {
+            if fav_order(a).iter().any(|n| n.starts_with("資料夾")) { Err("沒有移除".into()) } else { Ok(()) }
+        },
+    ));
+
     // ------------------------------------------------ 每個資料夾的檢視設定
     v.push(step(
         "資料夾檢視：Ctrl+2 依修改日期排序後進入資料夾A（資料夾A 用預設排序）",
@@ -2067,6 +2261,70 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         )
         .slow(),
     );
+    v.push(
+        step(
+            "縮圖：手動指定（thumb.set，優先於其他來源）",
+            {
+                let d = d.clone();
+                move |_| {
+                    let (file, img) = (path::join(&d, "自訂縮圖.zt"), path::join(&d, "自訂縮圖來源.png"));
+                    let _ = harness_io(|| std::fs::write(&file, b"x"));
+                    let _ = harness_io(|| std::fs::write(&img, TINY_PNG));
+                    with_app(|a| a.exec(&format!("thumb.set --path=\"{file}\" --image=\"{img}\"")));
+                }
+            },
+            {
+                let d = d.clone();
+                move |_, a| {
+                    let px = crate::thumbs::bucket(a.tab().thumb as f32 * a.gfx.scale());
+                    let p = path::join(&d, "自訂縮圖.zt");
+                    expect("來源", a.thumbs.source(&p, px), Some(crate::thumbs::Source::Custom))?;
+                    expect("右鍵選單可移除", a.thumbs.is_custom(&p), true)
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "縮圖：改名後手動縮圖仍有效（以檔案 ID 為鍵）",
+            {
+                let d = d.clone();
+                move |_| {
+                    let (old, new) = (path::join(&d, "自訂縮圖.zt"), path::join(&d, "自訂縮圖2.zt"));
+                    let _ = harness_io(|| std::fs::rename(&old, &new));
+                }
+            },
+            {
+                let d = d.clone();
+                move |_, a| {
+                    let px = crate::thumbs::bucket(a.tab().thumb as f32 * a.gfx.scale());
+                    expect("來源", a.thumbs.source(&path::join(&d, "自訂縮圖2.zt"), px), Some(crate::thumbs::Source::Custom))
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "縮圖：移除手動縮圖（thumb.clear）",
+            {
+                let d = d.clone();
+                move |_| {
+                    with_app(|a| a.exec(&format!("thumb.clear --path=\"{}\"", path::join(&d, "自訂縮圖2.zt"))));
+                }
+            },
+            {
+                let d = d.clone();
+                move |_, a| {
+                    let px = crate::thumbs::bucket(a.tab().thumb as f32 * a.gfx.scale());
+                    let src = a.thumbs.source(&path::join(&d, "自訂縮圖2.zt"), px);
+                    if src.is_some() && src != Some(crate::thumbs::Source::Custom) { Ok(()) } else { Err(format!("來源 {src:?}")) }
+                }
+            },
+        )
+        .slow(),
+    );
     v.push(step(
         "縮圖：Ctrl+Shift+1 回到清單（並清掉測試檔案）",
         {
@@ -2078,11 +2336,14 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                 });
                 // 清理在背景做：測試資料夾可能在慢的硬碟上，刪除會被卡頓監看當成 UI 停頓
                 // （隔離模式下外部命令的縮圖放在暫存資料夾）
-                let cache = crate::thumbs::cache_dir(true);
+                let (cache, custom) = (crate::thumbs::cache_dir(true), crate::thumbs::custom_dir(true));
                 std::thread::spawn(move || {
                     let _ = std::fs::remove_dir_all(path::join(&d, "封面測試"));
                     let _ = std::fs::remove_file(path::join(&d, "外部產生.zt"));
+                    let _ = std::fs::remove_file(path::join(&d, "自訂縮圖2.zt"));
+                    let _ = std::fs::remove_file(path::join(&d, "自訂縮圖來源.png"));
                     let _ = std::fs::remove_dir_all(cache);
+                    let _ = std::fs::remove_dir_all(custom);
                 });
                 key(c, "cs", VIRTUAL_KEY(b'1' as u16));
             }
@@ -2636,6 +2897,32 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         )
         .slow(),
     );
+    // 命令腳本的 {ask:提示}：同樣的提示只問一次，回答後才執行；Esc 取消整個腳本
+    v.push(step("命令：{ask:} 先詢問", |_| exec("filter.set --text={ask:篩選}*\nfilter.set --text={ask:篩選}"), |_, a| {
+        expect("提示", a.ask.as_ref().map(|q| q.0.as_str()), Some("篩選"))?;
+        expect("還沒執行", a.tab().filter.as_str(), "")
+    }));
+    v.push(step(
+        "命令：{ask:} 回答後執行",
+        |_| {
+            if let Some(e) = edit_hwnd() {
+                set_text(e, "報告");
+                key_to(e, "", VK_RETURN);
+            }
+        },
+        |_, a| {
+            expect("輸入框", a.ask.is_none(), true)?;
+            expect("篩選", a.tab().filter.as_str(), "報告")
+        },
+    ));
+    v.push(step("命令：{ask:} Esc 取消", |_| {
+        exec("filter.set --text={ask:另一個}");
+        palette_key(VK_ESCAPE);
+    }, |_, a| {
+        expect("輸入框", a.ask.is_none(), true)?;
+        expect("篩選不變", a.tab().filter.as_str(), "報告")
+    }));
+    v.push(step("命令：清除篩選", |_| exec("filter.clear"), |_, a| expect("篩選", a.tab().filter.as_str(), "")));
     v.push(
         step("Lua：錯誤顯示在狀態列並記錄行號", |_| exec("smoke_err"), |_, a| {
             let st = a.status.as_ref().map(|s| (s.0.clone(), s.1));

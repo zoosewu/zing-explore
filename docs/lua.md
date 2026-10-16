@@ -138,7 +138,7 @@ local text = clipboard()
 
 執行命令腳本
 
-- `script`：string 命令腳本（同設定檔的 cmd，可用 {sel} 等變數）
+- `script`：string 命令腳本（同設定檔的 cmd，可用 {sel}、{ask:提示} 等變數）
 
 ```lua
 exec("copy {sel} --to={dest}")
@@ -775,6 +775,26 @@ view.sort{ by = "size", desc = true }
 view.foldersizes()
 ```
 
+### `thumb.set(opts?)`
+
+手動指定縮圖（圖片複製到 %LOCALAPPDATA%，以 NTFS 檔案 ID 為鍵，改名或移動後仍有效）
+
+- `opts?`：{path?: string, image?: string} path 預設為目前的項目；沒有 image 時開啟選擇圖片的對話框
+
+```lua
+thumb.set{ image = "D:\\封面.jpg" }
+```
+
+### `thumb.clear(opts?)`
+
+移除手動指定的縮圖
+
+- `opts?`：{path?: string}
+
+```lua
+thumb.clear()
+```
+
 ### `view.preview()`
 
 顯示／隱藏預覽窗格
@@ -871,6 +891,16 @@ favorites.add()
 
 ```lua
 favorites.remove{ path = cwd() }
+```
+
+### `favorites.move(opts)`
+
+調整我的最愛的順序（記在 session.toml，設定檔中的也能調整）
+
+- `opts`：{by: integer, path?: string} by 為移動的位置數（負數往上）；path 預設為樹狀列焦點所在的我的最愛，否則目前資料夾
+
+```lua
+favorites.move{ by = -1 }
 ```
 
 ### `theme.set(name)`

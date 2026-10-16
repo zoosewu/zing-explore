@@ -285,13 +285,7 @@ impl App {
         pl.list = Rect::new(area.l, pl.header.b, area.r, area.b);
         pl.scrollbar = Rect::new(area.r - SCROLLBAR_W, pl.list.t, area.r, pl.list.b);
         let content_r = area.r - SCROLLBAR_W;
-        // 窗格太窄時，修改日期、類型、大小欄依比例縮小，名稱欄至少保留 NAME_MIN；
-        // 縮到放不下內容的欄位直接隱藏
-        const NAME_MIN: f32 = 180.0;
-        let fixed: f32 = self.cols.iter().sum();
-        let room = (content_r - area.l - NAME_MIN).max(0.0);
-        let k = if fixed > room { room / fixed } else { 1.0 };
-        let [cm, ct, cs] = self.cols.map(|c| if c * k < 40.0 { 0.0 } else { c * k });
+        let [cm, ct, cs] = fit_columns(content_r - area.l, self.cols);
         let size_l = content_r - cs;
         let type_l = size_l - ct;
         let name_r = type_l - cm;
@@ -420,6 +414,14 @@ impl App {
 
     // ------------------------------------------------------------ 繪製
 
+    /// 重新命名框的外框（輸入框本身是子視窗，畫在框線裡）
+    fn paint_rename_frame(&self) {
+        let Some(f) = self.edit.as_ref().and_then(|e| e.frame) else { return };
+        let (c, g) = (&self.theme.color, &self.gfx);
+        g.fill_round(f, self.theme.metrics.radius, c.background);
+        g.stroke_round(f, self.theme.metrics.radius, c.accent, 1.0);
+    }
+
     pub fn paint(&mut self) {
         let lay = self.compute_layout();
         let c = self.theme.color.clone();
@@ -459,6 +461,7 @@ impl App {
             self.gfx.drop_thumbs(&evicted);
         }
         self.thumbs.end_frame();
+        self.paint_rename_frame();
         self.paint_jobs(&lay);
         self.paint_status(&lay);
         self.paint_palette();
@@ -959,4 +962,37 @@ impl App {
 
 pub fn clamp_col(w: f32) -> f32 {
     w.clamp(COL_MIN, 600.0)
+}
+
+/// 名稱欄至少保留的寬度
+const NAME_MIN: f32 = 180.0;
+
+/// 窗格太窄時整欄收起（不縮小欄寬，日期、大小不會被截斷）：先收起類型，再收起大小，最後是修改日期。
+/// `widths` 為修改日期、類型、大小的寬度，`avail` 為清單的內容寬度；收起的欄位寬度為 0，多出的空間給名稱欄
+fn fit_columns(avail: f32, widths: [f32; 3]) -> [f32; 3] {
+    let mut w = widths;
+    let room = (avail - NAME_MIN).max(0.0);
+    for i in [1, 2, 0] {
+        if w.iter().sum::<f32>() <= room {
+            break;
+        }
+        w[i] = 0.0;
+    }
+    w
+}
+
+#[cfg(test)]
+mod column_tests {
+    use super::*;
+
+    #[test]
+    fn narrow_panes_drop_whole_columns() {
+        let cols = [150.0, 120.0, 90.0];
+        assert_eq!(fit_columns(1000.0, cols), cols);
+        // 依序收起類型、大小、修改日期
+        assert_eq!(fit_columns(180.0 + 300.0, cols), [150.0, 0.0, 90.0]);
+        assert_eq!(fit_columns(180.0 + 200.0, cols), [150.0, 0.0, 0.0]);
+        assert_eq!(fit_columns(180.0 + 100.0, cols), [0.0, 0.0, 0.0]);
+        assert_eq!(fit_columns(50.0, cols), [0.0, 0.0, 0.0]);
+    }
 }

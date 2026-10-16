@@ -839,9 +839,9 @@ impl crate::app::App {
         Some((card, prompt, input))
     }
 
-    pub fn open_ask(&mut self, prompt: String, default: String, reply: SyncSender<Option<String>>) {
+    pub fn open_ask(&mut self, prompt: String, default: String, reply: crate::app::AskReply) {
         // 前一個沒回答的視為取消
-        if let Some((_, old)) = self.ask.take() {
+        if let Some((_, crate::app::AskReply::Script(old))) = self.ask.take() {
             let _ = old.send(None);
         }
         self.close_palette();
@@ -857,10 +857,20 @@ impl crate::app::App {
         if let Some(e) = self.edit.take() {
             crate::window::destroy_edit(e.hwnd);
         }
-        if let Some((_, reply)) = self.ask.take() {
-            let _ = reply.send(if commit { text } else { None });
-        }
         crate::window::focus_main(self.hwnd);
+        match self.ask.take() {
+            Some((_, crate::app::AskReply::Script(reply))) => {
+                let _ = reply.send(if commit { text } else { None });
+            }
+            Some((prompt, crate::app::AskReply::Command { script, mut answers })) => match (commit, text) {
+                (true, Some(t)) => {
+                    answers.push((prompt, t));
+                    self.exec_with(&script, answers);
+                }
+                _ => self.set_status("已取消命令", false),
+            },
+            None => {}
+        }
         self.invalidate();
     }
 

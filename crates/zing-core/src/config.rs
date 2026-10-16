@@ -28,8 +28,10 @@ pub enum PalettePosition {
     /// 視窗上方
     #[default]
     Top,
-    /// 視窗正中央
+    /// 視窗正中央（以清單填滿時的高度置中，結果變少時輸入框不動）
     Center,
+    /// 整個面板永遠置中（結果變少時輸入框跟著移動）
+    Middle,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -195,6 +197,8 @@ mod tests {
         let (cfg, warn) = Config::load(Some("[palette]\nposition = \"center\"\n"));
         assert!(warn.is_empty(), "{warn:?}");
         assert_eq!(cfg.palette.position, PalettePosition::Center);
+        let (cfg, _) = Config::load(Some("[palette]\nposition = \"middle\"\n"));
+        assert_eq!(cfg.palette.position, PalettePosition::Middle);
         let (_, warn) = Config::load(Some("[palette]\nposition = \"left\"\n"));
         assert_eq!(warn.len(), 1, "不合法的值要警告並改用預設");
     }

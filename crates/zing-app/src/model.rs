@@ -335,6 +335,22 @@ pub enum Expand {
     Load(String),
 }
 
+/// `p` 是 `old` 本身或在它底下時，換成 `new` 開頭的路徑（資料夾改名）
+pub fn replace_prefix(p: &str, old: &str, new: &str) -> Option<String> {
+    if p.eq_ignore_ascii_case(old) {
+        return Some(new.to_string());
+    }
+    let head = p.get(..old.len())?;
+    let rest = p[old.len()..].strip_prefix('\\')?;
+    head.eq_ignore_ascii_case(old).then(|| path::join(new, rest))
+}
+
+/// 依 `order` 排列我的最愛（不分大小寫）；不在 `order` 中的維持原本的相對順序，排在後面
+pub fn order_favorites(favorites: &mut [String], order: &[String]) {
+    let rank = |f: &String| order.iter().position(|o| o.eq_ignore_ascii_case(f)).unwrap_or(usize::MAX);
+    favorites.sort_by_key(rank);
+}
+
 /// 預先載入的內容超過這個時間就在展開後重新確認
 const PREFETCH_FRESH: Duration = Duration::from_secs(3);
 
@@ -394,6 +410,30 @@ impl Tree {
     fn subtree_end(&self, i: usize) -> usize {
         let d = self.nodes[i].depth;
         self.nodes[i + 1..].iter().position(|n| n.depth <= d).map_or(self.nodes.len(), |p| i + 1 + p)
+    }
+
+    /// 依 `favorites` 的順序重新排列我的最愛的節點（連同展開的子樹），焦點跟著原本的節點
+    pub fn reorder_favorites(&mut self, favorites: &[String]) {
+        let Some(root) = self.nodes.iter().position(|n| n.kind == NodeKind::FavRoot) else { return };
+        let (start, end) = (root + 1, self.subtree_end(root));
+        let depth = self.nodes[root].depth + 1;
+        let mut groups: Vec<Vec<(usize, Node)>> = Vec::new();
+        for (k, n) in self.nodes.drain(start..end).enumerate() {
+            match groups.last_mut() {
+                Some(g) if n.depth > depth => g.push((start + k, n)),
+                _ => groups.push(vec![(start + k, n)]),
+            }
+        }
+        groups.sort_by_key(|g| favorites.iter().position(|f| f.eq_ignore_ascii_case(&g[0].1.path)).unwrap_or(usize::MAX));
+        let old_focus = self.focus;
+        let mut moved = Vec::with_capacity(end - start);
+        for (at, (orig, n)) in (start..).zip(groups.into_iter().flatten()) {
+            if orig == old_focus {
+                self.focus = at;
+            }
+            moved.push(n);
+        }
+        self.nodes.splice(start..start, moved);
     }
 
     pub fn collapse(&mut self, i: usize) {
@@ -491,6 +531,16 @@ impl Tree {
                     n.probe = Probe::Done;
                 }
                 None => n.probe = Probe::Skipped,
+            }
+        }
+    }
+
+    /// 資料夾的子資料夾改變了（檔案作業）：收合中的節點丟掉預先載入的內容，看得到時重新確認
+    pub fn invalidate(&mut self, path_: &str) {
+        for n in &mut self.nodes {
+            if !n.expanded && n.path.eq_ignore_ascii_case(path_) && n.probe == Probe::Done {
+                n.probe = Probe::Idle;
+                n.prefetched = None;
             }
         }
     }
@@ -710,6 +760,35 @@ mod tests {
         let tree = Tree::build(&[], &drives);
         let c = tree.find("C:\\").unwrap();
         (tree, c)
+    }
+
+    #[test]
+    fn tree_reorder_favorites() {
+        let favs: Vec<String> = ["C:\\a", "C:\\b"].map(String::from).to_vec();
+        let mut t = Tree::build(&favs, &Listing::default());
+        // 展開第一個我的最愛（含一個子節點），焦點在第二個
+        t.nodes.insert(2, folder_node("C:\\a\\x", "x".into(), 2, NodeKind::Folder));
+        t.nodes[1].expanded = true;
+        t.focus = 3;
+        t.reorder_favorites(&["C:\\b".into(), "C:\\a".into()]);
+        let paths: Vec<&str> = t.nodes[..5].iter().map(|n| n.path.as_str()).collect();
+        assert_eq!(paths, ["", "C:\\b", "C:\\a", "C:\\a\\x", ""]);
+        assert_eq!(t.focus, 1);
+    }
+
+    #[test]
+    fn rename_prefix() {
+        assert_eq!(replace_prefix(r"E:\a\B", r"e:\a\b", r"E:\a\c").as_deref(), Some(r"E:\a\c"));
+        assert_eq!(replace_prefix(r"E:\a\b\x\y", r"E:\a\b", r"E:\a\c").as_deref(), Some(r"E:\a\c\x\y"));
+        assert_eq!(replace_prefix(r"E:\a\bb", r"E:\a\b", r"E:\a\c"), None);
+        assert_eq!(replace_prefix(r"E:\a", r"E:\a\b", r"E:\a\c"), None);
+    }
+
+    #[test]
+    fn favorites_order() {
+        let mut f: Vec<String> = ["C:\\a", "D:\\b", "E:\\c", "F:\\d"].map(String::from).to_vec();
+        order_favorites(&mut f, &["e:\\C".into(), "x:\\gone".into(), "C:\\a".into()]);
+        assert_eq!(f, ["E:\\c", "C:\\a", "D:\\b", "F:\\d"]);
     }
 
     #[test]

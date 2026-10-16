@@ -8,7 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_NEXT, VK_PRIOR, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 
-use crate::app::{App, Focus, MENU_FAV_ADD, Modal, Press};
+use crate::app::{App, Focus, MENU_FAV_ADD, MENU_FAV_DOWN, MENU_FAV_UP, Modal, Press};
 use crate::model::NodeKind;
 use crate::view::{COLUMN_KEYS, Hit, clamp_col};
 
@@ -300,10 +300,19 @@ impl App {
                         }
                     }
                     NodeKind::Pc => {}
-                    _ => {
+                    kind => {
                         let target = n.path.clone();
                         let folder = path::parent(&target).unwrap_or_default();
-                        let extras = self.folder_extras(&target);
+                        let mut extras = self.folder_extras(&target);
+                        if kind == NodeKind::Favorite {
+                            let k = self.favorites.iter().position(|f| f.eq_ignore_ascii_case(&target)).unwrap_or(0);
+                            if k > 0 {
+                                extras.push((MENU_FAV_UP, "我的最愛中上移".into()));
+                            }
+                            if k + 1 < self.favorites.len() {
+                                extras.push((MENU_FAV_DOWN, "我的最愛中下移".into()));
+                            }
+                        }
                         self.show_context_menu(vec![target.clone()], folder, screen, extras, target);
                     }
                 }
@@ -424,7 +433,7 @@ impl App {
 
         match self.focus {
             Focus::List => self.list_key(vk, mods),
-            Focus::Tree => self.tree_key(vk),
+            Focus::Tree => self.tree_key(vk, mods),
         }
     }
 
@@ -478,12 +487,23 @@ impl App {
         true
     }
 
-    fn tree_key(&mut self, vk: u16) -> bool {
+    fn tree_key(&mut self, vk: u16, mods: Mods) -> bool {
         let n = self.tree.nodes.len();
         if n == 0 {
             return false;
         }
         let i = self.tree.focus.min(n - 1);
+        // Ctrl+↑／↓：調整我的最愛的順序
+        if mods.ctrl && (vk == VK_UP.0 || vk == VK_DOWN.0) {
+            if self.tree.nodes[i].kind != NodeKind::Favorite {
+                return false;
+            }
+            let p = self.tree.nodes[i].path.clone();
+            if let Err(e) = self.move_favorite(&p, if vk == VK_UP.0 { -1 } else { 1 }) {
+                self.set_status(e, true);
+            }
+            return true;
+        }
         match vk {
             v if v == VK_UP.0 => self.tree.focus = i.saturating_sub(1),
             v if v == VK_DOWN.0 => self.tree.focus = (i + 1).min(n - 1),

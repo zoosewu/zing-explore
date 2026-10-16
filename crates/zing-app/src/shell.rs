@@ -118,8 +118,12 @@ pub struct FileOps {
 }
 
 impl FileOps {
-    pub fn new(n: Notifier) -> Self {
-        Self { queue: spawn_worker("zing-fileops", n.clone()), quick: spawn_worker("zing-fileops-quick", n), next_id: 1 }
+    pub fn new(n: Notifier, use_index: bool) -> Self {
+        Self {
+            queue: spawn_worker("zing-fileops", n.clone(), use_index),
+            quick: spawn_worker("zing-fileops-quick", n, use_index),
+            next_id: 1,
+        }
     }
 
     /// 送出作業。耗時的作業回傳工作編號與控制旗標，交給作業佇列介面顯示
@@ -136,7 +140,7 @@ impl FileOps {
     }
 }
 
-fn spawn_worker(name: &str, n: Notifier) -> Sender<Queued> {
+fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
     let (tx, rx) = channel::<Queued>();
     std::thread::Builder::new()
         .name(name.into())
@@ -153,10 +157,21 @@ fn spawn_worker(name: &str, n: Notifier) -> Sender<Queued> {
                     continue;
                 }
                 let (dirs, select) = affected(&op);
+                let rename = match &op {
+                    FileOp::Rename { path: p, new_name } => path::parent(p).map(|d| (p.clone(), path::join(&d, new_name))),
+                    _ => None,
+                };
                 let sink: Option<IFileOperationProgressSink> =
                     job.as_ref().map(|(id, ctl)| Progress::new(*id, ctl.clone(), n.clone()).into());
-                if let Some((id, _)) = &job {
+                if let Some((id, ctl)) = &job {
                     n.send(Msg::Job { id: *id, event: JobEvent::Running });
+                    // 複製（及跨磁碟區的移動）另外計算總大小，介面才能換算速度；同一磁碟區的移動只是改名
+                    if let FileOp::Transfer { sources, dest, mov } = &op {
+                        let sources: Vec<String> = sources.iter().filter(|s| !*mov || !same_volume(s, dest)).cloned().collect();
+                        if !sources.is_empty() {
+                            spawn_total(*id, ctl.clone(), sources, n.clone(), use_index);
+                        }
+                    }
                 }
                 let result = perform(n.hwnd(), op, sink.as_ref());
                 // 使用者取消時 Shell 回傳的錯誤碼不一定（ERROR_CANCELLED、E_ABORT、COPYENGINE_E_USER_CANCELLED）
@@ -171,13 +186,55 @@ fn spawn_worker(name: &str, n: Notifier) -> Sender<Queued> {
                 if let Some((id, _)) = &job {
                     n.send(Msg::Job { id: *id, event: JobEvent::Finished { error: error.clone(), cancelled } });
                 }
+                let renamed = rename.filter(|_| error.is_none() && !cancelled);
                 // 作業佇列介面會顯示錯誤，狀態列不再重複
                 let error = if job.is_some() { None } else { error };
-                n.send(Msg::FileOpDone { dirs, error, select });
+                n.send(Msg::FileOpDone { dirs, error, select, renamed });
             }
         })
         .expect("無法建立檔案作業執行緒");
     tx
+}
+
+/// 兩個路徑在同一個磁碟區（磁碟代號或 `\\伺服器\共用`）
+fn same_volume(a: &str, b: &str) -> bool {
+    fn volume(p: &str) -> String {
+        if let Some(rest) = p.strip_prefix(r"\\") {
+            let mut parts = rest.splitn(3, '\\');
+            let (server, share) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            return format!(r"\\{server}\{share}").to_lowercase();
+        }
+        p.chars().take(2).collect::<String>().to_lowercase()
+    }
+    volume(a) == volume(b)
+}
+
+/// 計算複製來源的總大小，完成後送出 `JobEvent::Total`（取消時不送）。資料夾優先問索引服務，否則逐資料夾加總
+fn spawn_total(id: JobId, ctl: Arc<JobCtl>, sources: Vec<String>, n: Notifier, use_index: bool) {
+    let _ = std::thread::Builder::new().name("zing-job-total".into()).spawn(move || {
+        zing_core::guard::io("計算複製來源的大小");
+        let mut bytes = 0u64;
+        for s in &sources {
+            bytes += match std::fs::symlink_metadata(s) {
+                Ok(m) if m.is_dir() => {
+                    let indexed = if use_index { crate::index::folder_bytes(s) } else { None };
+                    match indexed {
+                        Some(b) => b,
+                        None => match zing_core::dirsize::dir_size(s, &ctl.cancel, Duration::from_secs(3600), |_| {}) {
+                            Some(d) => d.bytes,
+                            None => return,
+                        },
+                    }
+                }
+                Ok(m) => m.len(),
+                Err(_) => 0,
+            };
+            if ctl.cancel.load(Ordering::Relaxed) {
+                return;
+            }
+        }
+        n.send(Msg::Job { id, event: JobEvent::Total { bytes } });
+    });
 }
 
 // ---------------------------------------------------------------- 進度、暫停、取消

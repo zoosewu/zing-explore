@@ -15,7 +15,7 @@ favorites = []
 tree = "left"
 
 [palette]
-# 命令面板（Ctrl+Shift+P）的位置：top（視窗上方）| center（視窗正中央）
+# 命令面板（Ctrl+Shift+P）的位置：top（視窗上方）| center（視窗正中央，輸入框固定）| middle（整個面板永遠置中）
 position = "top"
 
 # 外部命令縮圖產生器（可多個，先符合的優先，優先於 Windows 的縮圖）。{in} 來源檔、{out} 輸出的 PNG、{size} 邊長。

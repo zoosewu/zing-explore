@@ -18,6 +18,14 @@ use crate::model::Children;
 use crate::services::{Msg, Pool};
 use crate::sizes::{SizeInfo, SizeState, key};
 
+/// 從索引取得資料夾的總大小（位元組）；服務不可用、沒有索引或無權列出時回傳 None
+pub fn folder_bytes(path: &str) -> Option<u64> {
+    match indexproto::query(&Request::Children { path: path.into(), since: 0 }) {
+        Ok(Response::Children { totals, .. }) => Some(totals.bytes),
+        _ => None,
+    }
+}
+
 /// 從索引取得子資料夾（樹狀列用）；服務不可用時回傳 None
 pub fn subdirs(path: &str, show_hidden: bool) -> Option<Children> {
     let Ok(Response::Children { children, .. }) = indexproto::query(&Request::Children { path: path.into(), since: 0 })

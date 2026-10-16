@@ -331,8 +331,38 @@ fn create_edit(app: &mut App, rect: crate::gfx::Rect, text: &str, sel_end: usize
     };
     if let Some(hwnd) = make_edit(app, rect, text, sel_end, data) {
         focus_edit(hwnd);
-        app.edit = Some(Edit { hwnd, kind });
+        app.edit = Some(Edit { hwnd, kind, frame: None, fit: None });
     }
+}
+
+/// 重新命名框的框線與輸入框之間的距離（DIP）：框線 1 + 內距 3，文字對齊清單中名稱的位置
+const RENAME_PAD: f32 = 4.0;
+
+/// 重新命名框的寬度：文字寬度加上游標的空間，介於 `min_w` 與右緣 `max_r` 之間
+fn rename_frame(app: &App, frame: crate::gfx::Rect, max_r: f32, text: &str) -> crate::gfx::Rect {
+    let w = app.gfx.measure(text, crate::gfx::Font::Text) + 2.0 * RENAME_PAD + 24.0;
+    let min_w = 80.0f32.min(max_r - frame.l);
+    crate::gfx::Rect::new(frame.l, frame.t, (frame.l + w.max(min_w)).min(max_r), frame.b)
+}
+
+/// 重新命名框的內容改變：調整寬度（只在框寬跟著文字時）
+pub fn rename_text_changed(app: &mut App, text: &str) {
+    let Some((hwnd, frame, max_r)) = app.edit.as_ref().and_then(|e| Some((e.hwnd, e.frame?, e.fit?))) else { return };
+    let f = rename_frame(app, frame, max_r, text);
+    if f.r == frame.r {
+        return;
+    }
+    let s = app.gfx.scale();
+    unsafe {
+        let mut wr = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut wr);
+        let w = ((f.r - f.l - 2.0 * RENAME_PAD + 3.0) * s).round() as i32;
+        let _ = SetWindowPos(hwnd, None, 0, 0, w, wr.bottom - wr.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if let Some(e) = app.edit.as_mut() {
+        e.frame = Some(f);
+    }
+    app.invalidate();
 }
 
 /// 批次重新命名的輸入框（不佔用 `app.edit`）
@@ -346,11 +376,30 @@ pub fn focus_edit(hwnd: HWND) {
     }
 }
 
-fn make_edit(app: &App, rect: crate::gfx::Rect, text: &str, sel_end: usize, data: usize) -> Option<HWND> {
+/// 輸入框子視窗的實際位置（像素）：高度依字型，垂直置中於 `rect`（DIP）
+fn edit_geometry(app: &App, rect: crate::gfx::Rect) -> (i32, i32, i32, i32) {
     let s = app.gfx.scale();
-    let font_px = app.theme.font.size * s;
-    let h = (font_px * 1.45).round();
+    let h = (app.theme.font.size * s * 1.45).round();
     let cy = (rect.t + rect.b) / 2.0 * s;
+    ((rect.l * s).round() as i32, (cy - h / 2.0).round() as i32, (rect.w() * s).round() as i32, h as i32)
+}
+
+/// 移動輸入框（位置沒變就不動）
+pub fn move_edit(app: &App, hwnd: HWND, rect: crate::gfx::Rect) {
+    let (x, y, w, h) = edit_geometry(app, rect);
+    unsafe {
+        let mut wr = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut wr);
+        let mut pt = POINT { x: wr.left, y: wr.top };
+        let _ = ScreenToClient(app.hwnd, &mut pt);
+        if (pt.x, pt.y, wr.right - wr.left, wr.bottom - wr.top) != (x, y, w, h) {
+            let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+}
+
+fn make_edit(app: &App, rect: crate::gfx::Rect, text: &str, sel_end: usize, data: usize) -> Option<HWND> {
+    let (x, y, w, h) = edit_geometry(app, rect);
     let text_w = wide_z(text);
     let hwnd = unsafe {
         CreateWindowExW(
@@ -358,10 +407,10 @@ fn make_edit(app: &App, rect: crate::gfx::Rect, text: &str, sel_end: usize, data
             w!("EDIT"),
             PCWSTR(text_w.as_ptr()),
             WS_CHILD | WS_VISIBLE | WINDOW_STYLE(0x80), // ES_AUTOHSCROLL
-            (rect.l * s).round() as i32,
-            (cy - h / 2.0).round() as i32,
-            (rect.w() * s).round() as i32,
-            h as i32,
+            x,
+            y,
+            w,
+            h,
             Some(app.hwnd),
             None,
             GetModuleHandleW(None).ok().map(|m| m.into()),
@@ -385,27 +434,35 @@ pub fn begin_rename(app: &mut App, tab: TabId, full: String) {
     let Some(pl) = app.layout.panes.get(p) else { return };
     let t = app.panes[p].tab();
     let rh = app.row_h();
-    let rect = match app.grid(p, pl.list) {
-        // 縮圖：編輯框蓋在檔名第一行
+    let name = path::file_name(&full).to_string();
+    // 框線：縮圖時蓋在檔名第一行（寬度固定，檔名置中）；清單時從名稱的位置開始、寬度跟著文字
+    let (frame, fit) = match app.grid(p, pl.list) {
         Some(g) => {
             let c = g.caption(g.cell(t.focus));
             let (l, top) = (pl.list.l + c.x, pl.list.t + c.y - t.scroll);
-            crate::gfx::Rect::new(l, top, l + c.w, top + rh)
+            (crate::gfx::Rect::new(l, top, l + c.w, top + rh), None)
         }
         None => {
             let y = pl.list.t + t.focus as f32 * rh - t.scroll;
             let (nl, nr) = pl.cols[0];
-            crate::gfx::Rect::new(nl + 32.0, y, nr - 4.0, y + rh)
+            let f = crate::gfx::Rect::new(nl + 36.0 - RENAME_PAD, y + 1.0, nr - 4.0, y + rh - 1.0);
+            (rename_frame(app, f, f.r, &name), Some(f.r))
         }
     };
-    let name = path::file_name(&full).to_string();
     let is_dir = t.focused_entry().is_some_and(|e| t.listing.entries[e].is_dir());
     // 預設只選取主檔名，不含副檔名
     let sel_end = match name.rfind('.') {
         Some(k) if k > 0 && !is_dir => name[..k].encode_utf16().count(),
         _ => name.encode_utf16().count(),
     };
-    create_edit(app, rect, &name, sel_end, EditKind::Rename { tab, path: full });
+    // 輸入框在框線內；右邊多留一點，文字不會被框線蓋住
+    let inner = crate::gfx::Rect::new(frame.l + RENAME_PAD, frame.t + 1.0, frame.r - RENAME_PAD + 3.0, frame.b - 1.0);
+    create_edit(app, inner, &name, sel_end, EditKind::Rename { tab, path: full });
+    if let Some(e) = app.edit.as_mut() {
+        e.frame = Some(frame);
+        e.fit = fit;
+    }
+    app.invalidate();
 }
 
 pub fn begin_address_edit(app: &mut App) {
@@ -605,6 +662,11 @@ fn run_modal(hwnd: HWND, modal: Modal) {
         }
         Modal::PickFolder { title, default, reply } => {
             let _ = reply.send(crate::script::folder_dialog(hwnd, &title, &default));
+        }
+        Modal::PickThumb { path } => {
+            if let Some(img) = crate::thumbs::image_dialog(hwnd) {
+                with_app(|a| a.thumbs.set_custom(path, Some(img)));
+            }
         }
         Modal::ConfirmThemeOverwrite { name, text } => {
             let msg = wide_z(&format!("已有名為「{name}」的主題，要覆蓋嗎？"));
@@ -915,10 +977,20 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             if with_app(|a| a.batch_text_changed(edit, text)) == Some(true) {
                 return Some(LRESULT(0));
             }
-            let is_palette = with_app(|a| a.edit.as_ref().is_some_and(|e| e.hwnd == edit && matches!(e.kind, EditKind::Palette)));
-            if is_palette == Some(true) {
-                let text = edit_text(edit);
-                with_app(|a| a.palette_query(text));
+            let kind = with_app(|a| {
+                a.edit.as_ref().filter(|e| e.hwnd == edit).map(|e| (matches!(e.kind, EditKind::Palette), matches!(e.kind, EditKind::Rename { .. })))
+            })
+            .flatten();
+            match kind {
+                Some((true, _)) => {
+                    let text = edit_text(edit);
+                    with_app(|a| a.palette_query(text));
+                }
+                Some((_, true)) => {
+                    let text = edit_text(edit);
+                    with_app(|a| rename_text_changed(a, &text));
+                }
+                _ => {}
             }
             Some(LRESULT(0))
         }

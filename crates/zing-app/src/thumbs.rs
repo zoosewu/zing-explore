@@ -5,6 +5,8 @@
 //! - 本機檔案由兩條背景執行緒處理；網路磁碟、光碟另有一條，一次只取一張，不拖慢本機。
 //! - 結果放在記憶體（上限 64 MB，最久沒用的先丟）；外部命令產生的 PNG 另存在磁碟快取，
 //!   以「路徑、修改時間、大小、邊長、命令」判斷是否需要重做（啟動程序太慢，不能每次重跑）。
+//! - 手動指定的縮圖（右鍵「設定縮圖…」）優先於其他來源：圖片複製到 `custom_dir()`，檔名是項目的
+//!   「磁碟區序號-NTFS 檔案 ID」，改名或在同一磁碟區內移動後仍有效。沒有任何手動縮圖時不必開檔取得 ID。
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -49,6 +51,8 @@ pub enum Source {
     Command,
     /// Lua 腳本的 thumbnail() 指定的圖片
     Script,
+    /// 使用者手動指定（thumb.set）
+    Custom,
 }
 
 pub fn bucket(px: f32) -> u32 {
@@ -105,6 +109,9 @@ struct Shared {
     thumbnailers: Mutex<Arc<Vec<Thumbnailer>>>,
     cache_dir: PathBuf,
     pruned: std::sync::Once,
+    custom_dir: PathBuf,
+    /// 手動指定的縮圖：檔案鍵 → 圖片；第一次用到時列舉 `custom_dir` 載入
+    custom: Mutex<Option<HashMap<String, PathBuf>>>,
 }
 
 #[derive(Default)]
@@ -129,13 +136,15 @@ pub struct Thumbs {
 
 impl Thumbs {
     /// `cache_dir`：外部命令產生的 PNG 放在哪裡（隔離模式用暫存資料夾）
-    pub fn new(notifier: Notifier, cache_dir: PathBuf) -> Self {
+    pub fn new(notifier: Notifier, cache_dir: PathBuf, custom_dir: PathBuf) -> Self {
         let shared = Arc::new(Shared {
             local: Queue::new(),
             slow: Queue::new(),
             thumbnailers: Mutex::new(Arc::new(Vec::new())),
             cache_dir,
             pruned: std::sync::Once::new(),
+            custom_dir,
+            custom: Mutex::new(None),
         });
         Thumbs { inner: RefCell::default(), shared, notifier, started: std::cell::Cell::new(false) }
     }
@@ -240,6 +249,40 @@ impl Thumbs {
         }
     }
 
+    /// 手動指定 `path` 的縮圖（`image` 為 None 時移除）。在背景複製圖片，完成後送出 `Msg::ThumbCustom`
+    pub fn set_custom(&self, path: String, image: Option<String>) {
+        let (shared, n) = (self.shared.clone(), self.notifier.clone());
+        let _ = std::thread::Builder::new().name("zing-thumb-custom".into()).spawn(move || {
+            let result = write_custom(&shared, &path, image.as_deref());
+            n.send(Msg::ThumbCustom { path, set: image.is_some(), result });
+        });
+    }
+
+    /// 丟掉 `path` 已取得的縮圖（所有大小），下次繪製時重新取得
+    pub fn forget(&self, path: &str) {
+        let mut inner = self.inner.borrow_mut();
+        let lower = path.to_lowercase();
+        let ids: Vec<u32> = inner.ids.iter().filter(|((p, _), _)| *p == lower).map(|(_, &id)| id).collect();
+        for id in ids {
+            if let Some((slot, key)) = inner.slots.remove(&id) {
+                inner.ids.remove(&key);
+                if let Slot::Ready { pixels, .. } = slot {
+                    inner.bytes -= pixels.bgra.len();
+                }
+                inner.evicted.push(id);
+            }
+        }
+    }
+
+    /// 目前顯示的是手動指定的縮圖（右鍵選單決定是否提供「移除自訂縮圖」）
+    pub fn is_custom(&self, path: &str) -> bool {
+        let inner = self.inner.borrow();
+        let lower = path.to_lowercase();
+        inner.ids.iter().any(|((p, _), id)| {
+            *p == lower && matches!(inner.slots.get(id), Some((Slot::Ready { source: Source::Custom, .. }, _)))
+        })
+    }
+
     pub fn take_evicted(&self) -> Vec<u32> {
         std::mem::take(&mut self.inner.borrow_mut().evicted)
     }
@@ -312,6 +355,11 @@ fn is_slow_path(p: &str) -> bool {
 
 fn produce(shared: &Shared, job: &Job) -> (Option<IconPixels>, Source) {
     zing_core::guard::io("讀取縮圖");
+    if let Some(img) = custom_image(shared, &job.path)
+        && let Some(p) = shell_image(&img.to_string_lossy(), job.px)
+    {
+        return (Some(p), Source::Custom);
+    }
     if let Some(img) = crate::script::thumbnail_rule(&job.path)
         && let Some(p) = shell_image(&img, job.px)
     {
@@ -337,6 +385,102 @@ fn produce(shared: &Shared, job: &Job) -> (Option<IconPixels>, Source) {
         }
     }
     (shell_image(&job.path, job.px), Source::Shell)
+}
+
+/// 項目的鍵：「磁碟區序號-NTFS 檔案 ID」（改名、同一磁碟區內移動後不變）；不支援檔案 ID 的檔案系統為 None
+fn file_key(p: &str) -> Option<String> {
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FileIdInfo, GetFileInformationByHandleEx, OPEN_EXISTING,
+    };
+    let w = wide_z(&path::long_form(p));
+    unsafe {
+        let h = CreateFileW(
+            PCWSTR(w.as_ptr()),
+            FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+        .ok()?;
+        let mut info = FILE_ID_INFO::default();
+        let ok = GetFileInformationByHandleEx(h, FileIdInfo, &mut info as *mut _ as *mut _, size_of::<FILE_ID_INFO>() as u32);
+        let _ = CloseHandle(h);
+        ok.ok()?;
+        let id: String = info.FileId.Identifier.iter().rev().map(|b| format!("{b:02x}")).collect();
+        Some(format!("{:016x}-{id}", info.VolumeSerialNumber))
+    }
+}
+
+/// 載入（第一次）並鎖住手動縮圖的對照表
+fn custom_map(shared: &Shared) -> std::sync::MutexGuard<'_, Option<HashMap<String, PathBuf>>> {
+    let mut g = shared.custom.lock().unwrap();
+    if g.is_none() {
+        let mut map = HashMap::new();
+        let never = std::sync::atomic::AtomicBool::new(false);
+        let dir = shared.custom_dir.to_string_lossy().to_string();
+        if let Ok(l) = zing_core::enumerate::enumerate(&dir, false, &never, |_| {}) {
+            for i in 0..l.len() {
+                let name = l.name_string(i);
+                if let Some((key, _)) = name.rsplit_once('.') {
+                    map.insert(key.to_string(), shared.custom_dir.join(&name));
+                }
+            }
+        }
+        *g = Some(map);
+    }
+    g
+}
+
+fn custom_image(shared: &Shared, p: &str) -> Option<PathBuf> {
+    // 沒有任何手動縮圖時不開檔
+    if custom_map(shared).as_ref().is_none_or(HashMap::is_empty) {
+        return None;
+    }
+    let key = file_key(p)?;
+    custom_map(shared).as_ref()?.get(&key).cloned()
+}
+
+/// 複製圖片成為 `p` 的手動縮圖（`image` 為 None 時移除）
+fn write_custom(shared: &Shared, p: &str, image: Option<&str>) -> Result<(), String> {
+    zing_core::guard::io("設定縮圖");
+    let key = file_key(p).ok_or("無法取得檔案 ID（只支援 NTFS 等有檔案 ID 的磁碟）")?;
+    let mut map = custom_map(shared);
+    let map = map.get_or_insert_with(HashMap::new);
+    if let Some(old) = map.remove(&key) {
+        let _ = std::fs::remove_file(old);
+    }
+    let Some(image) = image else { return Ok(()) };
+    let ext = std::path::Path::new(image).extension().map_or("img".into(), |e| e.to_string_lossy().to_lowercase());
+    std::fs::create_dir_all(&shared.custom_dir).map_err(|e| e.to_string())?;
+    let dest = shared.custom_dir.join(format!("{key}.{ext}"));
+    std::fs::copy(path::long_form(image), &dest).map_err(|e| format!("無法複製圖片：{e}"))?;
+    map.insert(key, dest);
+    Ok(())
+}
+
+/// 選擇圖片的對話框（模態，UI 執行緒）
+pub fn image_dialog(owner: windows::Win32::Foundation::HWND) -> Option<String> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
+    use windows::core::w;
+    unsafe {
+        let d: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let filters = [
+            COMDLG_FILTERSPEC { pszName: w!("圖片"), pszSpec: w!("*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.ico;*.tif;*.tiff;*.heic") },
+            COMDLG_FILTERSPEC { pszName: w!("所有檔案"), pszSpec: w!("*.*") },
+        ];
+        let _ = d.SetFileTypes(&filters);
+        let _ = d.SetTitle(w!("選擇縮圖圖片"));
+        d.Show(Some(owner)).ok()?;
+        let p = d.GetResult().ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as _));
+        s
+    }
 }
 
 /// Windows 的縮圖（沒有縮圖處理常式時是大圖示），轉成預乘 alpha 的 BGRA
@@ -466,6 +610,18 @@ pub fn cache_dir(isolated: bool) -> PathBuf {
         .map_or_else(std::env::temp_dir, PathBuf::from)
         .join("zing-explore")
         .join("thumbs")
+}
+
+/// 手動指定的縮圖放在哪裡：%LOCALAPPDATA%\zing-explore\custom-thumbs（鍵是這台電腦的檔案 ID，不放在程式旁）；
+/// 隔離模式用測試資料夾
+pub fn custom_dir(isolated: bool) -> PathBuf {
+    if isolated {
+        return zing_core::testdir::dir().join(format!("zing-custom-thumbs-{}", std::process::id()));
+    }
+    std::env::var_os("LOCALAPPDATA")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("zing-explore")
+        .join("custom-thumbs")
 }
 
 #[cfg(test)]

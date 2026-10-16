@@ -107,6 +107,8 @@ pub struct Session {
     pub columns: Option<[f32; 3]>,
     /// 用 Ctrl+D 加入的我的最愛（設定檔中的我的最愛另外合併）
     pub favorites: Vec<String>,
+    /// 我的最愛的顯示順序（含設定檔中的）；調整過順序才有，不在其中的排在後面
+    pub favorite_order: Vec<String>,
     /// 命令面板最近執行的命令（最新在前）
     pub palette_recent: Vec<String>,
 }
@@ -124,6 +126,7 @@ impl Default for Session {
             preview_width: None,
             columns: None,
             favorites: Vec::new(),
+            favorite_order: Vec::new(),
             palette_recent: Vec::new(),
         }
     }

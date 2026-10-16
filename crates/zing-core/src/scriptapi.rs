@@ -76,6 +76,13 @@ pub const COMMANDS: &[Spec] = &[
     spec("tree.toggle", &[], "顯示／隱藏樹狀列", "tree.toggle()"),
     spec("view.sort", &["opts {by: \"name\"|\"modified\"|\"type\"|\"size\", asc?: boolean, desc?: boolean}"], "排序", "view.sort{ by = \"size\", desc = true }"),
     spec("view.foldersizes", &[], "計算資料夾大小", "view.foldersizes()"),
+    spec(
+        "thumb.set",
+        &["opts? {path?: string, image?: string} path 預設為目前的項目；沒有 image 時開啟選擇圖片的對話框"],
+        "手動指定縮圖（圖片複製到 %LOCALAPPDATA%，以 NTFS 檔案 ID 為鍵，改名或移動後仍有效）",
+        "thumb.set{ image = \"D:\\\\封面.jpg\" }",
+    ),
+    spec("thumb.clear", &["opts? {path?: string}"], "移除手動指定的縮圖", "thumb.clear()"),
     spec("view.preview", &[], "顯示／隱藏預覽窗格", "view.preview()"),
     spec("view.mode", &["mode \"list\"|\"small\"|\"medium\"|\"large\"|\"thumbnails\""], "切換清單／縮圖檢視", "view.mode(\"medium\")"),
     spec("view.thumbsize", &["opts {delta: integer} 加減的像素"], "調整縮圖大小", "view.thumbsize{ delta = 16 }"),
@@ -87,6 +94,12 @@ pub const COMMANDS: &[Spec] = &[
     spec("filter.set", &["opts {text: string} 篩選文字（可用 * ? 萬用字元）"], "設定篩選", "filter.set{ text = \"*.jpg\" }"),
     spec("favorites.add", &["opts? {path?: string}"], "加入我的最愛（預設為目前資料夾）", "favorites.add()"),
     spec("favorites.remove", &["opts? {path?: string}"], "從我的最愛移除", "favorites.remove{ path = cwd() }"),
+    spec(
+        "favorites.move",
+        &["opts {by: integer, path?: string} by 為移動的位置數（負數往上）；path 預設為樹狀列焦點所在的我的最愛，否則目前資料夾"],
+        "調整我的最愛的順序（記在 session.toml，設定檔中的也能調整）",
+        "favorites.move{ by = -1 }",
+    ),
     spec("theme.set", &["name string 主題名稱"], "切換主題", "theme.set(\"fluent\")"),
     spec("theme.toggle", &[], "切換深色／淺色（保留風格）", "theme.toggle()"),
     spec("theme.edit", &[], "開啟主題編輯器", "theme.edit()"),
@@ -122,7 +135,7 @@ pub const GLOBALS: &[Spec] = &[
         "讀取或寫入剪貼簿的文字（換行一律是 \\n，寫入時轉成 Windows 的 \\r\\n）",
         "clipboard(table.concat(sel() | map(path.name) | list, \"\\n\"))\nlocal text = clipboard()",
     ),
-    spec("exec", &["script string 命令腳本（同設定檔的 cmd，可用 {sel} 等變數）"], "執行命令腳本", "exec(\"copy {sel} --to={dest}\")"),
+    spec("exec", &["script string 命令腳本（同設定檔的 cmd，可用 {sel}、{ask:提示} 等變數）"], "執行命令腳本", "exec(\"copy {sel} --to={dest}\")"),
     spec("log", &["... any"], "寫入 scripts\\zing.log（除錯用）", "log(\"選取\", #sel())"),
 ];
 

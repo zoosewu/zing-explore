@@ -4,12 +4,14 @@
 //! UI 只透過 `JobCtl` 的 atomic 旗標控制工作，不等待任何鎖。
 //! 面板在工作執行超過 0.4 秒時自動顯示（小作業不會閃一下），全部成功後 3 秒自動收起；
 //! 失敗的工作留著，直到使用者清除。
+//! 複製時另一條執行緒計算來源的總大小（`JobEvent::Total`），以「進度 × 總大小」換算最近幾秒的速度（MB/s）。
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use zing_core::path;
+use zing_core::{format, path};
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 use crate::app::{App, TIMER_JOBS};
@@ -31,6 +33,8 @@ pub enum JobEvent {
     Paused,
     /// `fraction` 0–1；`current` 目前處理的項目；`done` 已處理的項目數（含資料夾內的項目）
     Progress { fraction: f32, current: String, done: u32 },
+    /// 複製來源的總大小（位元組）
+    Total { bytes: u64 },
     Finished { error: Option<String>, cancelled: bool },
 }
 
@@ -52,6 +56,9 @@ pub struct Job {
     pub fraction: f32,
     pub current: String,
     pub done: u32,
+    /// 複製來源的總大小；算出來之前（或不是複製）為 None
+    pub total: Option<u64>,
+    speed: Speed,
     /// 不含暫停的執行時間
     active: Duration,
     since: Option<Instant>,
@@ -76,6 +83,47 @@ impl Job {
 
     fn paused(&self) -> bool {
         !self.is_finished() && self.ctl.pause.load(Ordering::Relaxed)
+    }
+
+    /// 最近幾秒的速度（位元組／秒）；還不知道總大小或樣本不足時為 None
+    pub fn speed(&self) -> Option<f64> {
+        self.speed.rate()
+    }
+
+    fn sample(&mut self) {
+        if let Some(total) = self.total {
+            self.speed.push(Instant::now(), (total as f64 * self.fraction as f64) as u64);
+        }
+    }
+}
+
+/// 速度：保留最近 `WINDOW` 內的 (時間, 已處理的位元組) 樣本
+#[derive(Default)]
+struct Speed {
+    samples: VecDeque<(Instant, u64)>,
+}
+
+impl Speed {
+    const WINDOW: Duration = Duration::from_secs(3);
+    /// 樣本至少涵蓋這麼久才顯示（太短的區間誤差大）
+    const MIN_SPAN: Duration = Duration::from_millis(500);
+
+    fn push(&mut self, t: Instant, bytes: u64) {
+        self.samples.push_back((t, bytes));
+        while self.samples.len() > 2 && self.samples.front().is_some_and(|&(s, _)| t.duration_since(s) > Self::WINDOW) {
+            self.samples.pop_front();
+        }
+    }
+
+    /// 暫停後重新計算（暫停的時間不算進速度）
+    fn reset(&mut self) {
+        self.samples.clear();
+    }
+
+    fn rate(&self) -> Option<f64> {
+        let (&(t0, b0), &(t1, b1)) = (self.samples.front()?, self.samples.back()?);
+        let span = t1.duration_since(t0);
+        (span >= Self::MIN_SPAN).then(|| b1.saturating_sub(b0) as f64 / span.as_secs_f64())
     }
 }
 
@@ -144,6 +192,8 @@ impl App {
                 fraction: 0.0,
                 current: String::new(),
                 done: 0,
+                total: None,
+                speed: Speed::default(),
                 active: Duration::ZERO,
                 since: None,
                 finished_at: None,
@@ -163,6 +213,7 @@ impl App {
             }
             JobEvent::Paused => {
                 job.status = JobStatus::Paused;
+                job.speed.reset();
                 if let Some(s) = job.since.take() {
                     job.active += s.elapsed();
                 }
@@ -171,6 +222,11 @@ impl App {
                 job.fraction = fraction;
                 job.current = current;
                 job.done = done;
+                job.sample();
+            }
+            JobEvent::Total { bytes } => {
+                job.total = Some(bytes);
+                job.sample();
             }
             JobEvent::Finished { error, cancelled } => {
                 if let Some(s) = job.since.take() {
@@ -404,6 +460,9 @@ impl App {
                 JobStatus::Queued => ("排隊中".to_string(), c.text_secondary),
                 _ => {
                     let mut s = format!("{:.0}%", job.fraction * 100.0);
+                    if let Some(v) = job.speed() {
+                        s.push_str(&format!("　{}/s", format::size_short(v as u64)));
+                    }
                     if let Some(eta) = job.eta() {
                         s.push_str(&format!("　剩餘 {}", format_duration(eta)));
                     }
@@ -446,5 +505,30 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speed_over_window() {
+        let t = Instant::now();
+        let ms = |n| t + Duration::from_millis(n);
+        let mut s = Speed::default();
+        s.push(t, 0);
+        // 樣本涵蓋的時間太短
+        s.push(ms(200), 20 << 20);
+        assert_eq!(s.rate(), None);
+        s.push(ms(1000), 100 << 20);
+        assert_eq!(s.rate(), Some((100 << 20) as f64));
+        // 舊的樣本超出視窗後移除：速度只看最近 3 秒
+        s.push(ms(4500), 100 << 20);
+        s.push(ms(5000), 150 << 20);
+        let r = s.rate().unwrap();
+        assert!((r - (100 << 20) as f64).abs() < 1.0, "{r}");
+        s.reset();
+        assert_eq!(s.rate(), None);
     }
 }

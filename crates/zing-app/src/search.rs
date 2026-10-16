@@ -22,7 +22,7 @@ const DEBOUNCE_MS: u32 = 120;
 /// 一次最多取回的結果
 const LIMIT: u32 = 500;
 /// 輸入框右側顯示排序與結果數的寬度
-const COUNT_W: f32 = 150.0;
+pub const COUNT_W: f32 = 150.0;
 
 /// 冒煙測試：有值時不查詢服務，改從這些項目中以名稱比對
 #[cfg(feature = "smoke")]
@@ -104,10 +104,7 @@ impl App {
             top: 0,
             search: Some(Results::default()),
         });
-        if let Some(lay) = self.palette_layout() {
-            // 右側留給結果數
-            let mut r = lay.input.inset(10.0, 0.0);
-            r.r -= COUNT_W;
+        if let Some(r) = self.palette_edit_rect() {
             window::begin_palette_edit(self, r);
         }
         self.invalidate();
@@ -141,6 +138,7 @@ impl App {
             r.more = false;
             r.state = if q.is_empty() { State::Idle } else { State::Invalid(parsed.errors.join("  ")) };
             p.matches.clear();
+            self.sync_palette_edit();
             self.invalidate();
             return;
         }
@@ -182,6 +180,7 @@ impl App {
         p.matches = (0..r.items.len()).collect();
         p.sel = 0;
         p.top = 0;
+        self.sync_palette_edit();
         self.invalidate();
     }
 

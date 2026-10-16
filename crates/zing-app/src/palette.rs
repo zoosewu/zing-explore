@@ -91,10 +91,31 @@ impl App {
         let entries = self.palette_entries();
         let matches = filter(&entries, "", &self.palette_recent);
         self.palette = Some(Palette { entries, query: String::new(), matches, sel: 0, top: 0, search: None });
-        if let Some(lay) = self.palette_layout() {
-            window::begin_palette_edit(self, lay.input.inset(10.0, 0.0));
+        if let Some(r) = self.palette_edit_rect() {
+            window::begin_palette_edit(self, r);
         }
         self.invalidate();
+    }
+
+    /// 輸入框（子視窗）的位置：輸入區內縮，搜尋時右側留給排序與結果數
+    pub fn palette_edit_rect(&self) -> Option<Rect> {
+        let lay = self.palette_layout()?;
+        let mut r = lay.input.inset(10.0, 0.0);
+        if self.palette.as_ref().is_some_and(|p| p.search.is_some()) {
+            r.r -= crate::search::COUNT_W;
+        }
+        Some(r)
+    }
+
+    /// 面板的位置隨結果數改變時（`position = "middle"`），把輸入框移到新的位置
+    pub fn sync_palette_edit(&mut self) {
+        if self.config.palette.position != PalettePosition::Middle {
+            return;
+        }
+        let Some(hwnd) = self.edit.as_ref().filter(|e| matches!(e.kind, crate::app::EditKind::Palette)).map(|e| e.hwnd) else { return };
+        if let Some(r) = self.palette_edit_rect() {
+            window::move_edit(self, hwnd, r);
+        }
     }
 
     pub fn palette_layout(&self) -> Option<PaletteLayout> {
@@ -109,6 +130,10 @@ impl App {
             PalettePosition::Center => {
                 let full = PAD + INPUT_H + 6.0 + MAX_ROWS as f32 * rh + PAD;
                 ((h - full) / 2.0).max(6.0).round()
+            }
+            PalettePosition::Middle => {
+                let actual = PAD + INPUT_H + 6.0 + p.visible_rows() as f32 * rh + PAD;
+                ((h - actual) / 2.0).max(6.0).round()
             }
         };
         let input = Rect::new(l + PAD, t + PAD, l + width - PAD, t + PAD + INPUT_H);
@@ -150,6 +175,7 @@ impl App {
         p.matches = if p.direct() { Vec::new() } else { filter(&p.entries, &p.query, recent) };
         p.sel = 0;
         p.top = 0;
+        self.sync_palette_edit();
         self.invalidate();
     }
 

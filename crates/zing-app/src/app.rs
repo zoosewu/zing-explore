@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use crate::gfx::Gfx;
 use crate::icons::Icons;
 use crate::jobs::Jobs;
-use crate::model::{Children, Expand, Pane, Reveal, Tab, Tree};
+use crate::model::{Children, Expand, NodeKind, Pane, Reveal, Tab, Tree};
 use crate::palette::Palette;
 use crate::perf::Perf;
 use crate::services::{TreeLoad, self, Msg, Notifier, Pool, TabId};
@@ -57,6 +57,10 @@ pub const TIMER_SEARCH: usize = 13;
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
 pub const MENU_FAV_ADD: u32 = shell::EXTRA_ID_BASE + 2;
 pub const MENU_FAV_REMOVE: u32 = shell::EXTRA_ID_BASE + 3;
+pub const MENU_FAV_UP: u32 = shell::EXTRA_ID_BASE + 4;
+pub const MENU_FAV_DOWN: u32 = shell::EXTRA_ID_BASE + 5;
+pub const MENU_THUMB_SET: u32 = shell::EXTRA_ID_BASE + 6;
+pub const MENU_THUMB_CLEAR: u32 = shell::EXTRA_ID_BASE + 7;
 
 /// 超過這個數量的排序交給背景執行緒，避免卡住 UI
 const INLINE_SORT_LIMIT: usize = 20_000;
@@ -87,6 +91,8 @@ pub enum Modal {
     ConfirmThemeOverwrite { name: String, text: String },
     /// Lua 的 pick_folder()
     PickFolder { title: String, default: String, reply: std::sync::mpsc::SyncSender<Option<String>> },
+    /// 設定縮圖：選擇圖片
+    PickThumb { path: String },
 }
 
 pub enum EditKind {
@@ -100,9 +106,20 @@ pub enum EditKind {
     Ask,
 }
 
+/// 輸入框（`ask`）的答案交給誰
+pub enum AskReply {
+    /// Lua 的 `ask()`：腳本執行緒等待回答
+    Script(std::sync::mpsc::SyncSender<Option<String>>),
+    /// 命令腳本中的 `{ask:提示}`：收集到所有答案後再執行
+    Command { script: String, answers: Vec<(String, String)> },
+}
+
 pub struct Edit {
     pub hwnd: HWND,
     pub kind: EditKind,
+    /// 重新命名：以 D2D 畫在輸入框外的框線（DIP）；`fit` 為 Some 時框的寬度跟著文字，最寬到這個右緣
+    pub frame: Option<crate::gfx::Rect>,
+    pub fit: Option<f32>,
 }
 
 pub struct App {
@@ -131,7 +148,7 @@ pub struct App {
     pub theme_editor: Option<crate::themeedit::ThemeEditor>,
     pub scripts: crate::script::Scripts,
     /// Lua 腳本的 ask() 等待中的提示與回答通道
-    pub ask: Option<(String, std::sync::mpsc::SyncSender<Option<String>>)>,
+    pub ask: Option<(String, AskReply)>,
     /// 以文字編輯器修改中的主題檔：(主題名稱, 上次看到的修改時間)
     pub theme_watch: Option<(String, Option<std::time::SystemTime>)>,
     pub tree_side: TreeSide,
@@ -199,9 +216,9 @@ impl App {
         zing_core::guard::set_reporter(move |m| reporter.status(m, true));
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
         let pool = Pool::new(threads);
-        let fileops = FileOps::new(notifier.clone());
+        let fileops = FileOps::new(notifier.clone(), !isolated);
         let icons = Icons::new(notifier.clone());
-        let thumbs = crate::thumbs::Thumbs::new(notifier.clone(), crate::thumbs::cache_dir(isolated));
+        let thumbs = crate::thumbs::Thumbs::new(notifier.clone(), crate::thumbs::cache_dir(isolated), crate::thumbs::custom_dir(isolated));
         thumbs.set_thumbnailers(config.thumbnailers.clone());
         let shell_host = ShellHost::new(notifier.clone(), hwnd);
 
@@ -211,6 +228,7 @@ impl App {
                 favorites.push(f.clone());
             }
         }
+        crate::model::order_favorites(&mut favorites, &session.favorite_order);
         let tree = Tree::build(&favorites, &drives());
         let mut app = App {
             hwnd,
@@ -317,6 +335,7 @@ impl App {
             preview_width: Some(self.preview.width),
             columns: Some(self.cols),
             favorites: self.session.favorites.clone(),
+            favorite_order: self.session.favorite_order.clone(),
             palette_recent: self.palette_recent.clone(),
         }
     }
@@ -780,12 +799,20 @@ impl App {
                     }
                 }
             }
-            Msg::FileOpDone { dirs, error, select } => {
+            Msg::FileOpDone { dirs, error, select, renamed } => {
                 if let Some(e) = error {
                     self.set_status(e, true);
                 }
+                if let Some((old, new)) = renamed {
+                    self.on_renamed(&old, &new);
+                }
                 for d in &dirs {
                     self.sizes.mark_stale(d);
+                    // 樹狀列：資料夾監看可能沒有涵蓋這個節點（收合中、超過監看數量），直接重新載入
+                    self.tree.invalidate(d);
+                    if self.tree.nodes.iter().any(|n| n.expanded && n.path.eq_ignore_ascii_case(d)) {
+                        self.load_tree(d.clone(), TreeLoad::Refresh);
+                    }
                 }
                 for p in 0..self.panes.len() {
                     for t in 0..self.panes[p].tabs.len() {
@@ -820,7 +847,7 @@ impl App {
                 self.invalidate();
             }
             Msg::ScriptExec(script) => self.exec(&script),
-            Msg::ScriptAsk { prompt, default, reply } => self.open_ask(prompt, default, reply),
+            Msg::ScriptAsk { prompt, default, reply } => self.open_ask(prompt, default, AskReply::Script(reply)),
             Msg::ScriptPickFolder { title, default, reply } => self.open_pick_folder(title, default, reply),
             Msg::ScriptClipboard { text, reply } => {
                 self.shell_host.submit(ShellJob::SetText { text, status: String::new(), reply: Some(reply) })
@@ -828,6 +855,17 @@ impl App {
             Msg::ScriptsLoaded(l) => self.on_scripts_loaded(l),
             Msg::Thumb { id, pixels, source } => {
                 self.thumbs.store(id, pixels, source);
+                self.invalidate();
+            }
+            Msg::ThumbCustom { path: p, set, result } => {
+                match result {
+                    Ok(()) => {
+                        self.thumbs.forget(&p);
+                        let name = path::file_name(&p);
+                        self.set_status(if set { format!("已設定縮圖：{name}") } else { format!("已移除自訂縮圖：{name}") }, false);
+                    }
+                    Err(e) => self.set_status(format!("無法設定縮圖：{e}"), true),
+                }
                 self.invalidate();
             }
             Msg::IndexSizes { parent, result } => self.on_index_sizes(parent, result),
@@ -902,10 +940,35 @@ impl App {
 
     /// 執行命令腳本（快速鍵、按鈕、選單都經由這裡）
     pub fn exec(&mut self, script: &str) {
+        self.exec_with(script, Vec::new());
+    }
+
+    /// `answers`：已回答的 `{ask:提示}`（提示, 答案）。還有沒回答的就先顯示輸入框，回答後再執行（Esc 取消整個腳本）；
+    /// 同樣的提示只問一次
+    pub fn exec_with(&mut self, script: &str, answers: Vec<(String, String)>) {
+        let mut missing: Option<String> = None;
         let parsed = {
-            let mut vars = |name: &str, param: Option<&str>| self.variable(name, param);
+            let mut vars = |name: &str, param: Option<&str>| {
+                if name != "ask" {
+                    return self.variable(name, param);
+                }
+                let prompt = param.filter(|p| !p.trim().is_empty()).unwrap_or("輸入").to_string();
+                match answers.iter().find(|(p, _)| *p == prompt) {
+                    Some((_, a)) => Ok(Some(vec![a.clone()])),
+                    None => {
+                        missing.get_or_insert(prompt);
+                        Ok(Some(vec![String::new()]))
+                    }
+                }
+            };
             command::parse(script, &mut vars)
         };
+        if parsed.is_ok()
+            && let Some(prompt) = missing
+        {
+            self.open_ask(prompt, String::new(), AskReply::Command { script: script.to_string(), answers });
+            return;
+        }
         match parsed {
             Ok(invocations) => {
                 for inv in invocations {
@@ -1133,6 +1196,20 @@ impl App {
             "theme.edit" => self.open_theme_editor(),
             "theme.editfile" => self.open_theme_file(),
             "theme.import" => self.modal = Some(Modal::ImportTheme),
+            "thumb.set" | "thumb.clear" => {
+                let target = match inv.flag("path") {
+                    Some(p) => p.to_string(),
+                    None => {
+                        let tab = self.tab();
+                        tab.focused_entry().filter(|_| !tab.view.is_empty()).map(|e| tab.full_path(e)).ok_or("沒有選取項目")?
+                    }
+                };
+                match (inv.name.as_str(), inv.flag("image")) {
+                    ("thumb.clear", _) => self.thumbs.set_custom(target, None),
+                    (_, Some(img)) => self.thumbs.set_custom(target, Some(img.to_string())),
+                    _ => self.modal = Some(Modal::PickThumb { path: target }),
+                }
+            }
             "theme.export" => self.export_theme(),
             "view.mode" => {
                 let mode = inv.flag("mode").or_else(|| inv.positional().next()).unwrap_or("list").to_string();
@@ -1163,6 +1240,16 @@ impl App {
             "favorites.remove" => {
                 let target = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
                 self.remove_favorite(&target)?;
+            }
+            "favorites.move" => {
+                let by = inv.flag("by").and_then(|d| d.parse::<isize>().ok()).ok_or("favorites.move 需要 --by=（負數往上）")?;
+                // 預設：樹狀列焦點所在的我的最愛，否則目前資料夾
+                let focused = self.tree.nodes.get(self.tree.focus).filter(|n| self.focus == Focus::Tree && n.kind == NodeKind::Favorite);
+                let target = match inv.flag("path") {
+                    Some(p) => p.to_string(),
+                    None => focused.map_or_else(|| self.tab().path.clone(), |n| n.path.clone()),
+                };
+                self.move_favorite(&target, by)?;
             }
             "theme.set" => {
                 let name = inv.flag("name").or_else(|| inv.positional().next()).ok_or("theme.set 需要 --name=")?.to_string();
@@ -1231,12 +1318,67 @@ impl App {
         Ok(())
     }
 
+    /// 資料夾改名後：我的最愛、分頁中的舊路徑換成新路徑
+    fn on_renamed(&mut self, old: &str, new: &str) {
+        let replace = |v: &mut Vec<String>| {
+            let mut changed = false;
+            for f in v.iter_mut() {
+                if let Some(p) = crate::model::replace_prefix(f, old, new) {
+                    *f = p;
+                    changed = true;
+                }
+            }
+            changed
+        };
+        let fav = replace(&mut self.favorites);
+        replace(&mut self.session.favorites);
+        replace(&mut self.session.favorite_order);
+        if fav {
+            self.save_session_async();
+            self.rebuild_tree();
+        }
+        for p in 0..self.panes.len() {
+            for t in 0..self.panes[p].tabs.len() {
+                if let Some(np) = crate::model::replace_prefix(&self.panes[p].tabs[t].path, old, new) {
+                    self.panes[p].tabs[t].path = np;
+                    if p == self.active_pane && t == self.panes[p].active {
+                        self.sync_tree();
+                    }
+                    self.load(p, t);
+                }
+            }
+        }
+    }
+
+    /// 我的最愛往下移 `by` 個位置（負數往上）；順序記在工作階段（設定檔中的也能調整）
+    pub fn move_favorite(&mut self, p: &str, by: isize) -> Result<(), String> {
+        let i = self.favorites.iter().position(|f| f.eq_ignore_ascii_case(p)).ok_or_else(|| format!("不在我的最愛中：{p}"))?;
+        let j = (i as isize + by).clamp(0, self.favorites.len() as isize - 1) as usize;
+        if i == j {
+            return Ok(());
+        }
+        let f = self.favorites.remove(i);
+        self.favorites.insert(j, f.clone());
+        self.session.favorite_order = self.favorites.clone();
+        self.save_session_async();
+        // 原地重排（不重建樹狀列，展開的子樹與焦點都保留）
+        self.tree.reorder_favorites(&self.favorites);
+        // 焦點跟著移動的項目
+        if let Some(k) = self.tree.nodes.iter().position(|n| n.kind == NodeKind::Favorite && n.path.eq_ignore_ascii_case(&f)) {
+            self.tree.focus = k;
+            self.ensure_tree_visible(k);
+        }
+        self.invalidate();
+        Ok(())
+    }
+
     pub fn remove_favorite(&mut self, p: &str) -> Result<(), String> {
         if self.config.favorites.iter().any(|f| f.eq_ignore_ascii_case(p)) {
             return Err("這個項目定義在設定檔的 favorites 中，請在設定檔移除（Ctrl+,）".into());
         }
         self.favorites.retain(|f| !f.eq_ignore_ascii_case(p));
         self.session.favorites.retain(|f| !f.eq_ignore_ascii_case(p));
+        self.session.favorite_order.retain(|f| !f.eq_ignore_ascii_case(p));
         self.save_session_async();
         self.rebuild_tree();
         self.set_status(format!("已從我的最愛移除：{p}"), false);
@@ -1251,8 +1393,13 @@ impl App {
             [e] if items.len() == 1 => tab.listing.entries[*e].is_dir(),
             _ => false,
         };
-        if single_dir {
-            (self.folder_extras(&items[0]), items[0].clone())
+        if let [one] = items {
+            let mut extras = if single_dir { self.folder_extras(one) } else { Vec::new() };
+            extras.push((MENU_THUMB_SET, "設定縮圖…".into()));
+            if self.thumbs.is_custom(one) {
+                extras.push((MENU_THUMB_CLEAR, "移除自訂縮圖".into()));
+            }
+            (extras, one.clone())
         } else if items.is_empty() && !folder.is_empty() && !self.is_favorite(folder) {
             (vec![(MENU_FAV_ADD, "將此資料夾加入我的最愛".into())], folder.to_string())
         } else {
@@ -1277,6 +1424,16 @@ impl App {
             }
             MENU_FAV_ADD => self.add_favorite(target),
             MENU_FAV_REMOVE => self.remove_favorite(&target),
+            MENU_FAV_UP => self.move_favorite(&target, -1),
+            MENU_THUMB_SET => {
+                self.modal = Some(Modal::PickThumb { path: target });
+                Ok(())
+            }
+            MENU_THUMB_CLEAR => {
+                self.thumbs.set_custom(target, None);
+                Ok(())
+            }
+            MENU_FAV_DOWN => self.move_favorite(&target, 1),
             _ => Ok(()),
         };
         if let Err(e) = result {
