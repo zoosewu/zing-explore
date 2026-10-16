@@ -510,6 +510,18 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 with_app(|a| a.palette_move(delta));
                 return LRESULT(0);
             }
+            // 搜尋面板：Ctrl+1–5 依名稱、路徑、副檔名、大小、日期排序（再按一次反向），Ctrl+0 取消排序。
+            // 改寫輸入框的內容（EN_CHANGE 會照常查詢）；在 with_app 之外設定，EN_CHANGE 才能再借用 App
+            WM_KEYDOWN if data == EDIT_PALETTE && (0x30..=0x35).contains(&wparam.0) && Mods::current().ctrl => {
+                let key = wparam.0.checked_sub(0x31).map(|i| zing_core::namequery::SortKey::ALL[i]);
+                if let Some(Some(text)) = with_app(|a| a.search_sort_text(key)) {
+                    let w = zing_core::text::wide_z(&text);
+                    let _ = SetWindowTextW(hwnd, PCWSTR(w.as_ptr()));
+                    let n = text.encode_utf16().count();
+                    SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(n)), Some(LPARAM(n as isize)));
+                    return LRESULT(0);
+                }
+            }
             // Ctrl+A 全選（舊版 EDIT 控制項不支援）
             WM_KEYDOWN if wparam.0 == b'A' as usize && Mods::current().ctrl => {
                 SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));

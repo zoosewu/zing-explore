@@ -6,6 +6,7 @@
 //! - 篩選：`ext:jpg;png`（副檔名，只對檔案）、`size:>10mb`、`size:1mb..1gb`、`dm:today`、`dm:2024-05`、
 //!   `dm:>2024-05-01`、`dm:7d`（最近 7 天）、`file:`、`folder:`。
 //! - 排序：`sort:name`、`path`、`ext`（預設遞增）、`size`、`date`（預設遞減），可加 `-asc`／`-desc`。
+//!   名稱、路徑、副檔名以自然排序比較（`natural_cmp`）；`set_sort` 改寫查詢中的排序（搜尋面板的按鍵）。
 //!
 //! 大小寫：不分大小寫（Unicode 小寫對應）。查詢只含 ASCII 與中日韓文字時名稱逐位元組比對（ASCII 字母轉小寫；
 //! 其他文字轉成小寫後也不會變成查詢中的字元，只有 K（克耳文符號）、İ 這類轉成 ASCII 的少數字元例外）；
@@ -61,10 +62,111 @@ pub enum SortKey {
     Date,
 }
 
+impl SortKey {
+    pub const ALL: [SortKey; 5] = [SortKey::Name, SortKey::Path, SortKey::Ext, SortKey::Size, SortKey::Date];
+
+    /// `sort:` 後面的寫法
+    pub fn word(self) -> &'static str {
+        match self {
+            SortKey::Name => "name",
+            SortKey::Path => "path",
+            SortKey::Ext => "ext",
+            SortKey::Size => "size",
+            SortKey::Date => "date",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortKey::Name => "名稱",
+            SortKey::Path => "路徑",
+            SortKey::Ext => "副檔名",
+            SortKey::Size => "大小",
+            SortKey::Date => "修改日期",
+        }
+    }
+
+    /// 沒有指定方向時：大小、日期由大到小，其他由小到大
+    pub fn default_desc(self) -> bool {
+        matches!(self, SortKey::Size | SortKey::Date)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sort {
     pub key: SortKey,
     pub desc: bool,
+}
+
+/// 把查詢中的 `sort:` 換成以 `key` 排序（None 表示移除）；原本就以 `key` 排序時反轉方向。
+/// 其他的詞保持原樣（含引號），排序寫在最後
+pub fn set_sort(q: &str, key: Option<SortKey>) -> String {
+    let mut cur = None;
+    let mut out = String::new();
+    for (start, end) in word_spans(q) {
+        let w = &q[start..end];
+        let bare = w.trim_start_matches('!').replace('"', "");
+        if let Some((k, v)) = bare.split_once(':')
+            && k.eq_ignore_ascii_case("sort")
+        {
+            cur = parse_sort(v.trim()).or(cur);
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(w);
+    }
+    if let Some(key) = key {
+        let desc = match cur {
+            Some(s) if s.key == key => !s.desc,
+            _ => key.default_desc(),
+        };
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str("sort:");
+        out.push_str(key.word());
+        if desc != key.default_desc() {
+            out.push_str(if desc { "-desc" } else { "-asc" });
+        }
+    }
+    out
+}
+
+/// 自然排序（已轉成小寫的 UTF-8）：連續的數字以數值比較（`file2` 在 `file10` 前），其他逐位元組（即字碼）比較
+pub fn natural_cmp(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let digits = |s: &[u8], mut i: usize| {
+        while i < s.len() && s[i].is_ascii_digit() {
+            i += 1;
+        }
+        i
+    };
+    // 去掉前導零（至少留一位）
+    fn trim(s: &[u8]) -> &[u8] {
+        let n = s.iter().take_while(|&&c| c == b'0').count();
+        &s[n.min(s.len() - 1)..]
+    }
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i].is_ascii_digit() && b[j].is_ascii_digit() {
+            let (ei, ej) = (digits(a, i), digits(b, j));
+            let (ra, rb) = (trim(&a[i..ei]), trim(&b[j..ej]));
+            let o = ra.len().cmp(&rb.len()).then_with(|| ra.cmp(rb));
+            if o != Ordering::Equal {
+                return o;
+            }
+            (i, j) = (ei, ej);
+            continue;
+        }
+        if a[i] != b[j] {
+            return a[i].cmp(&b[j]);
+        }
+        i += 1;
+        j += 1;
+    }
+    (a.len() - i).cmp(&(b.len() - j)).then_with(|| a.cmp(b))
 }
 
 /// 比對時需要的項目資訊
@@ -291,6 +393,29 @@ impl NameQuery {
         let mut s = Scratch::default();
         self.matches_meta(&mut s, name.as_bytes(), m) && self.matches_path(&mut s, path.as_bytes())
     }
+}
+
+/// 每個詞在 `q` 中的位置（含引號），分詞規則與 `split` 相同
+fn word_spans(q: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start = None;
+    let mut quoted = false;
+    for (i, c) in q.char_indices() {
+        if c.is_whitespace() && !quoted {
+            if let Some(s) = start.take() {
+                spans.push((s, i));
+            }
+            continue;
+        }
+        if c == '"' {
+            quoted = !quoted;
+        }
+        start.get_or_insert(i);
+    }
+    if let Some(s) = start {
+        spans.push((s, q.len()));
+    }
+    spans
 }
 
 /// 以空白分隔；雙引號包住的部分可以含空白
@@ -541,7 +666,7 @@ fn parse_sort(v: &str) -> Option<Sort> {
         "date" | "dm" => SortKey::Date,
         _ => return None,
     };
-    let desc = dir.unwrap_or(matches!(key, SortKey::Size | SortKey::Date));
+    let desc = dir.unwrap_or(key.default_desc());
     Some(Sort { key, desc })
 }
 
@@ -706,5 +831,31 @@ mod tests {
         assert_eq!(s("sort:name"), Some(Sort { key: SortKey::Name, desc: false }));
         assert_eq!(s("sort:date-asc"), Some(Sort { key: SortKey::Date, desc: false }));
         assert_eq!(s("sort:Path-Desc"), Some(Sort { key: SortKey::Path, desc: true }));
+    }
+
+    #[test]
+    fn set_sort_keys() {
+        // 加上、同一個鍵再按一次反向、換鍵時用該鍵的預設方向、移除
+        assert_eq!(set_sort("報告", Some(SortKey::Name)), "報告 sort:name");
+        assert_eq!(set_sort("報告 sort:name", Some(SortKey::Name)), "報告 sort:name-desc");
+        assert_eq!(set_sort("報告 sort:name-desc", Some(SortKey::Name)), "報告 sort:name");
+        assert_eq!(set_sort("sort:name-desc 報告", Some(SortKey::Size)), "報告 sort:size");
+        assert_eq!(set_sort("報告 sort:size", Some(SortKey::Size)), "報告 sort:size-asc");
+        assert_eq!(set_sort("報告  sort:dm \"a b\" ", None), "報告 \"a b\"");
+        assert_eq!(set_sort("", Some(SortKey::Date)), "sort:date");
+        // 引號中的空白不分詞；無法解讀的 sort: 也換掉
+        assert_eq!(set_sort("\"x sort:size\" sort:color", Some(SortKey::Path)), "\"x sort:size\" sort:path");
+        for k in SortKey::ALL {
+            assert_eq!(parse_sort(k.word()), Some(Sort { key: k, desc: k.default_desc() }));
+        }
+    }
+
+    #[test]
+    fn natural_order() {
+        let mut v = vec!["file10.txt", "file2.txt", "file02.txt", "file1.txt", "a", "第10章", "第9章", "file", "10", "9"];
+        v.sort_by(|a, b| natural_cmp(a.as_bytes(), b.as_bytes()));
+        assert_eq!(v, ["9", "10", "a", "file", "file1.txt", "file02.txt", "file2.txt", "file10.txt", "第9章", "第10章"]);
+        assert!(natural_cmp(b"x007", b"x7").is_lt());
+        assert!(natural_cmp(b"x0", b"x00").is_lt());
     }
 }

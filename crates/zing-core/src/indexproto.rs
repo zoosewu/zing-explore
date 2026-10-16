@@ -8,7 +8,7 @@ use crate::volindex::{Child, Totals};
 pub const PIPE_NAME: &str = r"\\.\pipe\zing-explore-index";
 /// 服務自己的版號：修改 zing-index（行為、協定、快照格式）時加 1。zing 啟動時比對已安裝的服務，
 /// 較舊就以 UAC 更新。1 是還沒有 `Request::Version` 的版本（回答「無法解析請求」）
-pub const SERVICE_VERSION: u32 = 3;
+pub const SERVICE_VERSION: u32 = 4;
 /// 回應的上限（子資料夾非常多的資料夾）；超過時截斷並標記
 pub const MAX_RESPONSE: usize = 16 << 20;
 

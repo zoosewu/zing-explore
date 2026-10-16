@@ -470,10 +470,10 @@ impl Server {
 }
 
 impl Server {
-    /// 全磁碟搜尋：依磁碟代號順序找，每批候選在讀取鎖內取出（含路徑），鎖外以呼叫者身分確認能列出所在的資料夾。
-    /// 數量或時間（3 秒）到上限時停止並標記還有更多
     /// 全磁碟搜尋。沒有指定排序時依磁碟區、記錄編號的順序邊找邊回傳；有排序時先找完所有磁碟區，
     /// 只保留排序在前的 `2 × limit` 個候選（不必保存全部符合的項目），再依序檢查權限。
+    /// 每批候選在讀取鎖內取出（含路徑），鎖外以呼叫者身分確認能列出所在的資料夾；
+    /// 數量或時間（3 秒）到上限時停止並標記還有更多
     fn search(&self, pipe: HANDLE, query: &str, limit: u32) -> Response {
         let q = NameQuery::parse(query);
         if q.is_empty() {
@@ -583,10 +583,27 @@ struct Cand {
     frn: u32,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+/// 同一次搜尋中只會有同一種鍵；文字（已轉成小寫）以自然排序比較
+#[derive(PartialEq, Eq)]
 enum Key {
     Num(u64),
     Text(Vec<u8>),
+}
+
+impl Ord for Key {
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        match (self, o) {
+            (Key::Num(a), Key::Num(b)) => a.cmp(b),
+            (Key::Text(a), Key::Text(b)) => namequery::natural_cmp(a, b),
+            (Key::Num(_), Key::Text(_)) => std::cmp::Ordering::Less,
+            (Key::Text(_), Key::Num(_)) => std::cmp::Ordering::Greater,
+        }
+    }
+}
+impl PartialOrd for Key {
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
 }
 
 impl Ord for Cand {

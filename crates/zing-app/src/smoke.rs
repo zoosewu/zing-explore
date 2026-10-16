@@ -713,8 +713,12 @@ fn palette_closed(a: &App) -> Result<(), String> {
 
 /// 在命令面板的輸入框按鍵
 fn palette_key(vk: VIRTUAL_KEY) {
+    palette_key_mods("", vk);
+}
+
+fn palette_key_mods(mods: &str, vk: VIRTUAL_KEY) {
     if let Some(e) = edit_hwnd() {
-        key_to(e, "", vk);
+        key_to(e, mods, vk);
     }
 }
 
@@ -1451,6 +1455,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                     item(path::join(&d, "隱藏的內層.txt"), false, true, 5, may),
                     item(path::join(&d, "報告 9.txt"), false, false, 3 << 20, jan),
                     item(path::join(&d, "ÉTÉ.JPG"), false, false, 2 << 20, may),
+                    item(path::join(&d, "第10章.md"), false, false, 1, jan),
+                    item(path::join(&d, "第2章.md"), false, false, 2, may),
                     item(dir_a.clone(), true, false, 5, 0),
                 ]);
                 key(c, "c", letter('f'));
@@ -1480,6 +1486,20 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
         |_, a| expect("結果", search_names(a)?, vec!["內層.txt".to_string()]),
     ));
+    // 排序按鍵改寫查詢：Ctrl+1 名稱（自然排序，第2章在第10章前）、再按一次反向、Ctrl+5 日期、Ctrl+0 取消
+    let sort_step = |name: &'static str, digit: u8, query: &'static str, want: [&'static str; 2]| {
+        step(name, move |_| palette_key_mods("c", VIRTUAL_KEY(digit as u16)), move |_, a| {
+            expect("查詢", a.palette.as_ref().map(|p| p.query.as_str()), Some(query))?;
+            expect("結果", search_names(a)?, want.map(String::from).to_vec())
+        })
+    };
+    v.push(step("搜尋：名稱有數字", |_| palette_set("章"), |_, a| expect("結果數", search_names(a)?.len(), 2)));
+    v.push(sort_step("搜尋：Ctrl+1 依名稱自然排序", b'1', "章 sort:name", ["第2章.md", "第10章.md"]));
+    v.push(sort_step("搜尋：再按 Ctrl+1 反向", b'1', "章 sort:name-desc", ["第10章.md", "第2章.md"]));
+    v.push(sort_step("搜尋：Ctrl+5 依日期（新的在前）", b'5', "章 sort:date", ["第2章.md", "第10章.md"]));
+    v.push(step("搜尋：Ctrl+0 取消排序", |_| palette_key_mods("c", VIRTUAL_KEY(b'0' as u16)), |_, a| {
+        expect("查詢", a.palette.as_ref().map(|p| p.query.as_str()), Some("章"))
+    }));
     v.push(step("搜尋：無法解讀的詞不查詢並提示", |_| palette_set("size:abc"), |_, a| {
         let r = a.palette.as_ref().and_then(|p| p.search.as_ref()).ok_or("不是搜尋模式")?;
         expect("狀態", &r.state, &crate::search::State::Invalid("size:abc".into()))

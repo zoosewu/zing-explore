@@ -21,8 +21,8 @@ use crate::window;
 const DEBOUNCE_MS: u32 = 120;
 /// 一次最多取回的結果
 const LIMIT: u32 = 500;
-/// 輸入框右側顯示結果數的寬度
-const COUNT_W: f32 = 72.0;
+/// 輸入框右側顯示排序與結果數的寬度
+const COUNT_W: f32 = 150.0;
 
 /// 冒煙測試：有值時不查詢服務，改從這些項目中以名稱比對
 #[cfg(feature = "smoke")]
@@ -52,6 +52,8 @@ pub struct Results {
 
 /// 查詢語法的提示（空白時、無法解讀時顯示）
 const SYNTAX: &str = "ext:jpg;png  size:>10mb  dm:today / 2024-05 / 7d  file: folder:  !排除  路徑\\名稱  sort:size / date / name / path / ext";
+/// 排序按鍵的提示
+const SORT_KEYS: &str = "Ctrl+1–5 依名稱、路徑、副檔名、大小、日期排序（再按一次反向），Ctrl+0 取消排序";
 
 fn query(q: &str) -> Result<Response, QueryError> {
     #[cfg(feature = "smoke")]
@@ -64,7 +66,7 @@ fn query(q: &str) -> Result<Response, QueryError> {
 /// 冒煙測試：在程序內以同樣的語法比對與排序（服務端的排序規則見 zing-index 的 server.rs）
 #[cfg(feature = "smoke")]
 fn test_search(items: Vec<SearchItem>, q: &str) -> Vec<SearchItem> {
-    use zing_core::namequery::{Meta, NameQuery, SortKey, fold};
+    use zing_core::namequery::{Meta, NameQuery, SortKey, fold, natural_cmp};
     let nq = NameQuery::parse(q);
     let unix = |ft: u64| if ft == 0 { 0 } else { (ft / 10_000_000).saturating_sub(11_644_473_600) as u32 };
     let mut v: Vec<SearchItem> = items
@@ -79,8 +81,8 @@ fn test_search(items: Vec<SearchItem>, q: &str) -> Vec<SearchItem> {
             let o = match s.key {
                 SortKey::Size => a.size.cmp(&b.size),
                 SortKey::Date => a.modified.cmp(&b.modified),
-                SortKey::Path => fold(a.path.as_bytes()).cmp(&fold(b.path.as_bytes())),
-                _ => fold(path::file_name(&a.path).as_bytes()).cmp(&fold(path::file_name(&b.path).as_bytes())),
+                SortKey::Path => natural_cmp(&fold(a.path.as_bytes()), &fold(b.path.as_bytes())),
+                _ => natural_cmp(&fold(path::file_name(&a.path).as_bytes()), &fold(path::file_name(&b.path).as_bytes())),
             };
             if s.desc { o.reverse() } else { o }
         });
@@ -109,6 +111,12 @@ impl App {
             window::begin_palette_edit(self, r);
         }
         self.invalidate();
+    }
+
+    /// 搜尋面板的排序按鍵：改寫後的查詢（不是搜尋面板時為 None）。`key` 為 None 表示取消排序
+    pub fn search_sort_text(&self, key: Option<zing_core::namequery::SortKey>) -> Option<String> {
+        let p = self.palette.as_ref().filter(|p| p.search.is_some())?;
+        Some(zing_core::namequery::set_sort(&p.query, key))
     }
 
     /// 輸入框內容改變：稍候再查詢（連續輸入只查最後一次）
@@ -203,9 +211,12 @@ impl App {
         let Some(r) = &p.search else { return };
         let c = &self.theme.color;
         let g = &self.gfx;
-        // 輸入框右側：結果數
+        // 輸入框右側：排序與結果數
         if r.state == State::Done && !p.query.trim().is_empty() {
-            let n = if r.more { format!("{}+ 個", r.items.len()) } else { format!("{} 個", r.items.len()) };
+            let mut n = if r.more { format!("{}+ 個", r.items.len()) } else { format!("{} 個", r.items.len()) };
+            if let Some(s) = zing_core::namequery::NameQuery::parse(&p.query).sort {
+                n = format!("{} {}　{n}", s.key.label(), if s.desc { "↓" } else { "↑" });
+            }
             let ir = lay.input;
             g.text(&n, Font::SmallRight, Rect::new(ir.l, ir.t, ir.r - 10.0, ir.b), c.text_secondary);
         }
@@ -213,7 +224,7 @@ impl App {
         if p.matches.is_empty() {
             let text = match &r.state {
                 State::Idle => format!(
-                    "輸入名稱搜尋所有 NTFS 磁碟（空白分隔多個詞，可用 * ?；Enter 前往所在位置、Ctrl+Enter 開啟）　{SYNTAX}"
+                    "輸入名稱搜尋所有 NTFS 磁碟（空白分隔多個詞，可用 * ?；Enter 前往所在位置、Ctrl+Enter 開啟）　{SORT_KEYS}　{SYNTAX}"
                 ),
                 State::Invalid(words) => format!("無法解讀：{words}　　{SYNTAX}"),
                 State::Pending => "搜尋中…".to_string(),
