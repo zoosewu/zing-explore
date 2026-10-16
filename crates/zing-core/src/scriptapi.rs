@@ -29,7 +29,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("nav.goto", &["path string 路徑"], "切換到資料夾（同 `go`）", "nav[\"goto\"](\"C:\\\\Windows\") -- goto 是 Lua 的保留字，要這樣寫；也可以用 go()"),
     spec("address.edit", &[], "編輯網址列", "address.edit()"),
     spec("palette.open", &[], "開啟命令面板", "palette.open()"),
-    spec("search.open", &[], "全磁碟搜尋：以名稱搜尋所有 NTFS 磁碟（需要 NTFS 索引服務）", "search.open()"),
+    spec("search.open", &[], "全磁碟搜尋：以名稱、路徑搜尋所有 NTFS 磁碟，可篩選與排序（語法見 README；需要 NTFS 索引服務）", "search.open()"),
     spec("jobs.toggle", &[], "顯示／隱藏檔案作業面板", "jobs.toggle()"),
     spec("jobs.clear", &[], "清除已完成的檔案作業", "jobs.clear()"),
     spec("file.copy", &[], "複製選取項目到剪貼簿", "file.copy()"),

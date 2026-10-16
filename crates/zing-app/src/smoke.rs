@@ -786,6 +786,22 @@ fn palette_type(text: &str) {
     }
 }
 
+/// 全選後輸入（取代命令面板輸入框的內容）
+fn palette_set(text: &str) {
+    if let Some(e) = edit_hwnd() {
+        key_to(e, "c", letter('a'));
+        type_to(e, text);
+    }
+}
+
+/// 搜尋結果的名稱（依顯示順序）
+fn search_names(a: &App) -> Result<Vec<String>, String> {
+    let p = a.palette.as_ref().ok_or("面板已關閉")?;
+    let r = p.search.as_ref().ok_or("不是搜尋模式")?;
+    expect("狀態", &r.state, &crate::search::State::Done)?;
+    Ok(p.matches.iter().map(|&k| path::file_name(&r.items[k].path).to_string()).collect())
+}
+
 fn list_bottom() -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
@@ -1421,12 +1437,21 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             let (d, dir_a) = (d.clone(), dir_a.clone());
             move |c| {
                 use zing_core::indexproto::SearchItem;
-                let item = |p: String, dir: bool, hidden: bool| SearchItem { path: p, size: 5, dir, hidden };
+                // 修改時間：2024-05-10、2023-01-01（FILETIME）
+                let (may, jan) = (133_597_728_000_000_000, 133_170_048_000_000_000);
+                let item = |p: String, dir: bool, hidden: bool, size: u64, modified: u64| SearchItem {
+                    path: p,
+                    size,
+                    dir,
+                    hidden,
+                    modified,
+                };
                 *crate::search::TEST_RESULTS.lock().unwrap() = Some(vec![
-                    item(path::join(&dir_a, "內層.txt"), false, false),
-                    item(path::join(&d, "隱藏的內層.txt"), false, true),
-                    item(path::join(&d, "報告 9.txt"), false, false),
-                    item(dir_a.clone(), true, false),
+                    item(path::join(&dir_a, "內層.txt"), false, false, 5, may),
+                    item(path::join(&d, "隱藏的內層.txt"), false, true, 5, may),
+                    item(path::join(&d, "報告 9.txt"), false, false, 3 << 20, jan),
+                    item(path::join(&d, "ÉTÉ.JPG"), false, false, 2 << 20, may),
+                    item(dir_a.clone(), true, false, 5, 0),
                 ]);
                 key(c, "c", letter('f'));
             }
@@ -1441,6 +1466,27 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("結果", names, vec!["內層.txt"])
     }));
     v.push(step("截圖：全磁碟搜尋", |_| {}, |c, _| screenshot(c, "11-全磁碟搜尋")));
+    v.push(step("搜尋：篩選大小、依大小排序", |_| palette_set("file: size:>1mb sort:size"), |_, a| {
+        expect("結果", search_names(a)?, vec!["報告 9.txt".to_string(), "ÉTÉ.JPG".to_string()])
+    }));
+    v.push(step("搜尋：副檔名、修改日期、非 ASCII 不分大小寫", |_| palette_set("été ext:jpg dm:2024-05"), |_, a| {
+        expect("結果", search_names(a)?, vec!["ÉTÉ.JPG".to_string()])
+    }));
+    v.push(step(
+        "搜尋：比對完整路徑、排除",
+        {
+            let dir_a = dir_a.clone();
+            move |_| palette_set(&format!("\"{}\\\" !報告", path::file_name(&dir_a)))
+        },
+        |_, a| expect("結果", search_names(a)?, vec!["內層.txt".to_string()]),
+    ));
+    v.push(step("搜尋：無法解讀的詞不查詢並提示", |_| palette_set("size:abc"), |_, a| {
+        let r = a.palette.as_ref().and_then(|p| p.search.as_ref()).ok_or("不是搜尋模式")?;
+        expect("狀態", &r.state, &crate::search::State::Invalid("size:abc".into()))
+    }));
+    v.push(step("搜尋：回到名稱查詢", |_| palette_set("內層"), |_, a| {
+        expect("結果", search_names(a)?, vec!["內層.txt".to_string()])
+    }));
     v.push(step("搜尋：Enter 前往所在的資料夾並選取", |_| palette_key(VK_RETURN), {
         let dir_a = dir_a.clone();
         move |_, a| {

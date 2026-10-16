@@ -1,6 +1,6 @@
 //! 一個 NTFS 磁碟區的索引：資料夾大小與全磁碟搜尋。
 //!
-//! 以記錄編號為索引的陣列（上層資料夾、大小、旗標、名稱），加上資料夾的子資料夾清單與遞迴加總。
+//! 以記錄編號為索引的陣列（上層資料夾、大小、修改時間、旗標、名稱），加上資料夾的子資料夾清單與遞迴加總。
 //! 名稱以 UTF-8 連續存放在一塊記憶體（每筆前面兩個位元組的長度），改名、刪除留下的空間累積到一定量時整理。
 //! 由 MFT 的全部記錄建立（`add` 後 `finish`），之後依變更日誌逐筆以 `update` 套用最新狀態，
 //! 差值沿上層資料夾鏈傳遞到根資料夾。
@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
-use crate::namequery::NameQuery;
+use crate::namequery::{self, DirMatch, Meta, NameQuery, Scratch};
 use crate::ntfs::{self, Record};
 
 const NONE: u32 = u32::MAX;
@@ -63,6 +63,8 @@ pub struct Child {
 pub struct VolumeIndex {
     parent: Vec<u32>,
     size: Vec<u64>,
+    /// 修改時間（Unix 秒，0 表示不知道）。資料夾的修改時間只在它自己的記錄有變更日誌事件時更新
+    mtime: Vec<u32>,
     flags: Vec<u8>,
     /// 每筆記錄的名稱在 `names` 中的位置；NONE 表示沒有
     name_at: Vec<u32>,
@@ -82,6 +84,29 @@ pub struct Found {
     pub hidden: bool,
     /// 檔案的大小；資料夾為遞迴加總
     pub size: u64,
+    /// 修改時間（Unix 秒，0 表示不知道）
+    pub mtime: u32,
+}
+
+/// 一次搜尋的進度：下一個要比對的記錄，以及比對完整路徑時的資料夾路徑快取
+pub struct SearchState {
+    /// None 表示這個磁碟區已經找完
+    pub next: Option<usize>,
+    /// 路徑的開頭（磁碟代號，例如 `C:`）
+    prefix: Vec<u8>,
+    scratch: Scratch,
+    dirs: HashMap<u32, Option<DirMatch>>,
+}
+
+impl SearchState {
+    pub fn new(prefix: &str) -> Self {
+        SearchState { next: Some(0), prefix: prefix.as_bytes().to_vec(), scratch: Scratch::default(), dirs: HashMap::new() }
+    }
+}
+
+/// FILETIME → Unix 秒（1970 年以前、無效時為 0）
+fn unix_secs(ft: u64) -> u32 {
+    (ft / 10_000_000).saturating_sub(11_644_473_600).min(u32::MAX as u64) as u32
 }
 
 fn excluded(frn: u64) -> bool {
@@ -95,6 +120,7 @@ impl VolumeIndex {
         VolumeIndex {
             parent: vec![NONE; records],
             size: vec![0; records],
+            mtime: vec![0; records],
             flags: vec![0; records],
             name_at: vec![NONE; records],
             names: Vec::new(),
@@ -109,6 +135,7 @@ impl VolumeIndex {
             let n = (f + 1).max(self.flags.len() + self.flags.len() / 8);
             self.parent.resize(n, NONE);
             self.size.resize(n, 0);
+            self.mtime.resize(n, 0);
             self.flags.resize(n, 0);
             self.name_at.resize(n, NONE);
         }
@@ -198,6 +225,7 @@ impl VolumeIndex {
                 fl |= SURROGATE;
             }
             self.flags[t] = fl;
+            self.mtime[t] = r.modified.map_or(0, unix_secs);
         }
         if let Some(s) = r.size
             && self.flags[t] & SIZED == 0
@@ -312,6 +340,7 @@ impl VolumeIndex {
             self.flags[f] = 0;
             self.parent[f] = NONE;
             self.size[f] = 0;
+            self.mtime[f] = 0;
             self.clear_name(f);
             self.dirs.remove(&(f as u32));
             return;
@@ -328,6 +357,7 @@ impl VolumeIndex {
         }
         self.flags[f] = fl;
         self.size[f] = if r.dir { 0 } else { r.size.unwrap_or(0) };
+        self.mtime[f] = r.modified.map_or(0, unix_secs);
         // 硬連結：原本的資料夾仍是它的檔名之一時維持不變，避免來回搬動
         let parent = if r.names.iter().any(|n| n.parent == old_parent as u64) {
             old_parent
@@ -401,7 +431,7 @@ impl VolumeIndex {
 
     /// 估計的記憶體用量（位元組）
     pub fn memory(&self) -> usize {
-        let arrays = self.flags.capacity() * (4 + 8 + 1 + 4) + self.names.capacity();
+        let arrays = self.flags.capacity() * (4 + 8 + 4 + 1 + 4) + self.names.capacity();
         let dirs: usize =
             self.dirs.values().map(|d| std::mem::size_of::<(u32, Dir)>() + 8 + d.children.capacity() * 4).sum();
         arrays + dirs
@@ -409,23 +439,95 @@ impl VolumeIndex {
 
     // ------------------------------------------------------------ 全磁碟搜尋
 
-    /// 從記錄 `start` 開始找名稱符合的項目（不含系統保留記錄與根資料夾），最多 `max` 個。
-    /// 回傳找到的項目與下一次的開始位置（全部找完時為 None）
-    pub fn search(&self, q: &NameQuery, start: usize, max: usize) -> (Vec<Found>, Option<usize>) {
+    /// 從 `st.next` 開始找符合的項目（不含系統保留記錄與根資料夾），最多 `max` 個；
+    /// 之後 `st.next` 是下一次的開始位置（全部找完時為 None）
+    pub fn search(&self, q: &NameQuery, st: &mut SearchState, max: usize) -> Vec<Found> {
         let mut out = Vec::new();
+        let Some(start) = st.next else { return out };
+        let needs_path = q.needs_path();
+        // 資料夾的大小要查表：只有篩選大小時才在比對前取得
+        let needs_size = q.needs_size();
         for f in start..self.flags.len() {
             if out.len() >= max {
-                return (out, Some(f));
+                st.next = Some(f);
+                return out;
             }
             let fl = self.flags[f];
-            if fl & USED == 0 || f as u64 == ntfs::ROOT || self.parent[f] == NONE || !q.matches(self.name_bytes(f)) {
+            if fl & USED == 0 || f as u64 == ntfs::ROOT || self.parent[f] == NONE {
                 continue;
             }
             let dir = fl & DIR != 0;
-            let size = if dir { self.dirs.get(&(f as u32)).map_or(0, |d| d.total.bytes) } else { self.size[f] };
-            out.push(Found { frn: f as u32, parent: self.parent[f], dir, hidden: fl & HIDDEN != 0, size });
+            let size = |me: &Self| if dir { me.dirs.get(&(f as u32)).map_or(0, |d| d.total.bytes) } else { me.size[f] };
+            let mut meta = Meta { dir, size: if needs_size { size(self) } else { 0 }, mtime: self.mtime[f] };
+            let name = self.name_bytes(f);
+            if !q.matches_meta(&mut st.scratch, name, meta) {
+                continue;
+            }
+            if needs_path {
+                let Some(dm) = self.dir_match(self.parent[f], q, &st.prefix, &mut st.dirs) else { continue };
+                if !q.matches_in_dir(&mut st.scratch, dm, name) {
+                    continue;
+                }
+            }
+            if !needs_size {
+                meta.size = size(self);
+            }
+            out.push(Found { frn: f as u32, parent: self.parent[f], dir, hidden: fl & HIDDEN != 0, size: meta.size, mtime: meta.mtime });
         }
-        (out, None)
+        st.next = None;
+        out
+    }
+
+    /// 一個項目目前的資訊（搜尋排序後再取用）；已不存在時為 None
+    pub fn found(&self, frn: u32) -> Option<Found> {
+        let f = frn as usize;
+        let fl = *self.flags.get(f)?;
+        if fl & USED == 0 || self.parent[f] == NONE || frn as u64 == ntfs::ROOT {
+            return None;
+        }
+        let dir = fl & DIR != 0;
+        let size = if dir { self.dirs.get(&frn).map_or(0, |d| d.total.bytes) } else { self.size[f] };
+        Some(Found { frn, parent: self.parent[f], dir, hidden: fl & HIDDEN != 0, size, mtime: self.mtime[f] })
+    }
+
+    /// 資料夾的完整路徑（`prefix` 開頭，根資料夾就是 `prefix`）轉成小寫並預先比對，快取在 `cache`；
+    /// 上層鏈斷掉時為 None
+    fn dir_match<'a>(
+        &self,
+        d: u32,
+        q: &NameQuery,
+        prefix: &[u8],
+        cache: &'a mut HashMap<u32, Option<DirMatch>>,
+    ) -> Option<&'a DirMatch> {
+        if !cache.contains_key(&d) {
+            // 往上找到已知的祖先，再由上往下補齊
+            let mut chain = Vec::new();
+            let mut cur = d;
+            let mut base: Option<Vec<u8>> = loop {
+                if let Some(p) = cache.get(&cur) {
+                    break p.as_ref().map(|m| m.folded().to_vec());
+                }
+                if cur as u64 == ntfs::ROOT {
+                    let root = namequery::fold(prefix);
+                    cache.insert(cur, Some(q.dir_match(root.clone())));
+                    break Some(root);
+                }
+                if chain.len() >= 4096 || self.flags.get(cur as usize).is_none_or(|&fl| fl & USED == 0) {
+                    break None;
+                }
+                chain.push(cur);
+                cur = self.parent[cur as usize];
+            };
+            for &c in chain.iter().rev() {
+                base = base.map(|mut p| {
+                    p.push(b'\\');
+                    p.extend_from_slice(&namequery::fold(self.name_bytes(c as usize)));
+                    p
+                });
+                cache.insert(c, base.clone().map(|p| q.dir_match(p)));
+            }
+        }
+        cache.get(&d).and_then(Option::as_ref)
     }
 
     /// 從根資料夾到這個項目的路徑（不含磁碟代號，例如 `Users\me\a.txt`）；上層鏈斷掉時為 None
@@ -449,8 +551,8 @@ impl VolumeIndex {
     // ------------------------------------------------------------ 快照
 
     const MAGIC: &'static [u8; 4] = b"ZIDX";
-    /// 2：加入每筆記錄的名稱（全磁碟搜尋）
-    const VERSION: u32 = 2;
+    /// 2：加入每筆記錄的名稱（全磁碟搜尋）；3：加入修改時間
+    const VERSION: u32 = 3;
 
     /// 寫出快照；`journal` 是變更日誌的 (識別碼, 下一個 USN)，下次載入後從那裡接續
     pub fn save(&self, w: &mut impl Write, journal: (u64, i64)) -> io::Result<()> {
@@ -470,6 +572,10 @@ impl VolumeIndex {
             flush(&mut buf, w)?;
         }
         for chunk in self.size.chunks(4096) {
+            chunk.iter().for_each(|v| buf.extend_from_slice(&v.to_le_bytes()));
+            flush(&mut buf, w)?;
+        }
+        for chunk in self.mtime.chunks(4096) {
             chunk.iter().for_each(|v| buf.extend_from_slice(&v.to_le_bytes()));
             flush(&mut buf, w)?;
         }
@@ -517,6 +623,9 @@ impl VolumeIndex {
         let mut raw = vec![0u8; n * 8];
         r.read_exact(&mut raw)?;
         let size = raw.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
+        let mut raw = vec![0u8; n * 4];
+        r.read_exact(&mut raw)?;
+        let mtime = raw.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
         let mut flags = vec![0u8; n];
         r.read_exact(&mut flags)?;
         let mut name_at = vec![NONE; n];
@@ -541,7 +650,7 @@ impl VolumeIndex {
                 dirs.insert(f as u32, Dir::default());
             }
         }
-        let mut idx = VolumeIndex { parent, size, flags, name_at, names, garbage: 0, dirs, epoch };
+        let mut idx = VolumeIndex { parent, size, mtime, flags, name_at, names, garbage: 0, dirs, epoch };
         idx.finish();
         Ok((idx, (id, usn)))
     }
@@ -572,7 +681,8 @@ mod tests {
             Builder::dir(21).name(20, "a1", 1),
             Builder::file(31).name(21, "x", 1).data(&[0; 100]),
             Builder::file(32).name(21, "y", 1).data(&[0; 50]),
-            Builder::file(33).name(20, "z", 1).data(&[0; 7]),
+            // 2024-05-10 的修改時間
+            Builder::file(33).info(0, (1_715_299_200 + 11_644_473_600) * 10_000_000).name(20, "z", 1).data(&[0; 7]),
             Builder::dir(22).attrs(2).name(ROOT, "h", 1),
             Builder::file(34).name(22, "big", 1).name(21, "link", 1).data_nonresident(0, 1000, &[0x11, 1, 1, 0]),
             Builder::dir(23).attrs(0x410).reparse(0xa000_0003).name(ROOT, "j", 1),
@@ -681,11 +791,14 @@ mod tests {
         assert!(VolumeIndex::load(&mut buf.as_slice(), 5, 10).is_err());
         // 檔名也在快照中
         let q = NameQuery::parse("ext");
-        assert_eq!(w.search(&q, 0, 10).0, v.search(&q, 0, 10).0);
+        assert_eq!(w.search(&q, &mut SearchState::new("C:"), 10), v.search(&q, &mut SearchState::new("C:"), 10));
+        let q = NameQuery::parse("dm:2024");
+        assert_eq!(w.search(&q, &mut SearchState::new("C:"), 10).len(), 1);
     }
 
     fn found(v: &VolumeIndex, q: &str) -> Vec<String> {
-        let mut r: Vec<String> = v.search(&NameQuery::parse(q), 0, 100).0.iter().map(|f| v.path(f.frn).unwrap()).collect();
+        let all = v.search(&NameQuery::parse(q), &mut SearchState::new("C:"), 100);
+        let mut r: Vec<String> = all.iter().map(|f| v.path(f.frn).unwrap()).collect();
         r.sort();
         r
     }
@@ -700,14 +813,24 @@ mod tests {
         assert!(found(&v, "$").is_empty());
         assert!(found(&v, "gone").is_empty());
         assert_eq!(found(&v, "?"), vec!["a", "a\\a1\\x", "a\\a1\\y", "a\\z", "h", "j"]);
-        let r = v.search(&NameQuery::parse("h"), 0, 10).0;
+        let r = v.search(&NameQuery::parse("h"), &mut SearchState::new("C:"), 10);
         assert_eq!((r[0].dir, r[0].hidden, r[0].size), (true, true, 1000));
         // 分批：每批最多 2 個，接續到找完
         let q = NameQuery::parse("?");
-        let (first, next) = v.search(&q, 0, 2);
-        assert_eq!(first.len(), 2);
-        let (rest, end) = v.search(&q, next.unwrap(), 100);
-        assert_eq!((rest.len(), end), (4, None));
+        let mut st = SearchState::new("C:");
+        assert_eq!(v.search(&q, &mut st, 2).len(), 2);
+        assert!(st.next.is_some());
+        assert_eq!(v.search(&q, &mut st, 100).len(), 4);
+        assert_eq!(st.next, None);
+        assert!(v.search(&q, &mut st, 100).is_empty());
+        // 完整路徑（含磁碟代號）、篩選
+        assert_eq!(found(&v, r"a1\"), vec!["a\\a1\\x", "a\\a1\\y"]);
+        assert_eq!(found(&v, r"c:\a\*"), vec!["a\\a1", "a\\a1\\x", "a\\a1\\y", "a\\ext", "a\\z"]);
+        assert!(found(&v, r"d:\a").is_empty());
+        assert_eq!(found(&v, r"!\a1 ?"), vec!["a", "a\\z", "h", "j"]);
+        assert_eq!(found(&v, "file: size:>60"), vec!["a\\a1\\x", "h\\big"]);
+        assert_eq!(found(&v, "folder: size:>1k"), Vec::<String>::new());
+        assert_eq!(found(&v, "dm:2024"), vec!["a\\z"]);
         // 改名、搬移、刪除後立即反映
         v.update(31, Some(&rec(Builder::file(31).name(22, "相片.jpg", 1).data(&[0; 1]))));
         assert_eq!(found(&v, "*.JPG"), vec!["h\\相片.jpg"]);

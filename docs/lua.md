@@ -527,7 +527,7 @@ palette.open()
 
 ### `search.open()`
 
-全磁碟搜尋：以名稱搜尋所有 NTFS 磁碟（需要 NTFS 索引服務）
+全磁碟搜尋：以名稱、路徑搜尋所有 NTFS 磁碟，可篩選與排序（語法見 README；需要 NTFS 索引服務）
 
 ```lua
 search.open()

@@ -1,6 +1,7 @@
 //! 全磁碟搜尋（Ctrl+F）：沿用命令面板的輸入框、清單與按鍵，結果向 NTFS 索引服務查詢。
 //!
 //! - 輸入停頓 `DEBOUNCE_MS` 後在工作池查詢（服務端約數十毫秒），以 generation 丟棄過時的結果。
+//! - 查詢語法（路徑、篩選、排序）見 `zing_core::namequery`；無法解讀的詞先在這裡提示，不送出查詢。
 //! - 服務只回傳呼叫者能列出的資料夾中的項目（見 zing-index 的 server.rs）；隱藏項目依「顯示隱藏檔案」過濾。
 //! - Enter：前往所在的資料夾並選取它；Ctrl+Enter：開啟（資料夾就進入）。
 //! - 隔離模式（效能、冒煙測試）不使用索引；冒煙測試以 `TEST_RESULTS` 提供結果。
@@ -35,6 +36,8 @@ pub enum State {
     Done,
     /// 服務沒有安裝或沒有執行
     NoService,
+    /// 查詢中有無法解讀的詞（例如 `size:abc`）
+    Invalid(String),
     Error(String),
 }
 
@@ -47,14 +50,42 @@ pub struct Results {
     pub generation: u64,
 }
 
+/// 查詢語法的提示（空白時、無法解讀時顯示）
+const SYNTAX: &str = "ext:jpg;png  size:>10mb  dm:today / 2024-05 / 7d  file: folder:  !排除  路徑\\名稱  sort:size / date / name / path / ext";
+
 fn query(q: &str) -> Result<Response, QueryError> {
     #[cfg(feature = "smoke")]
     if let Some(items) = TEST_RESULTS.lock().unwrap().clone() {
-        let nq = zing_core::namequery::NameQuery::parse(q);
-        let items = items.into_iter().filter(|it| nq.matches(path::file_name(&it.path).as_bytes())).collect();
-        return Ok(Response::Found { items, more: false });
+        return Ok(Response::Found { items: test_search(items, q), more: false });
     }
     indexproto::query(&Request::Search { query: q.into(), limit: LIMIT })
+}
+
+/// 冒煙測試：在程序內以同樣的語法比對與排序（服務端的排序規則見 zing-index 的 server.rs）
+#[cfg(feature = "smoke")]
+fn test_search(items: Vec<SearchItem>, q: &str) -> Vec<SearchItem> {
+    use zing_core::namequery::{Meta, NameQuery, SortKey, fold};
+    let nq = NameQuery::parse(q);
+    let unix = |ft: u64| if ft == 0 { 0 } else { (ft / 10_000_000).saturating_sub(11_644_473_600) as u32 };
+    let mut v: Vec<SearchItem> = items
+        .into_iter()
+        .filter(|it| {
+            let m = Meta { dir: it.dir, size: it.size, mtime: unix(it.modified) };
+            nq.matches(path::file_name(&it.path), &it.path, m)
+        })
+        .collect();
+    if let Some(s) = nq.sort {
+        v.sort_by(|a, b| {
+            let o = match s.key {
+                SortKey::Size => a.size.cmp(&b.size),
+                SortKey::Date => a.modified.cmp(&b.modified),
+                SortKey::Path => fold(a.path.as_bytes()).cmp(&fold(b.path.as_bytes())),
+                _ => fold(path::file_name(&a.path).as_bytes()).cmp(&fold(path::file_name(&b.path).as_bytes())),
+            };
+            if s.desc { o.reverse() } else { o }
+        });
+    }
+    v
 }
 
 impl App {
@@ -96,10 +127,11 @@ impl App {
         let Some(r) = p.search.as_mut() else { return };
         r.generation += 1;
         let q = p.query.trim().to_string();
-        if q.is_empty() {
+        let parsed = zing_core::namequery::NameQuery::parse(&q);
+        if q.is_empty() || !parsed.errors.is_empty() {
             r.items.clear();
             r.more = false;
-            r.state = State::Idle;
+            r.state = if q.is_empty() { State::Idle } else { State::Invalid(parsed.errors.join("  ")) };
             p.matches.clear();
             self.invalidate();
             return;
@@ -180,7 +212,10 @@ impl App {
         let row0 = lay.rows[0];
         if p.matches.is_empty() {
             let text = match &r.state {
-                State::Idle => "輸入名稱搜尋所有 NTFS 磁碟（空白分隔多個詞，可用 * ?；Enter 前往所在位置、Ctrl+Enter 開啟）".to_string(),
+                State::Idle => format!(
+                    "輸入名稱搜尋所有 NTFS 磁碟（空白分隔多個詞，可用 * ?；Enter 前往所在位置、Ctrl+Enter 開啟）　{SYNTAX}"
+                ),
+                State::Invalid(words) => format!("無法解讀：{words}　　{SYNTAX}"),
                 State::Pending => "搜尋中…".to_string(),
                 State::Done => "找不到符合的項目".to_string(),
                 State::NoService => "全磁碟搜尋需要 NTFS 索引服務：在命令面板執行「啟用 NTFS 索引服務」".to_string(),
@@ -203,9 +238,12 @@ impl App {
             } else {
                 (c.text, c.text_secondary)
             };
-            let size = if it.dir { format!("資料夾 {}", format::size_short(it.size)) } else { format::size_short(it.size) };
-            g.text(&size, Font::SmallRight, Rect::new(row.l, row.t, row.r - 10.0, row.b), dim);
-            let right = row.r - 10.0 - g.measure(&size, Font::Small) - 16.0;
+            let mut info = if it.dir { format!("資料夾 {}", format::size_short(it.size)) } else { format::size_short(it.size) };
+            if it.modified != 0 {
+                info = format!("{}　{info}", format::filetime_local(it.modified));
+            }
+            g.text(&info, Font::SmallRight, Rect::new(row.l, row.t, row.r - 10.0, row.b), dim);
+            let right = row.r - 10.0 - g.measure(&info, Font::Small) - 16.0;
             let name = path::file_name(&it.path);
             let name_r = Rect::new(row.l + 10.0, row.t, right, row.b);
             g.text(name, Font::Text, name_r, fg);

@@ -8,7 +8,7 @@ use crate::volindex::{Child, Totals};
 pub const PIPE_NAME: &str = r"\\.\pipe\zing-explore-index";
 /// 服務自己的版號：修改 zing-index（行為、協定、快照格式）時加 1。zing 啟動時比對已安裝的服務，
 /// 較舊就以 UAC 更新。1 是還沒有 `Request::Version` 的版本（回答「無法解析請求」）
-pub const SERVICE_VERSION: u32 = 2;
+pub const SERVICE_VERSION: u32 = 3;
 /// 回應的上限（子資料夾非常多的資料夾）；超過時截斷並標記
 pub const MAX_RESPONSE: usize = 16 << 20;
 
@@ -31,6 +31,8 @@ pub struct SearchItem {
     pub size: u64,
     pub dir: bool,
     pub hidden: bool,
+    /// 修改時間（FILETIME）；0 表示不知道
+    pub modified: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,7 +168,7 @@ impl Response {
                 let mut s = format!("found\t{}\n", *more as u8);
                 for it in items {
                     let flags = (it.dir as u32 * SUBDIRS) | if it.hidden { HIDDEN } else { 0 };
-                    let line = format!("{}\t{}\t{flags}\n", escape(&it.path), it.size);
+                    let line = format!("{}\t{}\t{flags}\t{}\n", escape(&it.path), it.size, it.modified);
                     if s.len() + line.len() > MAX_RESPONSE {
                         break;
                     }
@@ -232,7 +234,9 @@ impl Response {
                     let path = unescape(f.next()?);
                     let size = f.next()?.parse().ok()?;
                     let flags: u32 = f.next()?.parse().ok()?;
-                    items.push(SearchItem { path, size, dir: flags & SUBDIRS != 0, hidden: flags & HIDDEN != 0 });
+                    // 版號 2 的服務沒有修改時間
+                    let modified = f.next().and_then(|m| m.parse().ok()).unwrap_or(0);
+                    items.push(SearchItem { path, size, dir: flags & SUBDIRS != 0, hidden: flags & HIDDEN != 0, modified });
                 }
                 Response::Found { items, more }
             }
@@ -384,8 +388,8 @@ mod tests {
             }]),
             Response::Found {
                 items: vec![
-                    SearchItem { path: "C:\\a\tb\\相片.jpg".into(), size: 12, dir: false, hidden: true },
-                    SearchItem { path: "D:\\資料夾".into(), size: 1 << 40, dir: true, hidden: false },
+                    SearchItem { path: "C:\\a\tb\\相片.jpg".into(), size: 12, dir: false, hidden: true, modified: 133_000_000_000_000_000 },
+                    SearchItem { path: "D:\\資料夾".into(), size: 1 << 40, dir: true, hidden: false, modified: 0 },
                 ],
                 more: true,
             },
@@ -397,6 +401,9 @@ mod tests {
             assert_eq!(Response::decode(&r.encode()), Some(r));
         }
         assert_eq!(Response::decode("children\t1\t2"), None);
+        // 版號 2 的服務：搜尋結果沒有修改時間
+        let old = Response::decode("found\t0\nC:\\\\a.txt\t5\t0\n").unwrap();
+        assert_eq!(old, Response::Found { items: vec![SearchItem { path: "C:\\a.txt".into(), size: 5, dir: false, hidden: false, modified: 0 }], more: false });
     }
 
     #[test]

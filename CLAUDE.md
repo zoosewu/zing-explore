@@ -71,8 +71,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   較舊就以 UAC 執行程式旁的 `zing-index --install` 更新；
   服務執行檔只放在系統管理員才能寫入的位置；快照與記錄檔只放在 SYSTEM 與系統管理員能讀取的位置。
 - 全磁碟搜尋（`search.rs`）沿用命令面板（`Palette::search`），輸入停頓後在工作池查詢，以 generation 丟棄過時的結果；
-  冒煙測試以 `search::TEST_RESULTS` 代替服務。名稱比對在 `zing_core::namequery`，索引的名稱與搜尋在 `zing_core::volindex`
-  （改動時跑 `cargo bench -p zing-core --bench core -- ntfs`）。
+  冒煙測試以 `search::TEST_RESULTS` 代替服務（`test_search` 在程序內比對與排序）。查詢語法（路徑、篩選、排序）與比對在
+  `zing_core::namequery`，索引的名稱、修改時間與搜尋在 `zing_core::volindex`，排序在服務端（`server.rs` 的 `search`）
+  （改動時跑 `cargo bench -p zing-core --bench core -- ntfs`，`search_1m_*` 不可明顯退步）。
 - 樹狀列展開中的節點由 `services::TreeWatch` 監看（一條執行緒、只看子資料夾名稱，最多 63 個），變更合併 250 ms 後
   以 `TreeLoad::Refresh` 重新載入並 `reconcile`。
 - 右鍵選單、內容對話方塊、剪貼簿一律交給 `ShellHost`（shellhost.rs）：獨立的 STA 執行緒，UI 只送請求不等待，結果以訊息送回。主機忙碌超過 3 秒時下一個請求會改用新主機。

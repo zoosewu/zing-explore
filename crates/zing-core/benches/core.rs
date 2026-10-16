@@ -110,10 +110,20 @@ fn index_benches(c: &mut Criterion) {
         })
     });
     group.bench_function("index_children_root", |b| b.iter(|| v.children(ROOT).unwrap().len()));
-    // 全磁碟搜尋：100 萬個名稱全部比對一次（找不到，最壞情況）、萬用字元、中文
-    for (name, q) in [("search_1m_substring", "final zzz"), ("search_1m_glob", "img_*7.jpg"), ("search_1m_cjk", "報告 9999")] {
+    // 全磁碟搜尋：100 萬個名稱全部比對一次（找不到，最壞情況）、萬用字元、中文、非 ASCII 大小寫、
+    // 篩選、比對完整路徑（每次重建資料夾路徑快取）
+    for (name, q) in [
+        ("search_1m_substring", "final zzz"),
+        ("search_1m_glob", "img_*7.jpg"),
+        ("search_1m_cjk", "報告 9999"),
+        ("search_1m_unicode_case", "ÉTÉ"),
+        ("search_1m_filters", "ext:jpg size:>1mb"),
+        ("search_1m_path", r#""資料夾 1\zzz""#),
+    ] {
         let q = zing_core::namequery::NameQuery::parse(q);
-        group.bench_function(name, |b| b.iter(|| v.search(&q, 0, usize::MAX).0.len()));
+        group.bench_function(name, |b| {
+            b.iter(|| v.search(&q, &mut zing_core::volindex::SearchState::new("C:"), usize::MAX).len())
+        });
     }
     group.finish();
 }

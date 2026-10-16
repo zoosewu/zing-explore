@@ -7,7 +7,7 @@
 //! 管線只接受本機、已驗證的使用者；快照與記錄檔放在服務帳號（LocalSystem）的 %LOCALAPPDATA%，
 //! 只有 SYSTEM 與系統管理員能讀取（快照含有整顆磁碟的資料夾名稱）。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -34,10 +34,10 @@ use windows::Win32::System::Pipes::{
 use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN};
 use windows::core::PCWSTR;
 use zing_core::indexproto::{self, Request, Response, SearchItem, VolumeStatus};
-use zing_core::namequery::NameQuery;
+use zing_core::namequery::{self, NameQuery, SortKey};
 use zing_core::ntfs::{self, Record};
 use zing_core::text::wide_z;
-use zing_core::volindex::VolumeIndex;
+use zing_core::volindex::{Found, SearchState, VolumeIndex};
 
 use crate::volume::{JournalError, Volume, volume_info};
 
@@ -472,6 +472,8 @@ impl Server {
 impl Server {
     /// 全磁碟搜尋：依磁碟代號順序找，每批候選在讀取鎖內取出（含路徑），鎖外以呼叫者身分確認能列出所在的資料夾。
     /// 數量或時間（3 秒）到上限時停止並標記還有更多
+    /// 全磁碟搜尋。沒有指定排序時依磁碟區、記錄編號的順序邊找邊回傳；有排序時先找完所有磁碟區，
+    /// 只保留排序在前的 `2 × limit` 個候選（不必保存全部符合的項目），再依序檢查權限。
     fn search(&self, pipe: HANDLE, query: &str, limit: u32) -> Response {
         let q = NameQuery::parse(query);
         if q.is_empty() {
@@ -481,46 +483,156 @@ impl Server {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut vols = self.vols.lock().unwrap().clone();
         vols.sort_by_key(|v| v.letter);
-        let mut items = Vec::new();
-        // 上層資料夾能否列出（同一次搜尋中快取）
-        let mut allowed: HashMap<(u32, u32), bool> = HashMap::new();
-        for vol in vols {
-            let mut start = 0;
-            loop {
-                let (batch, next) = {
-                    let st = vol.state.read().unwrap();
-                    let State::Ready(idx) = &*st else { break };
-                    let (found, next) = idx.search(&q, start, 256);
-                    let batch: Vec<_> = found
-                        .into_iter()
-                        .filter_map(|f| {
-                            let rel = idx.path(f.frn)?;
-                            let parent = idx.path(f.parent)?;
-                            Some((f, rel, parent))
-                        })
-                        .collect();
-                    (batch, next)
-                };
-                for (f, rel, parent) in batch {
-                    let ok = *allowed.entry((vol.serial, f.parent)).or_insert_with(|| {
-                        let dir = format!("{}:\\{parent}", vol.letter);
-                        can_list_as_client(pipe, &dir, vol.serial, f.parent)
-                    });
-                    if ok {
-                        items.push(SearchItem { path: format!("{}:\\{rel}", vol.letter), size: f.size, dir: f.dir, hidden: f.hidden });
-                        if items.len() >= limit {
-                            return Response::Found { items, more: true };
+        let mut check = Allowed { pipe, cache: HashMap::new() };
+        let Some(sort) = q.sort else {
+            let mut items = Vec::new();
+            for vol in &vols {
+                let mut st = SearchState::new(&format!("{}:", vol.letter));
+                while st.next.is_some() {
+                    // 在鎖內取得路徑，鎖外以呼叫者身分檢查（會開啟資料夾）
+                    let batch: Vec<_> = {
+                        let st_lock = vol.state.read().unwrap();
+                        let State::Ready(idx) = &*st_lock else { break };
+                        idx.search(&q, &mut st, 256).into_iter().filter_map(|f| located(idx, f)).collect()
+                    };
+                    for (f, rel, parent) in batch {
+                        if check.ok(vol, f.parent, &parent) {
+                            items.push(item(vol, &f, &rel));
+                            if items.len() >= limit {
+                                return Response::Found { items, more: true };
+                            }
+                        }
+                    }
+                    if st.next.is_some() && Instant::now() >= deadline {
+                        return Response::Found { items, more: true };
+                    }
+                }
+            }
+            return Response::Found { items, more: false };
+        };
+        let keep = limit * 2;
+        let mut heap = BinaryHeap::with_capacity(keep + 1);
+        // 有候選因為超出保留數量而被捨棄，或時間到了
+        let mut more = false;
+        'vols: for (vi, vol) in vols.iter().enumerate() {
+            let mut st = SearchState::new(&format!("{}:", vol.letter));
+            while st.next.is_some() {
+                {
+                    let st_lock = vol.state.read().unwrap();
+                    let State::Ready(idx) = &*st_lock else { break };
+                    for f in idx.search(&q, &mut st, 4096) {
+                        let key = match sort.key {
+                            SortKey::Size => Key::Num(f.size),
+                            SortKey::Date => Key::Num(f.mtime as u64),
+                            SortKey::Name => Key::Text(namequery::fold(idx.name(f.frn).as_bytes())),
+                            SortKey::Ext => {
+                                let n = namequery::fold(idx.name(f.frn).as_bytes());
+                                let mut k = match (f.dir, n.iter().rposition(|&b| b == b'.')) {
+                                    (false, Some(i)) => n[i + 1..].to_vec(),
+                                    _ => Vec::new(),
+                                };
+                                // 資料夾排在檔案前面（遞增時）
+                                k.insert(0, if f.dir { 0 } else { 1 });
+                                k.push(0);
+                                k.extend_from_slice(&n);
+                                Key::Text(k)
+                            }
+                            SortKey::Path => match idx.path(f.frn) {
+                                Some(p) => Key::Text(namequery::fold(p.as_bytes())),
+                                None => continue,
+                            },
+                        };
+                        heap.push(Cand { key, desc: sort.desc, vol: vi, frn: f.frn });
+                        if heap.len() > keep {
+                            heap.pop();
+                            more = true;
                         }
                     }
                 }
-                match next {
-                    Some(n) if Instant::now() < deadline => start = n,
-                    Some(_) => return Response::Found { items, more: true },
-                    None => break,
+                if st.next.is_some() && Instant::now() >= deadline {
+                    more = true;
+                    break 'vols;
                 }
             }
         }
-        Response::Found { items, more: false }
+        let mut items = Vec::new();
+        for c in heap.into_sorted_vec() {
+            let vol = &vols[c.vol];
+            let located = {
+                let st_lock = vol.state.read().unwrap();
+                let State::Ready(idx) = &*st_lock else { continue };
+                idx.found(c.frn).and_then(|f| located(idx, f))
+            };
+            let Some((f, rel, parent)) = located else { continue };
+            if check.ok(vol, f.parent, &parent) {
+                items.push(item(vol, &f, &rel));
+                if items.len() >= limit {
+                    return Response::Found { items, more: true };
+                }
+            }
+        }
+        Response::Found { items, more }
+    }
+}
+
+/// 排序的候選：`BinaryHeap` 的頂端是排在最後的一個
+struct Cand {
+    key: Key,
+    desc: bool,
+    vol: usize,
+    frn: u32,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum Key {
+    Num(u64),
+    Text(Vec<u8>),
+}
+
+impl Ord for Cand {
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        let k = self.key.cmp(&o.key);
+        let k = if self.desc { k.reverse() } else { k };
+        k.then((self.vol, self.frn).cmp(&(o.vol, o.frn)))
+    }
+}
+impl PartialOrd for Cand {
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl PartialEq for Cand {
+    fn eq(&self, o: &Self) -> bool {
+        self.cmp(o).is_eq()
+    }
+}
+impl Eq for Cand {}
+
+/// 項目與所在資料夾的路徑（不含磁碟代號）；上層鏈斷掉時為 None
+fn located(idx: &VolumeIndex, f: Found) -> Option<(Found, String, String)> {
+    let rel = idx.path(f.frn)?;
+    let parent = idx.path(f.parent)?;
+    Some((f, rel, parent))
+}
+
+fn item(vol: &Vol, f: &Found, rel: &str) -> SearchItem {
+    let modified = if f.mtime == 0 { 0 } else { (f.mtime as u64 + 11_644_473_600) * 10_000_000 };
+    SearchItem { path: format!("{}:\\{rel}", vol.letter), size: f.size, dir: f.dir, hidden: f.hidden, modified }
+}
+
+/// 呼叫者能否列出結果所在的資料夾（同一次搜尋中快取）
+struct Allowed {
+    pipe: HANDLE,
+    cache: HashMap<(u32, u32), bool>,
+}
+
+impl Allowed {
+    fn ok(&mut self, vol: &Vol, parent: u32, parent_path: &str) -> bool {
+        let pipe = self.pipe;
+        *self.cache.entry((vol.serial, parent)).or_insert_with(|| {
+            let dir = format!("{}:\\{parent_path}", vol.letter);
+            can_list_as_client(pipe, &dir, vol.serial, parent)
+        })
     }
 }
 

@@ -81,6 +81,8 @@ pub struct Record {
     pub size: Option<u64>,
     /// 標準資訊中的檔案屬性
     pub attrs: Option<u32>,
+    /// 標準資訊中的修改時間（FILETIME）
+    pub modified: Option<u64>,
     /// 重新解析標籤；沒有或無法讀取（非常駐）時為 0
     pub reparse_tag: u32,
     /// 常駐屬性清單中，存放檔名或資料流的其他記錄
@@ -155,7 +157,10 @@ pub fn parse_record(rec: &[u8], frn: u64) -> Option<Record> {
     let mut r = Record { frn, dir, base: u64_at(rec, 32)? & FRN_MASK, ..Default::default() };
     for a in attributes(rec) {
         match a.ty {
-            ATTR_STANDARD_INFORMATION => r.attrs = a.value.and_then(|v| u32_at(v, 32)),
+            ATTR_STANDARD_INFORMATION => {
+                r.attrs = a.value.and_then(|v| u32_at(v, 32));
+                r.modified = a.value.and_then(|v| u64_at(v, 8));
+            }
             ATTR_FILE_NAME => {
                 let Some(v) = a.value else { continue };
                 let (Some(parent), Some(&len), Some(&ns)) = (u64_at(v, 0), v.get(64), v.get(65)) else {
@@ -309,8 +314,14 @@ pub mod build {
             self
         }
 
-        pub fn attrs(mut self, attrs: u32) -> Self {
+        pub fn attrs(self, attrs: u32) -> Self {
+            self.info(attrs, 0)
+        }
+
+        /// 標準資訊：檔案屬性與修改時間（FILETIME）
+        pub fn info(mut self, attrs: u32, modified: u64) -> Self {
             let mut v = vec![0u8; 48];
+            v[8..16].copy_from_slice(&modified.to_le_bytes());
             v[32..36].copy_from_slice(&attrs.to_le_bytes());
             self.attrs.push(resident(ATTR_STANDARD_INFORMATION, &v));
             self
