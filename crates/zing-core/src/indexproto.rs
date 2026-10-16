@@ -6,6 +6,9 @@
 use crate::volindex::{Child, Totals};
 
 pub const PIPE_NAME: &str = r"\\.\pipe\zing-explore-index";
+/// 服務自己的版號：修改 zing-index（行為、協定、快照格式）時加 1。zing 啟動時比對已安裝的服務，
+/// 較舊就以 UAC 更新。1 是還沒有 `Request::Version` 的版本（回答「無法解析請求」）
+pub const SERVICE_VERSION: u32 = 2;
 /// 回應的上限（子資料夾非常多的資料夾）；超過時截斷並標記
 pub const MAX_RESPONSE: usize = 16 << 20;
 
@@ -16,6 +19,8 @@ pub enum Request {
     Status,
     /// 全磁碟搜尋（`zing_core::namequery` 的語法）：最多 `limit` 個，只含呼叫者能列出的資料夾中的項目
     Search { query: String, limit: u32 },
+    /// 服務的版號（`SERVICE_VERSION`）
+    Version,
 }
 
 /// 搜尋到的一個項目
@@ -54,6 +59,7 @@ pub enum Response {
     Status(Vec<VolumeStatus>),
     /// 搜尋結果；`more` 表示還有更多（達到數量上限或時間上限）
     Found { items: Vec<SearchItem>, more: bool },
+    Version(u32),
     Error(String),
 }
 
@@ -96,6 +102,7 @@ impl Request {
             Request::Children { path, since } => format!("children\t{}\t{since}", escape(path)),
             Request::Status => "status".into(),
             Request::Search { query, limit } => format!("search\t{}\t{limit}", escape(query)),
+            Request::Version => "version".into(),
         }
     }
 
@@ -105,6 +112,7 @@ impl Request {
             "children" => Some(Request::Children { path: unescape(f.next()?), since: f.next()?.parse().ok()? }),
             "status" => Some(Request::Status),
             "search" => Some(Request::Search { query: unescape(f.next()?), limit: f.next()?.parse().ok()? }),
+            "version" => Some(Request::Version),
             _ => None,
         }
     }
@@ -166,6 +174,7 @@ impl Response {
                 }
                 s
             }
+            Response::Version(v) => format!("version\t{v}"),
             Response::Error(e) => format!("error\t{}", escape(e)),
         }
     }
@@ -227,6 +236,7 @@ impl Response {
                 }
                 Response::Found { items, more }
             }
+            "version" => Response::Version(num()? as u32),
             "error" => Response::Error(unescape(head.split_once('\t').map_or("", |x| x.1))),
             _ => return None,
         })
@@ -239,6 +249,16 @@ pub enum QueryError {
     /// 服務沒有安裝或沒有執行
     NotRunning,
     Failed(String),
+}
+
+/// 從 `Request::Version` 的結果判斷已安裝服務的版號；沒有安裝、沒有執行或查詢失敗時為 None
+pub fn installed_version(r: &Result<Response, QueryError>) -> Option<u32> {
+    match r {
+        Ok(Response::Version(v)) => Some(*v),
+        // 版號 1 的服務不認得這個請求
+        Ok(Response::Error(e)) if e == "無法解析請求" => Some(1),
+        _ => None,
+    }
 }
 
 /// 送出一個請求並等待回應（阻塞，在背景執行緒呼叫）。服務只在本機、以呼叫者的身分檢查權限。
@@ -321,6 +341,7 @@ mod tests {
             Request::Children { path: "C:\\a\tb\\新資料夾".into(), since: 42 },
             Request::Status,
             Request::Search { query: "\"年度 報告\" *.docx\t".into(), limit: 500 },
+            Request::Version,
         ] {
             assert_eq!(Request::decode(&r.encode()), Some(r));
         }
@@ -369,11 +390,21 @@ mod tests {
                 more: true,
             },
             Response::Found { items: vec![], more: false },
+            Response::Version(SERVICE_VERSION),
             Response::Error("x\ty".into()),
         ];
         for r in all {
             assert_eq!(Response::decode(&r.encode()), Some(r));
         }
         assert_eq!(Response::decode("children\t1\t2"), None);
+    }
+
+    #[test]
+    fn installed_versions() {
+        assert_eq!(installed_version(&Ok(Response::Version(7))), Some(7));
+        assert_eq!(installed_version(&Ok(Response::Error("無法解析請求".into()))), Some(1));
+        assert_eq!(installed_version(&Ok(Response::Error("其他".into()))), None);
+        assert_eq!(installed_version(&Err(QueryError::NotRunning)), None);
+        assert_eq!(installed_version(&Err(QueryError::Failed("x".into()))), None);
     }
 }

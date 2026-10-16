@@ -67,6 +67,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   （效能、冒煙測試）不使用索引，結果才可重現。服務以 LocalSystem 執行，修改時遵守：每個查詢先以呼叫者身分
   （`ImpersonateNamedPipeClient`）開啟資料夾，無權列出就拒絕；只回答大小與名稱（不提供檔案內容）；
   全磁碟搜尋的每個結果都先以呼叫者身分開啟它所在的資料夾，能列出且是索引中的同一個資料夾才回傳；管線拒絕遠端連線；
+  修改 zing-index（行為、協定、快照格式）時把 `indexproto::SERVICE_VERSION` 加 1：zing 啟動時比對已安裝服務的版號，
+  較舊就以 UAC 執行程式旁的 `zing-index --install` 更新；
   服務執行檔只放在系統管理員才能寫入的位置；快照與記錄檔只放在 SYSTEM 與系統管理員能讀取的位置。
 - 全磁碟搜尋（`search.rs`）沿用命令面板（`Palette::search`），輸入停頓後在工作池查詢，以 generation 丟棄過時的結果；
   冒煙測試以 `search::TEST_RESULTS` 代替服務。名稱比對在 `zing_core::namequery`，索引的名稱與搜尋在 `zing_core::volindex`

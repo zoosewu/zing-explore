@@ -4,7 +4,9 @@
 //!   網路磁碟…）或索引還在建立時，改用逐資料夾掃描（`sizes.rs`，設定 `[folder_sizes] auto`）。
 //! - 每 2 秒以變動標記輪詢目前顯示的資料夾：沒有變動時服務只回「沒變」，有變動才送新的大小。
 //! - 查詢在單一背景執行緒進行（每次約 1 ms），UI 不等待；隔離模式（效能、冒煙測試）不使用索引，結果才可重現。
+//! - 啟動時（第一幀之後）詢問服務的版號，比 `SERVICE_VERSION` 舊就以 UAC 執行 `zing-index --install` 更新。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use zing_core::dirsize::DirSize;
@@ -33,6 +35,15 @@ pub fn subdirs(path: &str, show_hidden: bool) -> Option<Children> {
     v.sort_by(|a, b| natural_cmp(&a.0, &b.0));
     let (names, subdirs) = v.into_iter().map(|(_, n, s)| (n, s)).unzip();
     Some(Children::new(names, subdirs))
+}
+
+/// zing-index 的操作（以 UAC 執行）
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tool {
+    Install,
+    /// 已安裝的服務比較舊（版號）
+    Update(u32),
+    Uninstall,
 }
 
 fn now_secs() -> u64 {
@@ -130,51 +141,92 @@ impl App {
         }
     }
 
+    /// 啟動時（第一幀之後）：已安裝的服務比這版 zing 舊就更新；沒有安裝時不做任何事
+    pub fn check_index_version(&mut self) {
+        // 每個程序只檢查一次（多個視窗共用同一個服務）
+        static CHECKED: AtomicBool = AtomicBool::new(false);
+        if self.isolated || CHECKED.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let n = self.notifier.clone();
+        self.index_pool().spawn(move || {
+            let installed = indexproto::installed_version(&indexproto::query(&Request::Version));
+            if let Some(v) = installed.filter(|&v| v < indexproto::SERVICE_VERSION) {
+                n.send(Msg::IndexOutdated { installed: v });
+            }
+        });
+    }
+
+    pub fn on_index_outdated(&mut self, installed: u32) {
+        self.run_index_tool(Tool::Update(installed));
+    }
+
     /// 命令：index.install、index.uninstall、index.status
     pub fn index_command(&mut self, cmd: &str) {
-        let exe = crate::settings::app_dir().join("zing-index.exe");
+        match cmd {
+            "index.install" => self.run_index_tool(Tool::Install),
+            "index.uninstall" => self.run_index_tool(Tool::Uninstall),
+            _ => self.index_status(),
+        }
+    }
+
+    fn index_status(&mut self) {
         let n = self.notifier.clone();
-        if cmd == "index.status" {
-            self.index_pool().spawn(move || {
-                let (text, error) = match indexproto::query(&Request::Status) {
-                    Ok(Response::Status(vols)) => {
-                        let parts: Vec<String> = vols
-                            .iter()
-                            .map(|v| match v.state.as_str() {
-                                "ready" => format!("{} 就緒（{} 個資料夾）", v.volume, v.dirs),
-                                "scanning" => format!("{} 建立中 {}%", v.volume, v.detail),
-                                _ => format!("{} 錯誤：{}", v.volume, v.detail),
-                            })
-                            .collect();
-                        (format!("索引服務：{}", parts.join("、")), false)
-                    }
-                    Err(QueryError::NotRunning) => ("索引服務沒有執行（命令面板：啟用 NTFS 索引服務）".into(), false),
-                    Ok(_) => ("索引服務回應異常".into(), true),
-                    Err(QueryError::Failed(e)) => (format!("無法查詢索引服務：{e}"), true),
-                };
-                n.send(Msg::IndexAction { text, error, changed: false });
-            });
-            return;
-        }
+        self.index_pool().spawn(move || {
+            let (text, error) = match indexproto::query(&Request::Status) {
+                Ok(Response::Status(vols)) => {
+                    let parts: Vec<String> = vols
+                        .iter()
+                        .map(|v| match v.state.as_str() {
+                            "ready" => format!("{} 就緒（{} 個資料夾）", v.volume, v.dirs),
+                            "scanning" => format!("{} 建立中 {}%", v.volume, v.detail),
+                            _ => format!("{} 錯誤：{}", v.volume, v.detail),
+                        })
+                        .collect();
+                    (format!("索引服務：{}", parts.join("、")), false)
+                }
+                Err(QueryError::NotRunning) => ("索引服務沒有執行（命令面板：啟用 NTFS 索引服務）".into(), false),
+                Ok(_) => ("索引服務回應異常".into(), true),
+                Err(QueryError::Failed(e)) => (format!("無法查詢索引服務：{e}"), true),
+            };
+            n.send(Msg::IndexAction { text, error, changed: false });
+        });
+    }
+
+    /// 以系統管理員身分（UAC）執行程式旁的 zing-index，結束後在狀態列回報
+    fn run_index_tool(&mut self, tool: Tool) {
+        let exe = crate::settings::app_dir().join("zing-index.exe");
+        let latest = indexproto::SERVICE_VERSION;
         if !exe.is_file() {
-            self.set_status(format!("找不到 {}", exe.display()), true);
+            let text = match tool {
+                Tool::Update(v) => format!("索引服務是舊版（版號 {v}，最新 {latest}），但找不到 {} 無法更新", exe.display()),
+                _ => format!("找不到 {}", exe.display()),
+            };
+            self.set_status(text, true);
             return;
         }
-        let install = cmd == "index.install";
         self.set_status(
-            if install {
-                "正在啟用索引服務（需要系統管理員權限）…"
-            } else {
-                "正在移除索引服務…"
+            match tool {
+                Tool::Install => "正在啟用索引服務（需要系統管理員權限）…".to_string(),
+                Tool::Update(v) => format!("索引服務是舊版（版號 {v}，最新 {latest}），正在更新：請在 UAC 視窗確認"),
+                Tool::Uninstall => "正在移除索引服務…".to_string(),
             },
             false,
         );
+        let n = self.notifier.clone();
         // 直接以系統管理員身分（UAC）執行 zing-index，等它結束並依結束代碼回報；
         // 不用 std::process::Command（會多帶約 0.1 MB 的程式碼進執行檔）
         std::thread::spawn(move || {
-            let arg = if install { "--install" } else { "--uninstall" };
+            let arg = if tool == Tool::Uninstall { "--uninstall" } else { "--install" };
             let (text, error) = match run_elevated(&exe.to_string_lossy(), arg) {
-                Ok(0) => (if install { "已啟用索引服務，正在建立索引" } else { "已移除索引服務" }.to_string(), false),
+                Ok(0) => (
+                    match tool {
+                        Tool::Install => "已啟用索引服務，正在建立索引".to_string(),
+                        Tool::Update(_) => format!("已更新索引服務（版號 {latest}）"),
+                        Tool::Uninstall => "已移除索引服務".to_string(),
+                    },
+                    false,
+                ),
                 Ok(code) => (
                     format!(
                         "索引服務操作失敗（結束代碼 {code}），詳見 {}",
@@ -182,7 +234,14 @@ impl App {
                     ),
                     true,
                 ),
-                Err(None) => ("已取消".to_string(), false),
+                Err(None) => (
+                    if let Tool::Update(_) = tool {
+                        "已取消更新索引服務（下次啟動 zing 時會再詢問）".to_string()
+                    } else {
+                        "已取消".to_string()
+                    },
+                    false,
+                ),
                 Err(Some(e)) => (format!("無法執行 zing-index：{e}"), true),
             };
             n.send(Msg::IndexAction { text, error, changed: !error });

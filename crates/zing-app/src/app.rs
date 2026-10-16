@@ -832,6 +832,7 @@ impl App {
             }
             Msg::IndexSizes { parent, result } => self.on_index_sizes(parent, result),
             Msg::IndexAction { text, error, changed } => self.on_index_action(text, error, changed),
+            Msg::IndexOutdated { installed } => self.on_index_outdated(installed),
             Msg::Paste { sources, dest, cut } => self.submit_op(FileOp::Transfer { sources, dest, mov: cut }),
             Msg::ConfigLoaded { config, theme, warnings } => {
                 if config.thumbnailers != self.config.thumbnailers {

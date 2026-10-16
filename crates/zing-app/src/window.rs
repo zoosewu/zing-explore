@@ -684,6 +684,7 @@ fn deferred_init(hwnd: HWND) {
             unsafe {
                 SetTimer(Some(hwnd), crate::app::TIMER_INDEX, crate::app::INDEX_POLL_MS, None);
             }
+            a.check_index_version();
         }
     });
     unsafe {

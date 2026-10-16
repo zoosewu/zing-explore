@@ -405,6 +405,7 @@ impl Server {
             Some(Request::Status) => self.status(),
             Some(Request::Children { path, since }) => self.children(pipe, &path, since),
             Some(Request::Search { query, limit }) => self.search(pipe, &query, limit),
+            Some(Request::Version) => Response::Version(indexproto::SERVICE_VERSION),
             None => Response::Error("無法解析請求".into()),
         };
         unsafe {

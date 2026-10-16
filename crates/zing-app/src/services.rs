@@ -93,6 +93,8 @@ pub enum Msg {
     IndexSizes { parent: String, result: Result<zing_core::indexproto::Response, zing_core::indexproto::QueryError> },
     /// 安裝、移除索引服務或查詢狀態的結果（狀態列訊息，成功時重新查詢）
     IndexAction { text: String, error: bool, changed: bool },
+    /// 已安裝的索引服務比這版 zing 舊（版號）
+    IndexOutdated { installed: u32 },
 }
 
 /// 檔案作業完成後要選取（並可能進入重新命名）的項目

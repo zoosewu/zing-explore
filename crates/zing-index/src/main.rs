@@ -20,6 +20,7 @@ zing-index：zing-explore 的 NTFS 索引服務
   zing-index --install                 安裝（或更新）並啟動服務，需要時跳出 UAC
   zing-index --uninstall               停止並移除服務，刪除快照與記錄檔
   zing-index --status                  顯示服務與各磁碟的索引狀態
+  zing-index --version                 顯示這個執行檔的服務版號
   zing-index --scan C: [--verify 資料夾]
                                        （系統管理員）讀取一次 MFT，顯示耗時與記憶體；
                                        --verify 以逐資料夾掃描比對該資料夾與其子資料夾的大小
@@ -40,6 +41,10 @@ fn main() {
         Some("--install") => elevated_action("--install", "安裝", service::install),
         Some("--uninstall") => elevated_action("--uninstall", "移除", service::uninstall),
         Some("--status") => status(),
+        Some("--version") => {
+            println!("{}", indexproto::SERVICE_VERSION);
+            0
+        }
         Some("--scan") => scan(&args[1..]),
         Some("--console") => {
             if !service::is_elevated() {
@@ -104,7 +109,12 @@ fn gb(b: u64) -> String {
 fn status() -> i32 {
     match indexproto::query(&Request::Status) {
         Ok(Response::Status(vols)) => {
-            println!("服務執行中");
+            let running = match indexproto::query(&Request::Version) {
+                Ok(Response::Version(v)) => v,
+                _ => 1,
+            };
+            let note = if running < indexproto::SERVICE_VERSION { "，比這個執行檔舊：zing-index --install 更新" } else { "" };
+            println!("服務執行中（版號 {running}{note}）");
             for v in vols {
                 match v.state.as_str() {
                     "ready" => println!(
