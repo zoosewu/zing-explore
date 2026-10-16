@@ -4,7 +4,7 @@ use zing_core::keymap::KeyChord;
 use zing_core::path;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_MENU,
+    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_MENU,
     VK_NEXT, VK_PRIOR, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 
@@ -22,7 +22,9 @@ pub struct Mods {
 impl Mods {
     pub fn current() -> Self {
         let down = |vk: u16| unsafe { GetKeyState(vk as i32) } < 0;
-        Self { ctrl: down(VK_CONTROL.0), shift: down(VK_SHIFT.0), alt: down(VK_MENU.0) }
+        // 左右兩邊分別也看：輸入法啟用時，右 Ctrl 不一定會反映在 VK_CONTROL
+        let ctrl = down(VK_CONTROL.0) || down(VK_LCONTROL.0) || down(VK_RCONTROL.0);
+        Self { ctrl, shift: down(VK_SHIFT.0), alt: down(VK_MENU.0) }
     }
 }
 

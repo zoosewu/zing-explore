@@ -48,6 +48,10 @@ pub const TIMER_PREVIEW: usize = 9;
 pub const TIMER_THEME_WATCH: usize = 10;
 /// 預覽處理常式的看門狗
 pub const TIMER_PREVIEW_WATCHDOG: usize = 11;
+/// 樹狀列展開中的資料夾有變更：合併短時間內的變更後重新載入
+pub const TIMER_TREE_REFRESH: usize = 12;
+/// 全磁碟搜尋：輸入停頓後才查詢
+pub const TIMER_SEARCH: usize = 13;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -114,6 +118,10 @@ pub struct App {
     pub tree_pool: Option<Pool>,
     /// 第一幀之後才開始預先載入樹狀列
     pub probes_enabled: bool,
+    /// 監看樹狀列展開中的節點；第一次有展開的節點時才建立
+    pub tree_watch: Option<services::TreeWatch>,
+    /// 有變更、等著重新載入的樹狀列節點
+    pub tree_dirty: Vec<String>,
     pub tree_visible: bool,
     pub preview: crate::preview::Preview,
     /// 批次重新命名面板
@@ -227,6 +235,8 @@ impl App {
             tree,
             tree_pool: None,
             probes_enabled: false,
+            tree_watch: None,
+            tree_dirty: Vec::new(),
             focus: Focus::List,
             favorites,
             pool,
@@ -549,6 +559,39 @@ impl App {
         for path in self.tree.take_probes(first.saturating_sub(4), count + 4) {
             self.load_tree(path, TreeLoad::Probe);
         }
+        self.sync_tree_watch();
+    }
+
+    /// 監看展開中的節點（資料夾監看只看清單中的資料夾，樹狀列的子資料夾要另外看）
+    fn sync_tree_watch(&mut self) {
+        let dirs: Vec<&str> = self.tree.nodes.iter().filter(|n| n.expanded && !n.path.is_empty()).map(|n| n.path.as_str()).collect();
+        if dirs.is_empty() && self.tree_watch.is_none() {
+            return;
+        }
+        if self.tree_watch.is_none() {
+            self.tree_watch = services::TreeWatch::new(&self.notifier);
+        }
+        if let Some(w) = &mut self.tree_watch {
+            w.set(&dirs);
+        }
+    }
+
+    pub fn on_tree_dir_changed(&mut self, path: String) {
+        if !self.tree_dirty.iter().any(|p| p.eq_ignore_ascii_case(&path)) {
+            self.tree_dirty.push(path);
+        }
+        unsafe { SetTimer(Some(self.hwnd), TIMER_TREE_REFRESH, 250, None) };
+    }
+
+    pub fn on_tree_refresh_timer(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_TREE_REFRESH);
+        }
+        for path in std::mem::take(&mut self.tree_dirty) {
+            if self.tree.nodes.iter().any(|n| n.expanded && n.path.eq_ignore_ascii_case(&path)) {
+                self.load_tree(path, TreeLoad::Refresh);
+            }
+        }
     }
 
     /// 樹狀列展開到目前資料夾
@@ -709,6 +752,8 @@ impl App {
                     }
                 }
             }
+            Msg::TreeDirChanged(path) => self.on_tree_dir_changed(path),
+            Msg::SearchResults { generation, result } => self.on_search_results(generation, result),
             Msg::TreeChildren { path, children, kind } => match kind {
                 TreeLoad::Probe => self.tree.set_probe(&path, children),
                 TreeLoad::Refresh => {
@@ -777,6 +822,9 @@ impl App {
             Msg::ScriptExec(script) => self.exec(&script),
             Msg::ScriptAsk { prompt, default, reply } => self.open_ask(prompt, default, reply),
             Msg::ScriptPickFolder { title, default, reply } => self.open_pick_folder(title, default, reply),
+            Msg::ScriptClipboard { text, reply } => {
+                self.shell_host.submit(ShellJob::SetText { text, status: String::new(), reply: Some(reply) })
+            }
             Msg::ScriptsLoaded(l) => self.on_scripts_loaded(l),
             Msg::Thumb { id, pixels, source } => {
                 self.thumbs.store(id, pixels, source);
@@ -924,6 +972,7 @@ impl App {
             }
             "address.edit" => window::begin_address_edit(self),
             "palette.open" => self.open_palette(),
+            "search.open" => self.open_search(),
             "jobs.toggle" => self.jobs_toggle(),
             "jobs.clear" => self.jobs_clear(),
             "file.copy" | "file.cut" => {
@@ -994,7 +1043,7 @@ impl App {
             "file.copypath" => {
                 let paths = self.tab().target_paths();
                 let text = if paths.is_empty() { self.tab().path.clone() } else { paths.join("\r\n") };
-                self.shell_host.submit(ShellJob::SetText { text, status: "已複製路徑".into() });
+                self.shell_host.submit(ShellJob::SetText { text, status: "已複製路徑".into(), reply: None });
             }
             "copy" => {
                 let dest = inv.flag("to").filter(|d| !d.is_empty()).ok_or("copy 需要 --to=目的地")?;

@@ -469,7 +469,17 @@ fn new_lua(n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -> mlua::R
         })?,
     )?;
     g.raw_set("__log", lua_fn(&lua, |_, v: Value| append(&scripts_dir().join("zing.log"), &text(&v)))?)?;
-    g.raw_set("__is_dir", lua_fn(&lua, |_, v: Value| Path::new(&text(&v)).is_dir())?)?;
+    let tx = n.clone();
+    g.raw_set(
+        "__clipboard_set",
+        lua_fn(&lua, move |_, v: Value| {
+            let (reply, rx) = sync_channel(1);
+            tx.send(Msg::ScriptClipboard { text: lf_to_crlf(&text(&v)), reply });
+            // ShellHost 忙碌（卡住的 Shell 擴充功能）時不無限等待
+            rx.recv_timeout(Duration::from_secs(5)).unwrap_or(false)
+        })?,
+    )?;
+    add_system_fns(&lua)?;
     add_process_fns(&lua)?;
     // 時間上限：prelude 的鉤子每執行一段指令問一次，超過時由 Lua 丟出錯誤
     let d = deadline.0.clone();
@@ -480,6 +490,50 @@ fn new_lua(n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -> mlua::R
     lua.load(PRELUDE).set_name("@prelude.lua").exec()?;
     add_debug_fns(&lua, q.clone(), crate::luadebug::send)?;
     Ok(lua)
+}
+
+/// 檔案系統與剪貼簿：__is_dir、__stat、__clipboard_get（寫入剪貼簿需要 UI，見 new_lua）
+fn add_system_fns(lua: &Lua) -> mlua::Result<()> {
+    let g = lua.globals();
+    g.raw_set("__is_dir", lua_fn(lua, |_, v: Value| Path::new(&text(&v)).is_dir())?)?;
+    g.raw_set("__stat", lua_fn(lua, |l, v: Value| stat(l, &text(&v)))?)?;
+    g.raw_set("__clipboard_get", lua_fn(lua, |_, ()| crate::window::clipboard_text().map(|s| s.replace("\r\n", "\n")))?)?;
+    Ok(())
+}
+
+/// stat(path)：大小、時間（Unix 秒數，可直接給 os.date）、屬性；失敗時回傳 nil 與錯誤訊息
+fn stat(l: &Lua, p: &str) -> (Option<Table>, Option<String>) {
+    use std::os::windows::fs::MetadataExt;
+    zing_core::guard::io("Lua stat()");
+    let m = match std::fs::metadata(p) {
+        Ok(m) => m,
+        Err(e) => return (None, Some(e.to_string())),
+    };
+    let secs = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64)
+    };
+    let attrs = m.file_attributes();
+    let t = (|| -> mlua::Result<Table> {
+        let t = l.create_table()?;
+        t.raw_set("size", if m.is_dir() { 0 } else { m.len() as i64 })?;
+        t.raw_set("modified", secs(m.modified()))?;
+        t.raw_set("created", secs(m.created()))?;
+        t.raw_set("accessed", secs(m.accessed()))?;
+        t.raw_set("is_dir", m.is_dir())?;
+        t.raw_set("readonly", attrs & 0x1 != 0)?;
+        t.raw_set("hidden", attrs & 0x2 != 0)?;
+        t.raw_set("system", attrs & 0x4 != 0)?;
+        Ok(t)
+    })();
+    match t {
+        Ok(t) => (Some(t), None),
+        Err(e) => (None, Some(e.to_string())),
+    }
+}
+
+/// 剪貼簿用 Windows 的換行
+fn lf_to_crlf(s: &str) -> String {
+    s.replace("\r\n", "\n").replace('\n', "\r\n")
 }
 
 /// 除錯器（debugger.lua）與它的傳輸函式。`send` 送出一個 DAP 訊息（測試用自己的版本）
@@ -883,6 +937,7 @@ mod tests {
         for name in ["__invoke", "__msg", "__exec", "__ask", "__pick_folder", "__log", "__is_dir", "__expired"] {
             g.set(name, lua.create_function(|_, _: mlua::MultiValue| Ok(())).unwrap()).unwrap();
         }
+        add_system_fns(&lua).unwrap();
         add_process_fns(&lua).unwrap();
         g.set("__commands", lua.create_sequence_from(scriptapi::COMMANDS.iter().map(|c| c.name)).unwrap()).unwrap();
         drop(g);
@@ -1111,6 +1166,7 @@ mod tests {
         l.load(
             "function __ask() return table.remove(__answers, 1) end; __pick_folder = __ask
              __calls = {}
+             function __clipboard_set(t) __clip = t; return true end
              function __invoke(name, pos, flags)
                __calls[#__calls + 1] = name .. '|' .. table.concat(pos, ';') .. '|' .. tostring(flags.to)
              end",
@@ -1220,6 +1276,14 @@ mod tests {
         let m = example_run(&l, "sha256_verify()", &[]);
         assert!(m.contains("0 個相符、1 個不符、1 個找不到"), "{m}");
 
+        // 只有一個檔案：雜湊也放到剪貼簿
+        set_ctx(&l, &dir, &["甲 1.txt"]);
+        let m = example_run(&l, "sha256_create()", &["單一.sha256"]);
+        assert!(m.contains("已複製到剪貼簿"), "{m}");
+        let clip: String = l.load("return __clip").eval().unwrap();
+        let written = std::fs::read_to_string(dir.join("單一.sha256")).unwrap();
+        assert_eq!(written, format!("{clip}  甲 1.txt\n"));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1254,6 +1318,18 @@ mod tests {
         // 沒有選取檔案
         set_ctx(&l, &dir, &["資料夾"]);
         assert!(example_run(&l, "organize_by_type()", &[]).contains("請先選取"));
+
+        // 依修改日期（stat）：舊檔案在 2020-03，其他是這個月
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_584_230_400); // 2020-03-15
+        std::fs::File::options().write(true).open(dir.join("c.pdf")).unwrap().set_modified(old).unwrap();
+        l.load("__calls = {}").exec().unwrap();
+        set_ctx(&l, &dir, &["a.JPG", "c.pdf", "資料夾"]);
+        let m = example_run(&l, "organize_by_date()", &[&dir.to_string_lossy()]);
+        assert!(m.contains("2 個檔案到 2 個月份資料夾"), "{m}");
+        let now: String = l.load("return os.date('%Y-%m')").eval().unwrap();
+        let calls: Vec<String> = l.load("return __calls").eval().unwrap();
+        assert_eq!(calls, [format!(r"copy|{d}\c.pdf|{d}\2020-03"), format!(r"copy|{d}\a.JPG|{d}\{now}")]);
+        assert!(dir.join("2020-03").is_dir());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1320,6 +1396,32 @@ mod tests {
         assert!(flat.join("甲.txt").exists() && flat.join("乙.txt").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// stat()：大小、時間（給 os.date）、屬性；不存在時回傳 nil 與錯誤訊息
+    #[test]
+    fn stat_files() {
+        let _allow = zing_core::guard::allow_io("測試");
+        let dir = example_dir("stat");
+        let f = dir.join("資料 1.bin");
+        std::fs::write(&f, [0u8; 1234]).unwrap();
+        std::process::Command::new("attrib").arg("+R").arg("+H").arg(&f).status().unwrap();
+        let l = lua();
+        l.globals().set("F", f.to_string_lossy().as_ref()).unwrap();
+        l.globals().set("D", dir.to_string_lossy().as_ref()).unwrap();
+        assert_eq!(
+            run(&l, "local s = stat(F); return { s.size, s.is_dir, s.readonly, s.hidden, s.system, os.date('%Y', s.modified) == os.date('%Y') }"),
+            "{ 1234, false, true, true, false, true }"
+        );
+        assert_eq!(run(&l, "local s = stat(D); return { s.size, s.is_dir, math.abs(s.created - os.time()) < 600 }"), "{ 0, true, true }");
+        assert_eq!(run(&l, "local s, e = stat(path.join(D, '不存在')); return { s == nil, type(e) }"), "{ true, string }");
+        std::process::Command::new("attrib").arg("-R").arg("-H").arg(&f).status().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clipboard_newlines() {
+        assert_eq!(lf_to_crlf("a\nb\r\nc"), "a\r\nb\r\nc");
     }
 
     #[test]

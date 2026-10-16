@@ -1,5 +1,6 @@
 -- zing-explore 內建函式庫：惰性串流、不可變、純函式、組合。說明見 docs/lua.md（由 scriptapi.rs 產生）。
--- 由 Rust 提供：__invoke(名稱, 位置參數, 旗標)、__msg、__exec、__ask、__pick_folder、__log、__is_dir、__expired、
+-- 由 Rust 提供：__invoke(名稱, 位置參數, 旗標)、__msg、__exec、__ask、__pick_folder、__log、__is_dir、__stat、
+-- __clipboard_get、__clipboard_set、__expired、
 -- __spawn、__shell、__popen_open/read/write/close、__commands、__ctx
 -- Rust 提供的函式不會丟錯；錯誤一律在 Lua 這邊丟出（見 script.rs 開頭）
 
@@ -319,6 +320,11 @@ function pick_folder(title, default)
   return __pick_folder(title and tostring(title) or "", default and tostring(default) or "")
 end
 function is_dir(p) return __is_dir(p) end
+function stat(p) return __stat(tostring(p)) end
+function clipboard(text)
+  if text == nil then return __clipboard_get() end
+  return __clipboard_set(tostring(text))
+end
 
 function log(...)
   local parts = table.pack(...)

@@ -183,12 +183,17 @@ use windows::Win32::Graphics::Gdi::{
     DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SelectObject,
 };
 use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardSequenceNumber,
+    IsClipboardFormatAvailable, OpenClipboard,
+};
+use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
 use windows::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardState, SetKeyboardState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F2, VK_HOME,
-    VK_LEFT, VK_MENU, VK_OEM_5, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB,
+    VK_LEFT, VK_MENU, VK_OEM_5, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect, ICON_BIG, KillTimer, SendMessageW, SetTimer, WM_CHAR, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
@@ -295,6 +300,8 @@ struct Driver {
     violations: Vec<String>,
     /// 上一個計時器週期處理的步驟（卡頓是在訊息處理完後才回報的）
     last_step: String,
+    /// 測試開始前使用者的剪貼簿
+    clip: ClipBackup,
 }
 
 thread_local! {
@@ -310,7 +317,10 @@ pub fn start(hwnd: HWND, smoke: Smoke) {
         started: Instant::now(),
         notes: Vec::new(),
     };
+    crate::window::TEST_NO_HISTORY.store(true, std::sync::atomic::Ordering::Relaxed);
+    let clip = harness_io(clip_backup);
     let driver = Driver {
+        clip,
         steps: steps(&ctx).into(),
         ctx,
         out: smoke.out,
@@ -358,9 +368,10 @@ impl Driver {
         let (errors, last) = (&mut self.errors, &mut self.last_status);
         let expect_error = step.expect_error;
         let r = {
-            // 檢查會讀磁碟、寫截圖；被測的程式碼在動作中執行，不受影響
+            // 檢查會讀磁碟、寫截圖；被測的程式碼在動作中執行，不受影響。
+            // 測試資料夾、截圖可能在慢的硬碟上：檢查花的時間不算 UI 停頓（動作仍受卡頓監看）
             let _allow = zing_core::guard::allow_io("冒煙測試的驗證");
-            with_app(|a| {
+            crate::window::exclude_from_stall(|| with_app(|a| {
                 if let Some((text, true, _)) = &a.status
                     && text != last
                 {
@@ -370,7 +381,7 @@ impl Driver {
                     }
                 }
                 (step.check)(ctx, a)
-            })
+            }))
         };
         let elapsed = ctx.started.elapsed();
         let ms = elapsed.as_secs_f64() * 1000.0;
@@ -388,8 +399,22 @@ impl Driver {
         }
     }
 
-    fn finish(self) {
+    fn finish(mut self) {
         let _allow = zing_core::guard::allow_io("冒煙測試寫出報告");
+        // 還原使用者的剪貼簿：剪貼簿上還是測試寫入的內容（帶測試標記）才還原，不論中途有沒有步驟失敗；
+        // 沒有標記但已改變表示使用者自己複製了東西，不動
+        let ours = unsafe { IsClipboardFormatAvailable(crate::window::test_clipboard_format()) }.is_ok();
+        let restored = if ours {
+            if harness_io(|| clip_restore(self.ctx.hwnd, &self.clip)) { "restored" } else { "restore_failed" }
+        } else if unsafe { GetClipboardSequenceNumber() } == self.clip.seq {
+            "untouched"
+        } else {
+            "changed_by_user"
+        };
+        self.ctx.notes.push(("clipboard", restored.into()));
+        if restored == "restore_failed" {
+            self.errors.push("無法還原使用者的剪貼簿（Win+V 的剪貼簿歷程中仍有原本的內容）".into());
+        }
         let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
         let list = |v: &[String]| v.iter().map(|s| format!("\"{}\"", esc(s))).collect::<Vec<_>>().join(", ");
         let mut violations = self.violations.clone();
@@ -412,7 +437,81 @@ impl Driver {
             list(&self.errors),
             list(&violations),
         );
-        let _ = std::fs::write(&self.out, json);
+        let _ = harness_io(|| std::fs::write(&self.out, json));
+    }
+}
+
+// ---------------------------------------------------------------- 使用者的剪貼簿
+
+/// 測試開始前的剪貼簿：每個能以記憶體區塊複製的格式（文字、檔案清單、DIB 圖片、HTML…）
+struct ClipBackup {
+    formats: Vec<(u32, Vec<u8>)>,
+    /// 備份時的序號
+    seq: u32,
+}
+
+/// GDI 控制代碼等不是記憶體區塊的格式：無法複製（點陣圖另有 CF_DIB 可以還原）
+fn clip_skip(f: u32) -> bool {
+    matches!(f, 2 | 3 | 9 | 14 | 0x80 | 0x82 | 0x83 | 0x8E) || (0x300..=0x3FF).contains(&f)
+}
+
+/// 開啟剪貼簿（別的程式正開著時稍候重試）
+fn clip_open(owner: Option<HWND>) -> bool {
+    for _ in 0..20 {
+        if unsafe { OpenClipboard(owner) }.is_ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
+fn clip_backup() -> ClipBackup {
+    let mut formats = Vec::new();
+    let seq = unsafe { GetClipboardSequenceNumber() };
+    if !clip_open(None) {
+        return ClipBackup { formats, seq };
+    }
+    let ours = crate::window::test_clipboard_format();
+    unsafe {
+        let mut f = 0;
+        loop {
+            f = EnumClipboardFormats(f);
+            if f == 0 {
+                break;
+            }
+            if clip_skip(f) || f == ours {
+                continue;
+            }
+            let Ok(h) = GetClipboardData(f) else { continue };
+            let mem = windows::Win32::Foundation::HGLOBAL(h.0);
+            let p = GlobalLock(mem) as *const u8;
+            if p.is_null() {
+                continue;
+            }
+            formats.push((f, std::slice::from_raw_parts(p, GlobalSize(mem)).to_vec()));
+            let _ = GlobalUnlock(mem);
+        }
+        let _ = CloseClipboard();
+    }
+    ClipBackup { formats, seq }
+}
+
+/// 放回備份的內容（不再進入剪貼簿歷程：原本的內容已經在歷程裡）
+fn clip_restore(owner: HWND, b: &ClipBackup) -> bool {
+    if !clip_open(Some(owner)) {
+        return false;
+    }
+    unsafe {
+        let ok = EmptyClipboard().is_ok();
+        for (f, data) in &b.formats {
+            let _ = crate::window::put_clipboard(*f, data);
+        }
+        if !b.formats.is_empty() {
+            crate::window::mark_no_history();
+        }
+        let _ = CloseClipboard();
+        ok
     }
 }
 
@@ -436,6 +535,16 @@ fn with_mods(mods: &str, f: impl FnOnce()) {
         let _ = SetKeyboardState(&state);
         f();
         let _ = SetKeyboardState(&saved);
+    }
+}
+
+/// 設定執行緒鍵盤狀態中的一個鍵（跨越多個訊息按住修飾鍵）
+fn set_key(vk: VIRTUAL_KEY, down: bool) {
+    unsafe {
+        let mut state = [0u8; 256];
+        let _ = GetKeyboardState(&mut state);
+        state[vk.0 as usize] = if down { 0x80 } else { 0 };
+        let _ = SetKeyboardState(&state);
     }
 }
 
@@ -792,6 +901,12 @@ fn write_bmp(p: &std::path::Path, w: i32, h: i32, px: &[u8]) -> std::io::Result<
 }
 
 /// 截圖並檢查不是空白畫面；記錄平均亮度供之後比較
+/// 測試工具自己的檔案 I/O（見 `window::exclude_from_stall`）
+fn harness_io<R>(f: impl FnOnce() -> R) -> R {
+    let _allow = zing_core::guard::allow_io("冒煙測試工具的檔案");
+    crate::window::exclude_from_stall(f)
+}
+
 fn screenshot(ctx: &mut Ctx, name: &str) -> Result<(), String> {
     // 等呈現完成（翻轉模型的內容在 Present 之後才會被合成）
     if ctx.started.elapsed() < Duration::from_millis(200) {
@@ -993,6 +1108,34 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |_, a| {
             expect("篩選", a.tab().filter.as_str(), "報告")?;
             expect("結果", names(a), vec!["報告 9.txt".to_string(), "報告 10.txt".to_string()])
+        },
+    ));
+    v.push(step(
+        "篩選：輸入法組字視窗對齊篩選標籤的文字結尾",
+        |c| {
+            use windows::Win32::UI::WindowsAndMessaging::{WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION};
+            send(c.hwnd, WM_IME_STARTCOMPOSITION, 0, 0);
+            send(c.hwnd, WM_IME_ENDCOMPOSITION, 0, 0);
+        },
+        |_, a| {
+            use windows::Win32::UI::Input::Ime::{COMPOSITIONFORM, ImmGetCompositionWindow, ImmGetContext, ImmReleaseContext};
+            let chip = a.layout.filter_chip.ok_or("沒有篩選標籤")?;
+            let s = a.gfx.scale();
+            let mut cf = COMPOSITIONFORM::default();
+            unsafe {
+                let himc = ImmGetContext(a.hwnd);
+                if himc.0.is_null() {
+                    return Ok(()); // 沒有輸入法（IMM 停用）：不檢查
+                }
+                let _ = ImmGetCompositionWindow(himc, &mut cf);
+                let _ = ImmReleaseContext(a.hwnd, himc);
+            }
+            let (x, y) = (cf.ptCurrentPos.x as f32 / s, cf.ptCurrentPos.y as f32 / s);
+            // 在標籤內、「篩選：報告」之後，垂直在標籤範圍內
+            if x < chip.l + 60.0 || x > chip.r - 20.0 || y < chip.t - 4.0 || y > chip.b {
+                return Err(format!("組字視窗在 ({x:.0}, {y:.0})，標籤 {chip:?}"));
+            }
+            Ok(())
         },
     ));
     v.push(step("篩選：Backspace 刪字", |c| key(c, "", VK_BACK), |_, a| expect("篩選", a.tab().filter.as_str(), "報")));
@@ -1270,6 +1413,86 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         let d = d.clone();
         move |_, a| at(a, &d)
     }));
+
+    // ------------------------------------------------ 全磁碟搜尋（隔離模式不用索引服務：以 TEST_RESULTS 提供結果）
+    v.push(step(
+        "搜尋：Ctrl+F 開啟搜尋面板",
+        {
+            let (d, dir_a) = (d.clone(), dir_a.clone());
+            move |c| {
+                use zing_core::indexproto::SearchItem;
+                let item = |p: String, dir: bool, hidden: bool| SearchItem { path: p, size: 5, dir, hidden };
+                *crate::search::TEST_RESULTS.lock().unwrap() = Some(vec![
+                    item(path::join(&dir_a, "內層.txt"), false, false),
+                    item(path::join(&d, "隱藏的內層.txt"), false, true),
+                    item(path::join(&d, "報告 9.txt"), false, false),
+                    item(dir_a.clone(), true, false),
+                ]);
+                key(c, "c", letter('f'));
+            }
+        },
+        |_, a| expect("搜尋模式", a.palette.as_ref().is_some_and(|p| p.search.is_some()), true),
+    ));
+    v.push(step("搜尋：輸入名稱列出結果（隱藏項目依設定略過）", |_| palette_type("內層"), |_, a| {
+        let p = a.palette.as_ref().ok_or("面板已關閉")?;
+        let r = p.search.as_ref().ok_or("不是搜尋模式")?;
+        expect("狀態", &r.state, &crate::search::State::Done)?;
+        let names: Vec<&str> = p.matches.iter().map(|&k| path::file_name(&r.items[k].path)).collect();
+        expect("結果", names, vec!["內層.txt"])
+    }));
+    v.push(step("截圖：全磁碟搜尋", |_| {}, |c, _| screenshot(c, "11-全磁碟搜尋")));
+    v.push(step("搜尋：Enter 前往所在的資料夾並選取", |_| palette_key(VK_RETURN), {
+        let dir_a = dir_a.clone();
+        move |_, a| {
+            palette_closed(a)?;
+            at(a, &dir_a)?;
+            expect("選取", selected(a), vec!["內層.txt".to_string()])
+        }
+    }));
+    v.push(step("搜尋：回到測試資料夾", |c| key(c, "a", VK_LEFT), {
+        let d = d.clone();
+        move |_, a| at(a, &d)
+    }));
+    v.push(step(
+        "搜尋：搜尋資料夾",
+        |c| {
+            key(c, "c", letter('f'));
+            palette_type("資料夾A");
+        },
+        |_, a| {
+            let p = a.palette.as_ref().ok_or("面板已關閉")?;
+            let r = p.search.as_ref().ok_or("不是搜尋模式")?;
+            expect("狀態", &r.state, &crate::search::State::Done)?;
+            expect("結果數", p.matches.len(), 1)
+        },
+    ));
+    // Enter 會到上一層並選取它；Ctrl+Enter 進入資料夾
+    // 右 Ctrl 一直按著到確認處理完（Enter 的確認是 post 的，真實鍵盤此時 Ctrl 仍按著）；只設右 Ctrl，左右都要認得
+    v.push(step("搜尋：右 Ctrl+Enter 開啟（資料夾就進入）", |_| {
+        set_key(VK_RCONTROL, true);
+        if let Some(e) = edit_hwnd() {
+            key_to(e, "", VK_RETURN);
+        }
+    }, {
+        let dir_a = dir_a.clone();
+        move |_, a| {
+            // 計時器訊息排在 post 的確認之後：檢查時確認已處理完，先放開（失敗時也不會一直按著）
+            set_key(VK_RCONTROL, false);
+            palette_closed(a)?;
+            at(a, &dir_a)
+        }
+    }));
+    v.push(step(
+        "搜尋：回到測試資料夾（結束）",
+        |c| {
+            *crate::search::TEST_RESULTS.lock().unwrap() = None;
+            key(c, "a", VK_LEFT);
+        },
+        {
+            let d = d.clone();
+            move |_, a| at(a, &d)
+        },
+    ));
     v.push(step(
         "命令面板：滑鼠點選項目執行",
         |c| {
@@ -1597,6 +1820,31 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             expect("箭頭", n.arrow(), false)
         }
     }));
+    // 在別處（不經 zing）新增、刪除子資料夾：展開中的節點自動更新
+    let outside = path::join(&d, "樹狀列外部新增");
+    v.push(step(
+        "樹狀列：在別處新增子資料夾，展開中的節點自動出現",
+        {
+            let outside = outside.clone();
+            // 在背景做：測試資料夾可能在慢的硬碟上
+            move |_| drop(std::thread::spawn(move || std::fs::create_dir(&outside)))
+        },
+        {
+            let (d, outside) = (d.clone(), outside.clone());
+            move |_, a| {
+                let k = a.tree.find(&outside).ok_or("樹狀列還沒有新的子資料夾")?;
+                expect("子節點深度", a.tree.nodes[k].depth, a.tree.nodes[a.tree.find(&d).ok_or("找不到節點")?].depth + 1)
+            }
+        },
+    ));
+    v.push(step(
+        "樹狀列：在別處刪除子資料夾，節點自動移除",
+        {
+            let outside = outside.clone();
+            move |_| drop(std::thread::spawn(move || std::fs::remove_dir(&outside)))
+        },
+        move |_, a| expect("節點", a.tree.find(&outside), None),
+    ));
     v.push(step(
         "樹狀列：再點一次收合",
         {
@@ -1709,8 +1957,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                 let d = d.clone();
                 move |_| {
                     let dir = path::join(&d, "封面測試");
-                    let _ = std::fs::create_dir_all(&dir);
-                    let _ = std::fs::write(path::join(&dir, "cover.png"), TINY_PNG);
+                    let _ = harness_io(|| std::fs::create_dir_all(&dir));
+                    let _ = harness_io(|| std::fs::write(path::join(&dir, "cover.png"), TINY_PNG));
                 }
             },
             {
@@ -1739,7 +1987,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                         a.config.thumbnailers = vec![t.clone()];
                         a.thumbs.set_thumbnailers(vec![t]);
                     });
-                    let _ = std::fs::write(path::join(&d, "外部產生.zt"), b"x");
+                    let _ = harness_io(|| std::fs::write(path::join(&d, "外部產生.zt"), b"x"));
                 }
             },
             {
@@ -1758,14 +2006,18 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         {
             let d = d.clone();
             move |c| {
-                let _ = std::fs::remove_dir_all(path::join(&d, "封面測試"));
-                let _ = std::fs::remove_file(path::join(&d, "外部產生.zt"));
                 with_app(|a| {
                     a.config.thumbnailers.clear();
                     a.thumbs.set_thumbnailers(Vec::new());
                 });
-                // 隔離模式下外部命令的縮圖放在暫存資料夾
-                let _ = std::fs::remove_dir_all(crate::thumbs::cache_dir(true));
+                // 清理在背景做：測試資料夾可能在慢的硬碟上，刪除會被卡頓監看當成 UI 停頓
+                // （隔離模式下外部命令的縮圖放在暫存資料夾）
+                let cache = crate::thumbs::cache_dir(true);
+                std::thread::spawn(move || {
+                    let _ = std::fs::remove_dir_all(path::join(&d, "封面測試"));
+                    let _ = std::fs::remove_file(path::join(&d, "外部產生.zt"));
+                    let _ = std::fs::remove_dir_all(cache);
+                });
                 key(c, "cs", VIRTUAL_KEY(b'1' as u16));
             }
         },
@@ -1815,7 +2067,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                 let d = d.clone();
                 // 資料夾監看會讓清單自動重新整理
                 move |_| {
-                    let _ = std::fs::write(path::join(&d, "預覽圖.png"), TINY_PNG);
+                    let _ = harness_io(|| std::fs::write(path::join(&d, "預覽圖.png"), TINY_PNG));
                 }
             },
             |_, a| {
@@ -1847,7 +2099,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             let d = d.clone();
             move |c| {
                 key(c, "a", letter('p'));
-                let _ = std::fs::remove_file(path::join(&d, "預覽圖.png"));
+                let _ = harness_io(|| std::fs::remove_file(path::join(&d, "預覽圖.png")));
             }
         },
         |_, a| {
@@ -1863,9 +2115,9 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         {
             let bd = batch_dir.clone();
             move |_| {
-                let _ = std::fs::create_dir_all(&bd);
+                let _ = harness_io(|| std::fs::create_dir_all(&bd));
                 for n in ["x1.txt", "x2.txt", "y.txt"] {
-                    let _ = std::fs::write(path::join(&bd, n), n);
+                    let _ = harness_io(|| std::fs::write(path::join(&bd, n), n));
                 }
                 with_app(|a| {
                     let p = a.active_pane;
@@ -1999,7 +2251,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                     let p = a.active_pane;
                     a.navigate(p, d.clone(), true);
                 });
-                let _ = std::fs::remove_dir_all(&bd);
+                let _ = harness_io(|| std::fs::remove_dir_all(&bd));
             }
         },
         {
@@ -2070,7 +2322,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             "主題：匯入 .zingtheme",
             |_| {
                 let f = zing_core::testdir::dir().join("smoke-import.zingtheme");
-                let _ = std::fs::write(&f, "name = \"smoke-import\"\nstyle = \"fluent\"\n[color]\naccent = \"#00ff00\"\n");
+                let _ = harness_io(|| std::fs::write(&f, "name = \"smoke-import\"\nstyle = \"fluent\"\n[color]\naccent = \"#00ff00\"\n"));
                 with_app(|a| a.import_theme_file(f.to_string_lossy().into_owned()));
             },
             |_, a| {
@@ -2091,7 +2343,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         step(
             "主題：文字編輯器存檔後自動重新載入",
             |_| {
-                let _ = std::fs::write(theme_path("smoke-import"), "name = \"smoke-import\"\nstyle = \"fluent\"\n[color]\naccent = \"#0000ff\"\n");
+                let _ = harness_io(|| std::fs::write(theme_path("smoke-import"), "name = \"smoke-import\"\nstyle = \"fluent\"\n[color]\naccent = \"#0000ff\"\n"));
             },
             |_, a| expect("強調色", a.theme.color.accent, zing_core::theme::Color::rgb(0x0000ff)),
         )
@@ -2102,9 +2354,9 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |_| {
             with_app(|a| a.stop_theme_watch());
             for n in ["smoke-theme", "smoke-import"] {
-                let _ = std::fs::remove_file(theme_path(n));
+                let _ = harness_io(|| std::fs::remove_file(theme_path(n)));
             }
-            let _ = std::fs::remove_file(zing_core::testdir::dir().join("smoke-import.zingtheme"));
+            let _ = harness_io(|| std::fs::remove_file(zing_core::testdir::dir().join("smoke-import.zingtheme")));
             exec("theme.set dark");
         },
         |_, a| {
@@ -2189,8 +2441,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             "Lua：載入腳本（全域函式成為命令，標題取自 --- 註解）",
             |_| {
                 let dir = crate::script::scripts_dir();
-                let _ = std::fs::create_dir_all(&dir);
-                let _ = std::fs::write(dir.join("smoke.lua"), SMOKE_LUA);
+                let _ = harness_io(|| std::fs::create_dir_all(&dir));
+                let _ = harness_io(|| std::fs::write(dir.join("smoke.lua"), SMOKE_LUA));
                 exec("script.reload");
             },
             |_, a| {
@@ -2228,6 +2480,60 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                 palette_key(VK_RETURN);
             },
             |_, a| expect("狀態列", status(a).as_deref(), Some("= { 20, 40 }")),
+        )
+        .slow(),
+    );
+
+    // ------------------------------------------------ 剪貼簿（開始前已備份使用者的剪貼簿，結束時還原；測試內容不進入剪貼簿歷程）
+    const CLIP_TEXT: &str = "zing 冒煙測試：剪貼簿\n第二行";
+    let palette_eval = |expr: String| {
+        move |c: &mut Ctx| {
+            key(c, "cs", letter('p'));
+            if let Some(e) = edit_hwnd() {
+                set_text(e, &expr);
+            }
+            palette_key(VK_RETURN);
+        }
+    };
+    let clip_is = |want: String| move |_: &mut Ctx, _: &mut App| expect("剪貼簿", crate::window::clipboard_text(), Some(want.clone()));
+    v.push(
+        step("剪貼簿：Lua clipboard() 寫入", palette_eval(format!("= clipboard({CLIP_TEXT:?})")), {
+            // 剪貼簿裡是 Windows 的換行
+            let check = clip_is(CLIP_TEXT.replace('\n', "\r\n"));
+            move |c, a| {
+                expect("狀態列", status(a).as_deref(), Some("= true"))?;
+                check(c, a)
+            }
+        })
+        .slow(),
+    );
+    v.push(
+        step("剪貼簿：Lua clipboard() 讀回（換行為 \\n）", palette_eval(format!("= clipboard() == {CLIP_TEXT:?}")), |_, a| {
+            expect("狀態列", status(a).as_deref(), Some("= true"))
+        })
+        .slow(),
+    );
+    v.push(
+        step(
+            "剪貼簿：複製路徑（選取的項目）",
+            |_| {
+                with_app(|a| {
+                    a.exec("sel.all");
+                    a.exec("file.copypath");
+                });
+            },
+            {
+                let d = d.clone();
+                move |c, a| {
+                    at(a, &d)?;
+                    // 多個項目以換行分隔
+                    let want = a.tab().target_paths().join("\r\n");
+                    if a.tab().target_paths().len() < 2 {
+                        return Err("全選後選取的項目少於兩個".into());
+                    }
+                    clip_is(want)(c, a)
+                }
+            },
         )
         .slow(),
     );
@@ -2390,9 +2696,9 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             |_| {
                 crate::script::TEST_CALL_LIMIT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
                 let dir = crate::script::scripts_dir();
-                let _ = std::fs::remove_file(dir.join("smoke.lua"));
-                let _ = std::fs::remove_file(dir.join("error.log"));
-                let _ = std::fs::remove_file(dir.join("zing.log"));
+                let _ = harness_io(|| std::fs::remove_file(dir.join("smoke.lua")));
+                let _ = harness_io(|| std::fs::remove_file(dir.join("error.log")));
+                let _ = harness_io(|| std::fs::remove_file(dir.join("zing.log")));
                 exec("script.reload");
             },
             |_, a| {

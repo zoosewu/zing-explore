@@ -496,11 +496,17 @@ impl Tree {
     }
 
     /// 以重新載入的內容更新已展開節點的子資料夾：保留仍存在的子節點（含其展開的子樹），
-    /// 加入新的、移除已不存在的
+    /// 加入新的、移除已不存在的。同一個路徑可能出現在我的最愛與此電腦之下，都會更新
     pub fn reconcile(&mut self, path_: &str, c: Children) {
-        let Some(i) = self.nodes.iter().position(|n| n.expanded && n.path.eq_ignore_ascii_case(path_)) else {
-            return;
-        };
+        // 由後往前：更新後面的不影響前面節點的位置
+        let found: Vec<usize> =
+            (0..self.nodes.len()).filter(|&i| self.nodes[i].expanded && self.nodes[i].path.eq_ignore_ascii_case(path_)).collect();
+        for &i in found.iter().rev() {
+            self.reconcile_at(i, c.clone());
+        }
+    }
+
+    fn reconcile_at(&mut self, i: usize, c: Children) {
         let end = self.subtree_end(i);
         let depth = self.nodes[i].depth + 1;
         let focus_path = (self.focus > i && self.focus < end).then(|| self.nodes[self.focus].path.clone());
@@ -520,8 +526,15 @@ impl Tree {
         for (name, sub) in c.names.into_iter().zip(c.subdirs) {
             match groups.remove(&name.to_lowercase()) {
                 Some(mut g) => {
-                    if !g[0].expanded && sub.is_some() {
-                        g[0].subdirs = sub;
+                    if !g[0].expanded {
+                        if sub.is_some() {
+                            g[0].subdirs = sub;
+                        }
+                        // 預先載入的內容可能已過時（例如在裡面新增了資料夾）：看得到時重新確認，箭頭維持到結果出來
+                        if g[0].probe == Probe::Done {
+                            g[0].probe = Probe::Idle;
+                            g[0].prefetched = None;
+                        }
                     }
                     fresh.extend(g);
                 }
@@ -787,11 +800,17 @@ mod tests {
         tree.begin_expand(b);
         tree.insert_children("C:\\b", kids(&["b1", "b2"]));
         tree.focus = tree.find("C:\\b\\b2").unwrap();
+        let ci = tree.find("C:\\c").unwrap();
+        tree.nodes[ci].probe = Probe::Done;
+        tree.nodes[ci].prefetched = Some(kids(&["x"]));
         // a 被刪除、新增 a2；b 的展開子樹與焦點保留
         tree.reconcile("C:\\", kids(&["a2", "B", "c"]));
         let paths: Vec<&str> = tree.nodes[c + 1..].iter().map(|n| n.path.as_str()).collect();
         assert_eq!(paths, vec!["C:\\a2", "C:\\b", "C:\\b\\b1", "C:\\b\\b2", "C:\\c"]);
         assert_eq!(tree.nodes[tree.focus].path, "C:\\b\\b2");
+        // 保留的子節點重新預先載入
+        let ci = tree.find("C:\\c").unwrap();
+        assert_eq!((tree.nodes[ci].probe, tree.nodes[ci].prefetched.is_none()), (Probe::Idle, true));
         tree.reconcile("C:\\", kids(&[]));
         assert!(!tree.nodes[c].expanded && !tree.nodes[c].arrow());
         assert_eq!(tree.focus, c);

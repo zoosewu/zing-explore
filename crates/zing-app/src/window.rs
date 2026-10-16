@@ -15,9 +15,9 @@ use windows::Win32::Graphics::Gdi::{
     EndPaint, FW_NORMAL, HBRUSH, HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, ScreenToClient, SetBkColor,
     SetTextColor,
 };
-use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{IDropTarget, OleInitialize, RegisterDragDrop, RevokeDragDrop};
 use windows::Win32::UI::Controls::{EM_SETSEL, WM_MOUSELEAVE};
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
@@ -134,22 +134,135 @@ pub fn focus_main(hwnd: HWND) {
 pub fn set_clipboard_text(hwnd: HWND, text: &str) -> windows::core::Result<()> {
     zing_core::guard::io("寫入剪貼簿");
     const CF_UNICODETEXT: u32 = 13;
-    let w = wide_z(text);
+    let bytes: Vec<u8> = wide_z(text).iter().flat_map(|c| c.to_le_bytes()).collect();
     unsafe {
-        OpenClipboard(Some(hwnd))?;
+        // 別的程式（剪貼簿歷程、剛被通知的監看程式）正開著剪貼簿時稍候重試；在 ShellHost 執行緒，不影響 UI
+        let mut opened = OpenClipboard(Some(hwnd));
+        for _ in 0..10 {
+            if opened.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            opened = OpenClipboard(Some(hwnd));
+        }
+        opened?;
         let result = (|| {
             EmptyClipboard()?;
-            let mem = GlobalAlloc(GMEM_MOVEABLE, w.len() * 2)?;
-            let p = GlobalLock(mem) as *mut u16;
-            if !p.is_null() {
-                std::ptr::copy_nonoverlapping(w.as_ptr(), p, w.len());
-                let _ = GlobalUnlock(mem);
+            put_clipboard(CF_UNICODETEXT, &bytes)?;
+            #[cfg(feature = "smoke")]
+            if TEST_NO_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
+                mark_no_history();
+                let _ = put_clipboard(test_clipboard_format(), &[1]);
             }
-            SetClipboardData(CF_UNICODETEXT, Some(HANDLE(mem.0)))?;
             Ok(())
         })();
         let _ = CloseClipboard();
         result
+    }
+}
+
+/// 剪貼簿已開啟時放入一個格式的資料（記憶體交給系統）
+///
+/// # Safety
+/// 呼叫端必須已經以 OpenClipboard 開啟並 EmptyClipboard
+pub unsafe fn put_clipboard(format: u32, data: &[u8]) -> windows::core::Result<()> {
+    unsafe {
+        let mem = GlobalAlloc(GMEM_MOVEABLE, data.len().max(1))?;
+        let p = GlobalLock(mem) as *mut u8;
+        if !p.is_null() {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), p, data.len());
+            let _ = GlobalUnlock(mem);
+        }
+        SetClipboardData(format, Some(HANDLE(mem.0)))?;
+        Ok(())
+    }
+}
+
+/// 冒煙測試寫入的內容另外帶這個格式：結束時剪貼簿上還有它，就是測試留下的，要還原使用者的內容
+#[cfg(feature = "smoke")]
+pub fn test_clipboard_format() -> u32 {
+    unsafe { windows::Win32::System::DataExchange::RegisterClipboardFormatW(w!("ZingSmokeTestContent")) }
+}
+
+/// 冒煙測試：寫入剪貼簿時加上標記，不進入剪貼簿歷程（Win+V）與雲端同步
+#[cfg(feature = "smoke")]
+pub static TEST_NO_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 不進入剪貼簿歷程與雲端同步的標記（剪貼簿已開啟時呼叫）
+#[cfg(feature = "smoke")]
+pub fn mark_no_history() {
+    use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+    for name in [w!("ExcludeClipboardContentFromMonitorProcessing"), w!("CanIncludeInClipboardHistory"), w!("CanUploadToCloudClipboard")] {
+        unsafe {
+            let f = RegisterClipboardFormatW(name);
+            let _ = put_clipboard(f, &0u32.to_le_bytes());
+        }
+    }
+}
+
+/// 剪貼簿的文字（不需要視窗，任何執行緒都可以讀；別的程式正開著剪貼簿時稍候重試）。沒有文字時為 None
+pub fn clipboard_text() -> Option<String> {
+    zing_core::guard::io("讀取剪貼簿");
+    const CF_UNICODETEXT: u32 = 13;
+    unsafe {
+        let mut opened = OpenClipboard(None).is_ok();
+        for _ in 0..10 {
+            if opened {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            opened = OpenClipboard(None).is_ok();
+        }
+        if !opened {
+            return None;
+        }
+        let text = (|| {
+            let h = GetClipboardData(CF_UNICODETEXT).ok()?;
+            let mem = windows::Win32::Foundation::HGLOBAL(h.0);
+            let p = GlobalLock(mem) as *const u16;
+            if p.is_null() {
+                return None;
+            }
+            let all = std::slice::from_raw_parts(p, GlobalSize(mem) / 2);
+            let len = all.iter().position(|&c| c == 0).unwrap_or(all.len());
+            let s = String::from_utf16_lossy(&all[..len]);
+            let _ = GlobalUnlock(mem);
+            Some(s)
+        })();
+        let _ = CloseClipboard();
+        text
+    }
+}
+
+fn place_ime(app: &mut App) {
+    use windows::Win32::Graphics::Gdi::LOGFONTW;
+    use windows::Win32::UI::Input::Ime::{
+        CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT, COMPOSITIONFORM, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
+        ImmSetCompositionFontW, ImmSetCompositionWindow,
+    };
+    app.layout = app.compute_layout();
+    let s = app.gfx.scale();
+    let (x, chip) = app.ime_anchor();
+    let size = (app.theme.font.size - 1.0) * s;
+    let x = (x * s).round() as i32;
+    let y = ((chip.t + chip.b) / 2.0 * s - size * 0.67).round() as i32;
+    let px = |v: f32| (v * s).round() as i32;
+    let mut font = LOGFONTW { lfHeight: -(size.round() as i32), lfCharSet: DEFAULT_CHARSET, ..Default::default() };
+    for (d, c) in font.lfFaceName.iter_mut().zip(app.theme.font.family.encode_utf16().take(31)) {
+        *d = c;
+    }
+    unsafe {
+        let himc = ImmGetContext(app.hwnd);
+        if himc.0.is_null() {
+            return;
+        }
+        let _ = ImmSetCompositionFontW(himc, &font);
+        let comp = COMPOSITIONFORM { dwStyle: CFS_POINT, ptCurrentPos: POINT { x, y }, rcArea: RECT::default() };
+        let _ = ImmSetCompositionWindow(himc, &comp);
+        let area = RECT { left: px(chip.l), top: px(chip.t), right: px(chip.r), bottom: px(chip.b) };
+        let cand = CANDIDATEFORM { dwIndex: 0, dwStyle: CFS_EXCLUDE, ptCurrentPos: POINT { x, y }, rcArea: area };
+        let _ = ImmSetCandidateWindow(himc, &cand);
+        let _ = ImmReleaseContext(app.hwnd, himc);
     }
 }
 
@@ -418,6 +531,22 @@ thread_local! {
     static IN_MODAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[cfg(any(debug_assertions, feature = "smoke"))]
+thread_local! {
+    /// 這次訊息處理中，冒煙測試工具自己的 I/O 花的時間（不算在 UI 停頓中）
+    static EXCLUDED: std::cell::Cell<std::time::Duration> = const { std::cell::Cell::new(std::time::Duration::ZERO) };
+}
+
+/// 冒煙測試工具自己的 I/O（建立測試檔案、寫截圖）：花的時間從這次訊息處理的停頓中扣除，
+/// 測試資料夾在慢的硬碟上也不會誤報；同一個訊息中被測程式碼的時間照樣監看
+#[cfg(feature = "smoke")]
+pub fn exclude_from_stall<R>(f: impl FnOnce() -> R) -> R {
+    let t = std::time::Instant::now();
+    let r = f();
+    EXCLUDED.with(|e| e.set(e.get() + t.elapsed()));
+    r
+}
+
 /// 這次訊息處理中有已知會阻塞、但受 COM 限制必須在 UI 執行緒的 Shell 呼叫（見 CLAUDE.md 已知缺口）
 pub fn exempt_stall() {
     IN_MODAL.with(|m| m.set(true));
@@ -428,6 +557,7 @@ pub fn exempt_stall() {
 #[cfg(debug_assertions)]
 pub fn check_stall(msg: &MSG, elapsed: std::time::Duration) {
     let modal = IN_MODAL.with(|m| m.replace(false));
+    let elapsed = elapsed.saturating_sub(EXCLUDED.with(|e| e.replace(std::time::Duration::ZERO)));
     if modal || matches!(msg.message, WM_NCLBUTTONDOWN | WM_NCRBUTTONDOWN | WM_SYSCOMMAND | WM_NCLBUTTONDBLCLK) {
         return;
     }
@@ -749,6 +879,12 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             with_app(|a| a.on_char(wparam.0 as u16));
             Some(LRESULT(0))
         }
+        // 在清單直接打字篩選時的輸入法：組字視窗放在篩選標籤的文字結尾，候選字視窗避開標籤
+        // （輸入框是各自的 EDIT 視窗，輸入法自己會對齊游標）
+        WM_IME_STARTCOMPOSITION => {
+            with_app(place_ime);
+            None
+        }
         WM_SYSCHAR => {
             if with_app(|a| std::mem::take(&mut a.suppress_char)).unwrap_or(false) {
                 return Some(LRESULT(0));
@@ -821,6 +957,12 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 }
                 crate::app::TIMER_PREVIEW_WATCHDOG => {
                     with_app(|a| a.on_preview_watchdog());
+                }
+                crate::app::TIMER_TREE_REFRESH => {
+                    with_app(|a| a.on_tree_refresh_timer());
+                }
+                crate::app::TIMER_SEARCH => {
+                    with_app(|a| a.on_search_timer());
                 }
                 crate::app::TIMER_PREVIEW => {
                     with_app(|a| a.on_preview_timer());

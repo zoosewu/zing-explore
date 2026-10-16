@@ -30,7 +30,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 把 `tools/perf.ps1` 的結果表貼進 commit / PR 說明。
 - `tools/smoke.ps1` 在程序內送出鍵盤、滑鼠、拖放訊息（`--smoke-*` 模式，見 `smoke.rs`），不動真實游標、不搶前景，
   使用者操作電腦時也能跑；截圖存在 `target\smoke\`。新增會改變操作行為的功能時，在 `smoke.rs` 加上對應步驟。
-  不涵蓋右鍵選單、剪貼簿、刪除（會搶前景、覆蓋剪貼簿、留東西在資源回收筒），這些仍需手動測試。
+  剪貼簿：開始前備份使用者的剪貼簿（所有記憶體區塊格式），測試寫入的內容帶 `ZingSmokeTestContent` 標記且不進入剪貼簿歷程，
+  結束時剪貼簿上仍有標記就還原（不論步驟成敗），沒有標記但已改變（使用者自己複製）就不動。目前只測文字（Lua `clipboard()`、
+  複製路徑）；檔案的複製／貼上（OLE 資料物件）、右鍵選單、刪除（會搶前景、留東西在資源回收筒）仍需手動測試。
 - 只有在確認是改善（或刻意接受的取捨）時才執行 `pwsh tools/perf.ps1 -UpdateBaseline` 更新 `perf/baseline.json`，並在說明中寫明原因。
 - 測試資料（單元測試、冒煙測試、效能測試的 10 萬檔資料夾、隔離模式的快取）放在環境變數 `ZING_TEST_DIR` 指定的資料夾，
   沒有設定時用系統暫存資料夾；Rust 端一律經 `zing_core::testdir::dir()`，不要直接用 `std::env::temp_dir()`。
@@ -63,8 +65,14 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 不急的背景工作（資料夾大小、預先載入）用 `Pool::background`：磁碟與 CPU 優先權最低，不影響使用者正在做的事。
 - 資料夾大小與樹狀列優先向 NTFS 索引服務（`crates/zing-index`）查詢，沒有服務時才逐資料夾掃描。隔離模式
   （效能、冒煙測試）不使用索引，結果才可重現。服務以 LocalSystem 執行，修改時遵守：每個查詢先以呼叫者身分
-  （`ImpersonateNamedPipeClient`）開啟資料夾，無權列出就拒絕；只回答大小與子資料夾名稱；管線拒絕遠端連線；
+  （`ImpersonateNamedPipeClient`）開啟資料夾，無權列出就拒絕；只回答大小與名稱（不提供檔案內容）；
+  全磁碟搜尋的每個結果都先以呼叫者身分開啟它所在的資料夾，能列出且是索引中的同一個資料夾才回傳；管線拒絕遠端連線；
   服務執行檔只放在系統管理員才能寫入的位置；快照與記錄檔只放在 SYSTEM 與系統管理員能讀取的位置。
+- 全磁碟搜尋（`search.rs`）沿用命令面板（`Palette::search`），輸入停頓後在工作池查詢，以 generation 丟棄過時的結果；
+  冒煙測試以 `search::TEST_RESULTS` 代替服務。名稱比對在 `zing_core::namequery`，索引的名稱與搜尋在 `zing_core::volindex`
+  （改動時跑 `cargo bench -p zing-core --bench core -- ntfs`）。
+- 樹狀列展開中的節點由 `services::TreeWatch` 監看（一條執行緒、只看子資料夾名稱，最多 63 個），變更合併 250 ms 後
+  以 `TreeLoad::Refresh` 重新載入並 `reconcile`。
 - 右鍵選單、內容對話方塊、剪貼簿一律交給 `ShellHost`（shellhost.rs）：獨立的 STA 執行緒，UI 只送請求不等待，結果以訊息送回。主機忙碌超過 3 秒時下一個請求會改用新主機。
 - `ShellHost` 的視窗必須是 message-only，執行緒上不可留下頂層視窗：系統啟用視窗時會同步送 WM_ACTIVATEAPP 給程序內所有頂層視窗，主機卡住會連帶卡住 UI。選單的擁有者視窗只在選單顯示期間存在。
 - 拖曳出去與放置目標受 COM 限制必須在 UI 執行緒，透過 `App::modal` 在釋放 App 借用後執行；放置目標每次拖曳只解析一次路徑（快取）。
@@ -73,6 +81,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 執行外部程式一律經 `services::start`／`services::launch`：`Show::HideConsole`（`run`、Lua 的 `run`）時主控台程式以
   CREATE_NO_WINDOW 執行；開啟檔案、網址列輸入維持 `Show::Normal`（與檔案總管相同）。Lua 的 `os.execute`、`io.popen`
   在 prelude 換成不顯示主控台視窗的版本。
+- 冒煙測試工具自己的檔案 I/O（建立測試檔、清理）用 `harness_io` 包住：花的時間不算 UI 停頓（測試資料夾可能在慢的硬碟上），
+  同一個訊息中被測程式碼的時間照樣監看；檢查階段整段扣除。
 - Lua 腳本（`script.rs`、`prelude.lua`）：
   - 腳本只在腳本執行緒執行；UI 只送工作，腳本要求的動作以訊息送回。每次呼叫都要設定時間上限。
   - release 是 `panic = "abort"`，Lua 的錯誤不可穿過 Rust 的堆疊框架：Rust 提供給 Lua 的函式一律經 `script::lua_fn`

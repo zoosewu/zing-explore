@@ -195,6 +195,11 @@ cmd = "config.edit"
 key = "Ctrl+Shift+P"
 cmd = "palette.open"
 
+# 全磁碟搜尋（需要 NTFS 索引服務）
+[[key]]
+key = "Ctrl+F"
+cmd = "search.open"
+
 [[key]]
 key = "Ctrl+J"
 cmd = "jobs.toggle"

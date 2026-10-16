@@ -1,6 +1,7 @@
-//! 一個 NTFS 磁碟區的資料夾大小索引。
+//! 一個 NTFS 磁碟區的索引：資料夾大小與全磁碟搜尋。
 //!
-//! 以記錄編號為索引的陣列（上層資料夾、大小、旗標），加上資料夾的名稱、子資料夾清單與遞迴加總。
+//! 以記錄編號為索引的陣列（上層資料夾、大小、旗標、名稱），加上資料夾的子資料夾清單與遞迴加總。
+//! 名稱以 UTF-8 連續存放在一塊記憶體（每筆前面兩個位元組的長度），改名、刪除留下的空間累積到一定量時整理。
 //! 由 MFT 的全部記錄建立（`add` 後 `finish`），之後依變更日誌逐筆以 `update` 套用最新狀態，
 //! 差值沿上層資料夾鏈傳遞到根資料夾。
 //!
@@ -10,6 +11,7 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
+use crate::namequery::NameQuery;
 use crate::ntfs::{self, Record};
 
 const NONE: u32 = u32::MAX;
@@ -40,7 +42,6 @@ impl Totals {
 
 #[derive(Default)]
 struct Dir {
-    name: Box<str>,
     children: Vec<u32>,
     total: Totals,
     /// 這個資料夾底下最後一次變動時的 epoch
@@ -63,8 +64,24 @@ pub struct VolumeIndex {
     parent: Vec<u32>,
     size: Vec<u64>,
     flags: Vec<u8>,
+    /// 每筆記錄的名稱在 `names` 中的位置；NONE 表示沒有
+    name_at: Vec<u32>,
+    names: Vec<u8>,
+    /// `names` 中已不再使用的位元組數
+    garbage: usize,
     dirs: HashMap<u32, Dir>,
     epoch: u64,
+}
+
+/// 搜尋到的一個項目
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    pub frn: u32,
+    pub parent: u32,
+    pub dir: bool,
+    pub hidden: bool,
+    /// 檔案的大小；資料夾為遞迴加總
+    pub size: u64,
 }
 
 fn excluded(frn: u64) -> bool {
@@ -79,6 +96,9 @@ impl VolumeIndex {
             parent: vec![NONE; records],
             size: vec![0; records],
             flags: vec![0; records],
+            name_at: vec![NONE; records],
+            names: Vec::new(),
+            garbage: 0,
             dirs: HashMap::new(),
             epoch,
         }
@@ -90,7 +110,72 @@ impl VolumeIndex {
             self.parent.resize(n, NONE);
             self.size.resize(n, 0);
             self.flags.resize(n, 0);
+            self.name_at.resize(n, NONE);
         }
+    }
+
+    /// 記錄的名稱（沒有時為空字串）
+    pub fn name(&self, f: u32) -> &str {
+        let Some(&at) = self.name_at.get(f as usize) else { return "" };
+        if at == NONE {
+            return "";
+        }
+        let at = at as usize;
+        let len = u16::from_le_bytes([self.names[at], self.names[at + 1]]) as usize;
+        // 寫入時就是完整的 UTF-8
+        std::str::from_utf8(&self.names[at + 2..at + 2 + len]).unwrap_or("")
+    }
+
+    fn name_bytes(&self, f: usize) -> &[u8] {
+        let at = self.name_at[f];
+        if at == NONE {
+            return &[];
+        }
+        let at = at as usize;
+        let len = u16::from_le_bytes([self.names[at], self.names[at + 1]]) as usize;
+        &self.names[at + 2..at + 2 + len]
+    }
+
+    fn clear_name(&mut self, f: usize) {
+        if self.name_at[f] != NONE {
+            self.garbage += self.name_bytes(f).len() + 2;
+            self.name_at[f] = NONE;
+        }
+    }
+
+    fn set_name(&mut self, f: usize, name: &str) {
+        if self.name_at[f] != NONE && self.name_bytes(f) == name.as_bytes() {
+            return;
+        }
+        self.clear_name(f);
+        // 名稱最長 255 個 UTF-16 單位，不會超過 u16；4 GB 的上限遠大於實際用量
+        let len = name.len().min(u16::MAX as usize);
+        if self.names.len() + len + 2 >= NONE as usize {
+            self.compact();
+        }
+        self.name_at[f] = self.names.len() as u32;
+        self.names.extend_from_slice(&(len as u16).to_le_bytes());
+        self.names.extend_from_slice(&name.as_bytes()[..len]);
+        if self.garbage > (16 << 20) && self.garbage > self.names.len() / 2 {
+            self.compact();
+        }
+    }
+
+    /// 整理名稱：去掉不再使用的部分
+    fn compact(&mut self) {
+        let mut out = Vec::with_capacity(self.names.len() - self.garbage);
+        for f in 0..self.name_at.len() {
+            if self.name_at[f] == NONE {
+                continue;
+            }
+            let b = self.name_bytes(f);
+            let at = out.len() as u32;
+            out.extend_from_slice(&(b.len() as u16).to_le_bytes());
+            out.extend_from_slice(b);
+            self.name_at[f] = at;
+        }
+        self.names = out;
+        self.garbage = 0;
     }
 
     /// 建立階段：加入一筆記錄（基本或延伸記錄，順序不拘）。全部加入後呼叫 `finish`。
@@ -125,14 +210,10 @@ impl VolumeIndex {
             && !excluded(n.parent)
         {
             self.parent[t] = n.parent as u32;
+            self.set_name(t, &n.name);
         }
         if r.dir {
-            let d = self.dirs.entry(target as u32).or_default();
-            if d.name.is_empty()
-                && let Some(n) = r.names.first()
-            {
-                d.name = n.name.as_str().into();
-            }
+            self.dirs.entry(target as u32).or_default();
         }
     }
 
@@ -231,6 +312,7 @@ impl VolumeIndex {
             self.flags[f] = 0;
             self.parent[f] = NONE;
             self.size[f] = 0;
+            self.clear_name(f);
             self.dirs.remove(&(f as u32));
             return;
         };
@@ -253,13 +335,13 @@ impl VolumeIndex {
             r.names.first().filter(|n| !excluded(n.parent)).map_or(NONE, |n| n.parent as u32)
         };
         self.parent[f] = parent;
+        match r.names.iter().find(|n| n.parent == parent as u64) {
+            Some(n) => self.set_name(f, &n.name),
+            None => self.clear_name(f),
+        }
         if r.dir {
             let epoch = self.epoch;
-            let d = self.dirs.entry(f as u32).or_default();
-            if let Some(n) = r.names.iter().find(|n| n.parent == parent as u64) {
-                d.name = n.name.as_str().into();
-            }
-            d.touched = epoch;
+            self.dirs.entry(f as u32).or_default().touched = epoch;
         } else {
             self.dirs.remove(&(f as u32));
         }
@@ -298,7 +380,7 @@ impl VolumeIndex {
                     let known = fl & SURROGATE == 0;
                     let visible = cd.children.iter().any(|&g| self.flags[g as usize] & HIDDEN == 0);
                     Some(Child {
-                        name: cd.name.to_string(),
+                        name: self.name(c).to_string(),
                         totals: cd.total,
                         subdirs: known.then_some(!cd.children.is_empty()),
                         visible_subdirs: known.then_some(visible),
@@ -319,19 +401,56 @@ impl VolumeIndex {
 
     /// 估計的記憶體用量（位元組）
     pub fn memory(&self) -> usize {
-        let arrays = self.flags.capacity() * (4 + 8 + 1);
-        let dirs: usize = self
-            .dirs
-            .values()
-            .map(|d| std::mem::size_of::<(u32, Dir)>() + 8 + d.name.len() + d.children.capacity() * 4)
-            .sum();
+        let arrays = self.flags.capacity() * (4 + 8 + 1 + 4) + self.names.capacity();
+        let dirs: usize =
+            self.dirs.values().map(|d| std::mem::size_of::<(u32, Dir)>() + 8 + d.children.capacity() * 4).sum();
         arrays + dirs
+    }
+
+    // ------------------------------------------------------------ 全磁碟搜尋
+
+    /// 從記錄 `start` 開始找名稱符合的項目（不含系統保留記錄與根資料夾），最多 `max` 個。
+    /// 回傳找到的項目與下一次的開始位置（全部找完時為 None）
+    pub fn search(&self, q: &NameQuery, start: usize, max: usize) -> (Vec<Found>, Option<usize>) {
+        let mut out = Vec::new();
+        for f in start..self.flags.len() {
+            if out.len() >= max {
+                return (out, Some(f));
+            }
+            let fl = self.flags[f];
+            if fl & USED == 0 || f as u64 == ntfs::ROOT || self.parent[f] == NONE || !q.matches(self.name_bytes(f)) {
+                continue;
+            }
+            let dir = fl & DIR != 0;
+            let size = if dir { self.dirs.get(&(f as u32)).map_or(0, |d| d.total.bytes) } else { self.size[f] };
+            out.push(Found { frn: f as u32, parent: self.parent[f], dir, hidden: fl & HIDDEN != 0, size });
+        }
+        (out, None)
+    }
+
+    /// 從根資料夾到這個項目的路徑（不含磁碟代號，例如 `Users\me\a.txt`）；上層鏈斷掉時為 None
+    pub fn path(&self, f: u32) -> Option<String> {
+        let mut parts = Vec::new();
+        let mut cur = f;
+        for _ in 0..4096 {
+            if cur as u64 == ntfs::ROOT {
+                parts.reverse();
+                return Some(parts.join("\\"));
+            }
+            if self.flags.get(cur as usize).is_none_or(|&fl| fl & USED == 0) {
+                return None;
+            }
+            parts.push(self.name(cur));
+            cur = self.parent[cur as usize];
+        }
+        None
     }
 
     // ------------------------------------------------------------ 快照
 
     const MAGIC: &'static [u8; 4] = b"ZIDX";
-    const VERSION: u32 = 1;
+    /// 2：加入每筆記錄的名稱（全磁碟搜尋）
+    const VERSION: u32 = 2;
 
     /// 寫出快照；`journal` 是變更日誌的 (識別碼, 下一個 USN)，下次載入後從那裡接續
     pub fn save(&self, w: &mut impl Write, journal: (u64, i64)) -> io::Result<()> {
@@ -355,13 +474,14 @@ impl VolumeIndex {
             flush(&mut buf, w)?;
         }
         w.write_all(&self.flags)?;
-        w.write_all(&(self.dirs.len() as u64).to_le_bytes())?;
-        for (&f, d) in &self.dirs {
-            buf.extend_from_slice(&f.to_le_bytes());
-            let name = d.name.as_bytes();
-            let len = name.len().min(u16::MAX as usize);
-            buf.extend_from_slice(&(len as u16).to_le_bytes());
-            buf.extend_from_slice(&name[..len]);
+        // 使用中的記錄依序寫出名稱（長度 + UTF-8）
+        for f in 0..self.flags.len() {
+            if self.flags[f] & USED == 0 {
+                continue;
+            }
+            let name = self.name_bytes(f);
+            buf.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            buf.extend_from_slice(name);
             if buf.len() > 60_000 {
                 flush(&mut buf, w)?;
             }
@@ -399,25 +519,29 @@ impl VolumeIndex {
         let size = raw.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
         let mut flags = vec![0u8; n];
         r.read_exact(&mut flags)?;
-        r.read_exact(&mut b8)?;
-        let count = u64::from_le_bytes(b8) as usize;
-        if count > n {
-            return Err(bad());
-        }
-        let mut dirs = HashMap::with_capacity(count);
+        let mut name_at = vec![NONE; n];
+        let mut names = Vec::new();
+        let mut dirs = HashMap::new();
         let mut b2 = [0u8; 2];
-        for _ in 0..count {
-            r.read_exact(&mut b4)?;
+        let mut name = Vec::new();
+        for f in 0..n {
+            if flags[f] & USED == 0 {
+                continue;
+            }
             r.read_exact(&mut b2)?;
-            let mut name = vec![0u8; u16::from_le_bytes(b2) as usize];
+            name.resize(u16::from_le_bytes(b2) as usize, 0);
             r.read_exact(&mut name)?;
-            let name = String::from_utf8(name).map_err(|_| bad())?;
-            dirs.insert(u32::from_le_bytes(b4), Dir { name: name.into(), ..Default::default() });
+            if std::str::from_utf8(&name).is_err() || names.len() + name.len() + 2 >= NONE as usize {
+                return Err(bad());
+            }
+            name_at[f] = names.len() as u32;
+            names.extend_from_slice(&b2);
+            names.extend_from_slice(&name);
+            if flags[f] & DIR != 0 {
+                dirs.insert(f as u32, Dir::default());
+            }
         }
-        let mut idx = VolumeIndex { parent, size, flags, dirs, epoch };
-        if idx.dirs.keys().any(|&f| f as usize >= n) {
-            return Err(bad());
-        }
+        let mut idx = VolumeIndex { parent, size, flags, name_at, names, garbage: 0, dirs, epoch };
         idx.finish();
         Ok((idx, (id, usn)))
     }
@@ -555,5 +679,55 @@ mod tests {
         assert!(VolumeIndex::load(&mut &b"nope"[..], 5, 1000).is_err());
         // 檔頭的記錄數超過上限：不配置、直接拒絕
         assert!(VolumeIndex::load(&mut buf.as_slice(), 5, 10).is_err());
+        // 檔名也在快照中
+        let q = NameQuery::parse("ext");
+        assert_eq!(w.search(&q, 0, 10).0, v.search(&q, 0, 10).0);
+    }
+
+    fn found(v: &VolumeIndex, q: &str) -> Vec<String> {
+        let mut r: Vec<String> = v.search(&NameQuery::parse(q), 0, 100).0.iter().map(|f| v.path(f.frn).unwrap()).collect();
+        r.sort();
+        r
+    }
+
+    #[test]
+    fn search_names_and_paths() {
+        let mut v = sample();
+        assert_eq!(found(&v, "a"), vec!["a", "a\\a1"]);
+        // 硬連結以第一個檔名（所在的資料夾）為準；系統保留記錄、$Extend 底下不列入
+        assert_eq!(found(&v, "big"), vec!["h\\big"]);
+        assert!(found(&v, "link").is_empty());
+        assert!(found(&v, "$").is_empty());
+        assert!(found(&v, "gone").is_empty());
+        assert_eq!(found(&v, "?"), vec!["a", "a\\a1\\x", "a\\a1\\y", "a\\z", "h", "j"]);
+        let r = v.search(&NameQuery::parse("h"), 0, 10).0;
+        assert_eq!((r[0].dir, r[0].hidden, r[0].size), (true, true, 1000));
+        // 分批：每批最多 2 個，接續到找完
+        let q = NameQuery::parse("?");
+        let (first, next) = v.search(&q, 0, 2);
+        assert_eq!(first.len(), 2);
+        let (rest, end) = v.search(&q, next.unwrap(), 100);
+        assert_eq!((rest.len(), end), (4, None));
+        // 改名、搬移、刪除後立即反映
+        v.update(31, Some(&rec(Builder::file(31).name(22, "相片.jpg", 1).data(&[0; 1]))));
+        assert_eq!(found(&v, "*.JPG"), vec!["h\\相片.jpg"]);
+        v.update(21, Some(&rec(Builder::dir(21).name(ROOT, "b1", 1))));
+        assert_eq!(found(&v, "y"), vec!["b1\\y"]);
+        v.update(32, None);
+        assert!(found(&v, "y").is_empty());
+    }
+
+    #[test]
+    fn names_are_compacted() {
+        let mut v = sample();
+        // 反覆改名留下的空間會被整理，名稱仍然正確
+        for i in 0..200_000 {
+            let name = format!("{i:0>200}");
+            v.set_name(31, &name);
+        }
+        // 不整理時會累積約 40 MB
+        assert!(v.names.len() < 36 << 20, "{}", v.names.len());
+        assert_eq!(v.name(31).len(), 200);
+        assert_eq!(found(&v, "y"), vec!["a\\a1\\y"]);
     }
 }

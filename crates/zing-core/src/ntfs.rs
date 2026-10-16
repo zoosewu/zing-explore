@@ -62,7 +62,7 @@ pub fn apply_fixup(rec: &mut [u8], sector: usize, verify: bool) -> bool {
     true
 }
 
-/// 一個檔名：上層資料夾的記錄編號與名稱（名稱只在資料夾時解出，檔案不需要）
+/// 一個檔名：上層資料夾的記錄編號與名稱
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Name {
     pub parent: u64,
@@ -165,13 +165,9 @@ pub fn parse_record(rec: &[u8], frn: u64) -> Option<Record> {
                     continue;
                 }
                 let parent = parent & FRN_MASK;
-                let name = if dir {
-                    let Some(bytes) = v.get(66..66 + len as usize * 2) else { continue };
-                    let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
-                    String::from_utf16_lossy(&units)
-                } else {
-                    String::new()
-                };
+                let Some(bytes) = v.get(66..66 + len as usize * 2) else { continue };
+                let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+                let name = String::from_utf16_lossy(&units);
                 if !r.names.iter().any(|n| n.parent == parent) {
                     r.names.push(Name { parent, name });
                 }
@@ -443,8 +439,8 @@ mod tests {
         assert!(!r.dir);
         assert_eq!(r.size, Some(300));
         assert_eq!(r.attrs, Some(0x20));
-        // DOS 名稱略過；檔案不解出名稱字串
-        assert_eq!(r.names, vec![Name { parent: 30, name: String::new() }]);
+        // DOS 名稱略過
+        assert_eq!(r.names, vec![Name { parent: 30, name: "long name.txt".into() }]);
         assert!(!r.surrogate() && !r.hidden());
     }
 

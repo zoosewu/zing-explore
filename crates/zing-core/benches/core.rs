@@ -47,7 +47,16 @@ fn synthetic_mft(n: u64) -> Vec<Record> {
         out.push(Record {
             frn,
             dir,
-            names: vec![Name { parent, name: if dir { format!("資料夾 {frn}") } else { String::new() } }],
+            names: vec![Name {
+                parent,
+                name: match frn % 4 {
+                    _ if dir => format!("資料夾 {frn}"),
+                    0 => format!("IMG_{frn:07}.JPG"),
+                    1 => format!("年度報告 {frn}.docx"),
+                    2 => format!("report-{frn}-final.pdf"),
+                    _ => format!("lib{frn}.so.1"),
+                },
+            }],
             size: (!dir).then(|| rnd() % 10_000_000),
             attrs: Some(0x20),
             ..Default::default()
@@ -101,6 +110,11 @@ fn index_benches(c: &mut Criterion) {
         })
     });
     group.bench_function("index_children_root", |b| b.iter(|| v.children(ROOT).unwrap().len()));
+    // 全磁碟搜尋：100 萬個名稱全部比對一次（找不到，最壞情況）、萬用字元、中文
+    for (name, q) in [("search_1m_substring", "final zzz"), ("search_1m_glob", "img_*7.jpg"), ("search_1m_cjk", "報告 9999")] {
+        let q = zing_core::namequery::NameQuery::parse(q);
+        group.bench_function(name, |b| b.iter(|| v.search(&q, 0, usize::MAX).0.len()));
+    }
     group.finish();
 }
 

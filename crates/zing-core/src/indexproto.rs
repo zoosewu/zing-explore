@@ -14,6 +14,18 @@ pub enum Request {
     /// 資料夾的加總與子資料夾清單；`since` 等於目前的變動標記時只回 `Same`
     Children { path: String, since: u64 },
     Status,
+    /// 全磁碟搜尋（`zing_core::namequery` 的語法）：最多 `limit` 個，只含呼叫者能列出的資料夾中的項目
+    Search { query: String, limit: u32 },
+}
+
+/// 搜尋到的一個項目
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchItem {
+    pub path: String,
+    /// 檔案的大小；資料夾為遞迴加總
+    pub size: u64,
+    pub dir: bool,
+    pub hidden: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +52,8 @@ pub enum Response {
     Denied,
     NotFound,
     Status(Vec<VolumeStatus>),
+    /// 搜尋結果；`more` 表示還有更多（達到數量上限或時間上限）
+    Found { items: Vec<SearchItem>, more: bool },
     Error(String),
 }
 
@@ -81,6 +95,7 @@ impl Request {
         match self {
             Request::Children { path, since } => format!("children\t{}\t{since}", escape(path)),
             Request::Status => "status".into(),
+            Request::Search { query, limit } => format!("search\t{}\t{limit}", escape(query)),
         }
     }
 
@@ -89,6 +104,7 @@ impl Request {
         match f.next()? {
             "children" => Some(Request::Children { path: unescape(f.next()?), since: f.next()?.parse().ok()? }),
             "status" => Some(Request::Status),
+            "search" => Some(Request::Search { query: unescape(f.next()?), limit: f.next()?.parse().ok()? }),
             _ => None,
         }
     }
@@ -135,6 +151,18 @@ impl Response {
                         v.dirs,
                         v.memory
                     ));
+                }
+                s
+            }
+            Response::Found { items, more } => {
+                let mut s = format!("found\t{}\n", *more as u8);
+                for it in items {
+                    let flags = (it.dir as u32 * SUBDIRS) | if it.hidden { HIDDEN } else { 0 };
+                    let line = format!("{}\t{}\t{flags}\n", escape(&it.path), it.size);
+                    if s.len() + line.len() > MAX_RESPONSE {
+                        break;
+                    }
+                    s.push_str(&line);
                 }
                 s
             }
@@ -186,6 +214,18 @@ impl Response {
                     vols.push(VolumeStatus { volume, state, detail, records: num()?, dirs: num()?, memory: num()? });
                 }
                 Response::Status(vols)
+            }
+            "found" => {
+                let more = num()? != 0;
+                let mut items = Vec::new();
+                for line in lines {
+                    let mut f = line.split('\t');
+                    let path = unescape(f.next()?);
+                    let size = f.next()?.parse().ok()?;
+                    let flags: u32 = f.next()?.parse().ok()?;
+                    items.push(SearchItem { path, size, dir: flags & SUBDIRS != 0, hidden: flags & HIDDEN != 0 });
+                }
+                Response::Found { items, more }
             }
             "error" => Response::Error(unescape(head.split_once('\t').map_or("", |x| x.1))),
             _ => return None,
@@ -277,7 +317,11 @@ mod tests {
 
     #[test]
     fn requests_roundtrip() {
-        for r in [Request::Children { path: "C:\\a\tb\\新資料夾".into(), since: 42 }, Request::Status] {
+        for r in [
+            Request::Children { path: "C:\\a\tb\\新資料夾".into(), since: 42 },
+            Request::Status,
+            Request::Search { query: "\"年度 報告\" *.docx\t".into(), limit: 500 },
+        ] {
             assert_eq!(Request::decode(&r.encode()), Some(r));
         }
         assert_eq!(Request::decode("children\tC:\\"), None);
@@ -317,6 +361,14 @@ mod tests {
                 dirs: 2,
                 memory: 3,
             }]),
+            Response::Found {
+                items: vec![
+                    SearchItem { path: "C:\\a\tb\\相片.jpg".into(), size: 12, dir: false, hidden: true },
+                    SearchItem { path: "D:\\資料夾".into(), size: 1 << 40, dir: true, hidden: false },
+                ],
+                more: true,
+            },
+            Response::Found { items: vec![], more: false },
             Response::Error("x\ty".into()),
         ];
         for r in all {

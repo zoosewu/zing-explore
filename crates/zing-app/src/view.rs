@@ -49,6 +49,8 @@ pub struct Layout {
     pub crumbs: Vec<(Rect, String)>,
     pub crumb_overflow: bool,
     pub filter_chip: Option<Rect>,
+    /// 篩選標籤可用位置的右緣（寬度 0；還沒有篩選時也有），輸入法組字視窗以此對齊
+    pub filter_slot: Rect,
     pub buttons: Vec<Rect>,
     pub tree: Option<Rect>,
     pub tree_splitter: Option<Rect>,
@@ -171,8 +173,9 @@ impl App {
             right -= bw + 4.0;
         }
         let tab = self.tab();
+        lay.filter_slot = Rect::new(right, cy - hh + 2.0, right, cy + hh - 2.0);
         if !tab.filter.is_empty() {
-            // 左側圖示 26 + 右側關閉鈕 22 + 間距
+            // 左側圖示 26 + 右側關閉鈕 22 + 間距（與 ime_anchor 相同）
             let cw = (self.gfx.measure(&format!("篩選：{}", tab.filter), Font::Small) + 54.0).min(280.0);
             lay.filter_chip = Some(Rect::new(right - cw, cy - hh + 2.0, right, cy + hh - 2.0));
             right -= cw + 6.0;
@@ -524,6 +527,16 @@ impl App {
             g.stroke_round(*r, self.theme.metrics.radius, c.border, 1.0);
             g.text(&self.config.buttons[i].label, Font::Small, Rect::new(r.l + 10.0, r.t, r.r - 6.0, r.b), c.text);
         }
+    }
+
+    /// 輸入法組字視窗的位置（DIP）：篩選標籤中文字的結尾，還沒有篩選時為標籤將出現的位置。
+    /// 回傳 (文字結尾的 x, 標籤的範圍)
+    pub fn ime_anchor(&self) -> (f32, Rect) {
+        let slot = self.layout.filter_slot;
+        let tw = self.gfx.measure(&format!("篩選：{}", self.tab().filter), Font::Small);
+        let cw = (tw + 54.0).min(280.0);
+        let chip = Rect::new(slot.r - cw, slot.t, slot.r, slot.b);
+        ((chip.l + 26.0 + tw).min(chip.r - 22.0), chip)
     }
 
     fn paint_tree(&self, tr: Rect) {

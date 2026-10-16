@@ -2,6 +2,7 @@
 //!
 //! 清單：內建命令（zing_core::palette::BUILTIN）＋工具列按鈕＋設定檔中綁定的其他命令。
 //! 以 `>` 開頭的輸入直接當成命令腳本執行。
+//! 全磁碟搜尋（search.rs）也用這個面板：`search` 有值時清單是搜尋結果。
 
 use zing_core::config::PalettePosition;
 use zing_core::palette::{BUILTIN, Entry, filter, touch_recent};
@@ -28,17 +29,19 @@ pub struct Palette {
     pub sel: usize,
     /// 第一個可見的 `matches` 索引
     pub top: usize,
+    /// 全磁碟搜尋模式：`matches` 是 `items` 的索引
+    pub search: Option<crate::search::Results>,
 }
 
 impl Palette {
     /// `>` 開頭：直接執行的命令腳本
     fn raw(&self) -> Option<&str> {
-        self.query.trim_start().strip_prefix('>').map(str::trim)
+        self.search.is_none().then(|| self.query.trim_start().strip_prefix('>').map(str::trim)).flatten()
     }
 
     /// `=` 開頭：立即執行的 Lua 運算式
     fn lua(&self) -> Option<&str> {
-        self.query.trim_start().strip_prefix('=').map(str::trim)
+        self.search.is_none().then(|| self.query.trim_start().strip_prefix('=').map(str::trim)).flatten()
     }
 
     /// 直接執行（不列出命令）
@@ -87,7 +90,7 @@ impl App {
         }
         let entries = self.palette_entries();
         let matches = filter(&entries, "", &self.palette_recent);
-        self.palette = Some(Palette { entries, query: String::new(), matches, sel: 0, top: 0 });
+        self.palette = Some(Palette { entries, query: String::new(), matches, sel: 0, top: 0, search: None });
         if let Some(lay) = self.palette_layout() {
             window::begin_palette_edit(self, lay.input.inset(10.0, 0.0));
         }
@@ -140,6 +143,10 @@ impl App {
         let recent = &self.palette_recent;
         let Some(p) = self.palette.as_mut() else { return };
         p.query = text;
+        if p.search.is_some() {
+            self.search_query_changed();
+            return;
+        }
         p.matches = if p.direct() { Vec::new() } else { filter(&p.entries, &p.query, recent) };
         p.sel = 0;
         p.top = 0;
@@ -163,8 +170,15 @@ impl App {
 
     /// 關閉面板並執行選取的命令（`index` 為 `matches` 索引；None 表示目前選取項）
     pub fn run_palette(&mut self, index: Option<usize>) {
-        let Some(p) = self.palette.take() else { return };
+        let Some(mut p) = self.palette.take() else { return };
         self.close_palette_edit();
+        if let Some(r) = p.search.take() {
+            let open = crate::input::Mods::current().ctrl;
+            if let Some(it) = p.matches.get(index.unwrap_or(p.sel)).and_then(|&k| r.items.into_iter().nth(k)) {
+                self.open_search_item(it, open);
+            }
+            return;
+        }
         if let Some(expr) = p.lua() {
             if !expr.is_empty() {
                 let (ctx, n) = (self.script_ctx(), self.notifier.clone());
@@ -217,6 +231,10 @@ impl App {
         g.fill_round(lay.input, self.theme.metrics.radius, c.background);
         g.stroke_round(lay.input, self.theme.metrics.radius, c.accent, 1.0);
 
+        if p.search.is_some() {
+            self.paint_search(p, &lay);
+            return;
+        }
         let row0 = lay.rows[0];
         if let Some(expr) = p.lua() {
             g.fill_round(row0, self.theme.metrics.radius, c.selection);

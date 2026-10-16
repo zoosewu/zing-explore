@@ -1,6 +1,6 @@
 -- SHA-256 校驗碼：計算選取檔案的雜湊並寫成 .sha256 檔，或以 .sha256 檔驗證檔案
 -- 使用 Windows 內建的 certutil.exe；.sha256 檔與 sha256sum 相同格式（「雜湊  檔名」），Linux 可用 sha256sum -c 驗證
--- 示範以 io.popen 讀取外部程式的輸出（不顯示主控台視窗；等待輸出不計入 CPU 時間上限）
+-- 示範以 io.popen 讀取外部程式的輸出（不顯示主控台視窗；等待輸出不計入 CPU 時間上限）與 clipboard()
 -- 安裝：複製到 zing.exe 旁的 scripts\，命令面板執行「重新載入 Lua 腳本」
 
 local EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" -- 空檔案的 SHA-256
@@ -58,8 +58,12 @@ function sha256_create()
   f:write(table.concat(lines, "\n"), "\n")
   f:close()
 
-  if #failed == 0 then
-    msg(("已寫入 %s（%d 個檔案）%s"):format(name, #lines, #files == 1 and "：" .. lines[1]:sub(1, 64) or ""))
+  if #failed == 0 and #files == 1 then
+    -- 只有一個檔案：雜湊也放到剪貼簿，方便貼到其他地方比對
+    clipboard(lines[1]:sub(1, 64))
+    msg(("已寫入 %s，雜湊已複製到剪貼簿：%s"):format(name, lines[1]:sub(1, 64)))
+  elseif #failed == 0 then
+    msg(("已寫入 %s（%d 個檔案）"):format(name, #lines))
   else
     msg(("已寫入 %s，%d 個檔案無法讀取（%s…）"):format(name, #failed, failed[1]))
   end

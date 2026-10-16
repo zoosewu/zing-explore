@@ -50,6 +50,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("index.install", "啟用 NTFS 索引服務（立即顯示資料夾大小，需要系統管理員權限）"),
     ("index.uninstall", "移除 NTFS 索引服務"),
     ("index.status", "NTFS 索引服務狀態"),
+    ("search.open", "全磁碟搜尋（NTFS 索引）"),
     ("filter.clear", "清除篩選"),
     ("jobs.toggle", "顯示／隱藏檔案作業"),
     ("jobs.clear", "清除已完成的檔案作業"),

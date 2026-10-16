@@ -4,7 +4,7 @@
 //! 並以 `PostMessageW` 喚醒 UI（同一批結果只發一次訊息）。
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 
 use zing_core::enumerate::{EnumError, enumerate};
@@ -38,6 +38,10 @@ pub enum Msg {
     Sorted { tab: TabId, generation: u64, spec: SortSpec, sorted: Vec<u32> },
     /// 樹狀列的子資料夾；None 表示這個位置不預先載入（`kind` 為 Probe 時）
     TreeChildren { path: String, children: Option<crate::model::Children>, kind: TreeLoad },
+    /// 樹狀列展開中的資料夾，子資料夾有新增、刪除或改名（`TreeWatch`）
+    TreeDirChanged(String),
+    /// 全磁碟搜尋的結果（search.rs）
+    SearchResults { generation: u64, result: Result<zing_core::indexproto::Response, zing_core::indexproto::QueryError> },
     DirChanged { tab: TabId, generation: u64 },
     FileOpDone { dirs: Vec<String>, error: Option<String>, select: Option<Select> },
     Status { text: String, error: bool },
@@ -78,6 +82,8 @@ pub enum Msg {
     ScriptAsk { prompt: String, default: String, reply: std::sync::mpsc::SyncSender<Option<String>> },
     /// Lua 的 pick_folder()：顯示選擇資料夾的對話方塊，結果送回 reply
     ScriptPickFolder { title: String, default: String, reply: std::sync::mpsc::SyncSender<Option<String>> },
+    /// Lua 的 clipboard(text)：經 ShellHost 寫入剪貼簿，結果送回 reply
+    ScriptClipboard { text: String, reply: std::sync::mpsc::SyncSender<bool> },
     ScriptsLoaded(crate::script::Loaded),
     /// 預覽處理常式顯示完成（ok 為 false：處理常式失敗）
     PreviewHost { generation: u64, ok: bool },
@@ -327,6 +333,117 @@ pub fn watch(path: &str, n: &Notifier, tab: TabId, generation: u64) -> Option<Wa
         return None;
     }
     Some(Watcher { stop: stop_raw })
+}
+
+/// 樹狀列：監看展開中的節點（只看子資料夾名稱的變更），變更時送出 `Msg::TreeDirChanged`。
+/// 一條執行緒以 WaitForMultipleObjects 等待所有節點（上限 `TREE_WATCH_MAX` 個）；在背景開啟監看，網路路徑慢也不影響 UI
+pub struct TreeWatch {
+    tx: Option<Sender<Vec<String>>>,
+    wake: Arc<Event>,
+    watched: Vec<String>,
+}
+
+/// WaitForMultipleObjects 最多 64 個：留一個給喚醒用的事件
+pub const TREE_WATCH_MAX: usize = 63;
+
+/// 兩個執行緒共用的事件，最後一個使用者放開時關閉
+struct Event(isize);
+
+impl Drop for Event {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(HANDLE(self.0 as _));
+        }
+    }
+}
+
+impl TreeWatch {
+    pub fn new(n: &Notifier) -> Option<Self> {
+        let wake = Arc::new(Event(unsafe { CreateEventW(None, false, false, None).ok()? }.0 as isize));
+        let (tx, rx) = channel();
+        let (n, w) = (n.clone(), wake.clone());
+        std::thread::Builder::new().name("zing-tree-watch".into()).spawn(move || tree_watch_loop(&rx, &w, &n)).ok()?;
+        Some(Self { tx: Some(tx), wake, watched: Vec::new() })
+    }
+
+    /// 要監看的資料夾；與上次相同時不做事（每幀呼叫）
+    pub fn set(&mut self, dirs: &[&str]) {
+        let dirs = &dirs[..dirs.len().min(TREE_WATCH_MAX)];
+        if dirs.len() == self.watched.len() && dirs.iter().zip(&self.watched).all(|(a, b)| a == b) {
+            return;
+        }
+        self.watched = dirs.iter().map(|d| d.to_string()).collect();
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(self.watched.clone());
+        }
+        unsafe {
+            let _ = SetEvent(HANDLE(self.wake.0 as _));
+        }
+    }
+}
+
+impl Drop for TreeWatch {
+    fn drop(&mut self) {
+        // 先關閉通道再喚醒：執行緒醒來看到通道已關閉就結束
+        self.tx = None;
+        unsafe {
+            let _ = SetEvent(HANDLE(self.wake.0 as _));
+        }
+    }
+}
+
+fn tree_watch_loop(rx: &Receiver<Vec<String>>, wake: &Event, n: &Notifier) {
+    let close = |h: HANDLE| unsafe {
+        let _ = FindCloseChangeNotification(h);
+    };
+    let mut watched: Vec<(String, HANDLE)> = Vec::new();
+    loop {
+        let mut handles = vec![HANDLE(wake.0 as _)];
+        handles.extend(watched.iter().map(|w| w.1));
+        let r = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
+        let i = r.0.wrapping_sub(WAIT_OBJECT_0.0) as usize;
+        if i == 0 {
+            // 只取最新的清單；送出端已關閉就結束
+            let mut latest = None;
+            loop {
+                match rx.try_recv() {
+                    Ok(v) => latest = Some(v),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        for (_, h) in watched {
+                            close(h);
+                        }
+                        return;
+                    }
+                }
+            }
+            let Some(dirs) = latest else { continue };
+            let mut old = std::mem::take(&mut watched);
+            for d in dirs {
+                if let Some(k) = old.iter().position(|(p, _)| *p == d) {
+                    watched.push(old.swap_remove(k));
+                    continue;
+                }
+                let w = wide_z(&d);
+                if let Ok(h) = unsafe { FindFirstChangeNotificationW(PCWSTR(w.as_ptr()), false, FILE_NOTIFY_CHANGE_DIR_NAME) } {
+                    watched.push((d, h));
+                }
+            }
+            for (_, h) in old {
+                close(h);
+            }
+        } else if i < handles.len() {
+            n.send(Msg::TreeDirChanged(watched[i - 1].0.clone()));
+            // 資料夾本身被刪除等：不再監看，直到下次 set
+            if unsafe { FindNextChangeNotification(watched[i - 1].1) }.is_err() {
+                let (_, h) = watched.remove(i - 1);
+                close(h);
+            }
+        } else {
+            // WAIT_FAILED：不應發生，避免空轉
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
 }
 
 /// 開啟檔案或執行程式（見 `start`）。在獨立的 STA 執行緒進行：

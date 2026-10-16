@@ -122,6 +122,18 @@ local name = ask("新資料夾名稱", "新增資料夾")
 local dest = pick_folder("解壓縮到", cwd())
 ```
 
+### `clipboard(text?)`
+
+讀取或寫入剪貼簿的文字（換行一律是 \n，寫入時轉成 Windows 的 \r\n）
+
+- `text?`：string 要放到剪貼簿的文字；省略時讀取
+- 回傳：string|boolean|nil 讀取時為剪貼簿的文字（沒有文字時為 nil）；寫入時為是否成功
+
+```lua
+clipboard(table.concat(sel() | map(path.name) | list, "\n"))
+local text = clipboard()
+```
+
 ### `exec(script)`
 
 執行命令腳本
@@ -336,6 +348,18 @@ local cfg = freeze({ dest = "D:\\" })
 local dirs = sel() | filter(is_dir) | list
 ```
 
+### `stat(p)`
+
+檔案資訊：大小、修改／建立／存取時間、屬性（讀取檔案系統）
+
+- `p`：string 檔案或資料夾
+- 回傳：{size: integer, modified: integer?, created: integer?, accessed: integer?, is_dir: boolean, readonly: boolean, hidden: boolean, system: boolean}?, string? 時間為 Unix 秒數（可給 os.date）；資料夾的 size 為 0；失敗時為 nil 與錯誤訊息
+
+```lua
+local month = os.date("%Y-%m", stat(sel()[1]).modified)
+local big = sel() | filter(function(p) return stat(p).size > 100 * 1024 * 1024 end) | list
+```
+
 ### `path.name(p)`
 
 檔名（含副檔名）
@@ -499,6 +523,14 @@ address.edit()
 
 ```lua
 palette.open()
+```
+
+### `search.open()`
+
+全磁碟搜尋：以名稱搜尋所有 NTFS 磁碟（需要 NTFS 索引服務）
+
+```lua
+search.open()
 ```
 
 ### `jobs.toggle()`

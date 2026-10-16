@@ -2,7 +2,8 @@
 //! 以及回答 zing 查詢的 named pipe。
 //!
 //! 安全：服務以 LocalSystem 執行，所以每個查詢都先以呼叫者的身分開啟該資料夾（模擬用戶端），
-//! 呼叫者無法列出的資料夾一律拒絕；只回答大小與子資料夾名稱，不提供檔案內容。
+//! 呼叫者無法列出的資料夾一律拒絕；只回答大小與名稱，不提供檔案內容。
+//! 全磁碟搜尋的每個結果都先以呼叫者的身分開啟它所在的資料夾，能列出才回傳（等同使用者自己能列舉到的）。
 //! 管線只接受本機、已驗證的使用者；快照與記錄檔放在服務帳號（LocalSystem）的 %LOCALAPPDATA%，
 //! 只有 SYSTEM 與系統管理員能讀取（快照含有整顆磁碟的資料夾名稱）。
 
@@ -32,7 +33,8 @@ use windows::Win32::System::Pipes::{
 };
 use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN};
 use windows::core::PCWSTR;
-use zing_core::indexproto::{self, Request, Response, VolumeStatus};
+use zing_core::indexproto::{self, Request, Response, SearchItem, VolumeStatus};
+use zing_core::namequery::NameQuery;
 use zing_core::ntfs::{self, Record};
 use zing_core::text::wide_z;
 use zing_core::volindex::VolumeIndex;
@@ -402,6 +404,7 @@ impl Server {
         let resp = match std::str::from_utf8(&buf[..n as usize]).ok().and_then(Request::decode) {
             Some(Request::Status) => self.status(),
             Some(Request::Children { path, since }) => self.children(pipe, &path, since),
+            Some(Request::Search { query, limit }) => self.search(pipe, &query, limit),
             None => Response::Error("無法解析請求".into()),
         };
         unsafe {
@@ -463,6 +466,66 @@ impl Server {
             },
         }
     }
+}
+
+impl Server {
+    /// 全磁碟搜尋：依磁碟代號順序找，每批候選在讀取鎖內取出（含路徑），鎖外以呼叫者身分確認能列出所在的資料夾。
+    /// 數量或時間（3 秒）到上限時停止並標記還有更多
+    fn search(&self, pipe: HANDLE, query: &str, limit: u32) -> Response {
+        let q = NameQuery::parse(query);
+        if q.is_empty() {
+            return Response::Found { items: Vec::new(), more: false };
+        }
+        let limit = limit.clamp(1, 5000) as usize;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut vols = self.vols.lock().unwrap().clone();
+        vols.sort_by_key(|v| v.letter);
+        let mut items = Vec::new();
+        // 上層資料夾能否列出（同一次搜尋中快取）
+        let mut allowed: HashMap<(u32, u32), bool> = HashMap::new();
+        for vol in vols {
+            let mut start = 0;
+            loop {
+                let (batch, next) = {
+                    let st = vol.state.read().unwrap();
+                    let State::Ready(idx) = &*st else { break };
+                    let (found, next) = idx.search(&q, start, 256);
+                    let batch: Vec<_> = found
+                        .into_iter()
+                        .filter_map(|f| {
+                            let rel = idx.path(f.frn)?;
+                            let parent = idx.path(f.parent)?;
+                            Some((f, rel, parent))
+                        })
+                        .collect();
+                    (batch, next)
+                };
+                for (f, rel, parent) in batch {
+                    let ok = *allowed.entry((vol.serial, f.parent)).or_insert_with(|| {
+                        let dir = format!("{}:\\{parent}", vol.letter);
+                        can_list_as_client(pipe, &dir, vol.serial, f.parent)
+                    });
+                    if ok {
+                        items.push(SearchItem { path: format!("{}:\\{rel}", vol.letter), size: f.size, dir: f.dir, hidden: f.hidden });
+                        if items.len() >= limit {
+                            return Response::Found { items, more: true };
+                        }
+                    }
+                }
+                match next {
+                    Some(n) if Instant::now() < deadline => start = n,
+                    Some(_) => return Response::Found { items, more: true },
+                    None => break,
+                }
+            }
+        }
+        Response::Found { items, more: false }
+    }
+}
+
+/// 呼叫者能否列出這個資料夾，且它就是索引中的那一個（磁碟區序號與記錄編號相同）
+fn can_list_as_client(pipe: HANDLE, dir: &str, serial: u32, frn: u32) -> bool {
+    matches!(resolve_as_client(pipe, dir), Ok((s, f)) if s == serial && f == frn as u64)
 }
 
 /// 以呼叫者的身分開啟資料夾（呼叫者無權列出時拒絕），取得磁碟區序號與記錄編號

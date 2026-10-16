@@ -1,0 +1,227 @@
+//! 全磁碟搜尋（Ctrl+F）：沿用命令面板的輸入框、清單與按鍵，結果向 NTFS 索引服務查詢。
+//!
+//! - 輸入停頓 `DEBOUNCE_MS` 後在工作池查詢（服務端約數十毫秒），以 generation 丟棄過時的結果。
+//! - 服務只回傳呼叫者能列出的資料夾中的項目（見 zing-index 的 server.rs）；隱藏項目依「顯示隱藏檔案」過濾。
+//! - Enter：前往所在的資料夾並選取它；Ctrl+Enter：開啟（資料夾就進入）。
+//! - 隔離模式（效能、冒煙測試）不使用索引；冒煙測試以 `TEST_RESULTS` 提供結果。
+
+use zing_core::format;
+use zing_core::indexproto::{self, QueryError, Request, Response, SearchItem};
+use zing_core::path;
+
+use crate::app::App;
+use crate::gfx::{Font, Rect};
+use crate::palette::{MAX_ROWS, Palette, PaletteLayout};
+use crate::services::{self, Msg};
+use crate::view::Hit;
+use crate::window;
+
+/// 輸入停頓多久才查詢
+const DEBOUNCE_MS: u32 = 120;
+/// 一次最多取回的結果
+const LIMIT: u32 = 500;
+/// 輸入框右側顯示結果數的寬度
+const COUNT_W: f32 = 72.0;
+
+/// 冒煙測試：有值時不查詢服務，改從這些項目中以名稱比對
+#[cfg(feature = "smoke")]
+pub static TEST_RESULTS: std::sync::Mutex<Option<Vec<SearchItem>>> = std::sync::Mutex::new(None);
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum State {
+    #[default]
+    Idle,
+    Pending,
+    Done,
+    /// 服務沒有安裝或沒有執行
+    NoService,
+    Error(String),
+}
+
+#[derive(Default)]
+pub struct Results {
+    pub items: Vec<SearchItem>,
+    /// 還有更多（服務端達到數量或時間上限）
+    pub more: bool,
+    pub state: State,
+    pub generation: u64,
+}
+
+fn query(q: &str) -> Result<Response, QueryError> {
+    #[cfg(feature = "smoke")]
+    if let Some(items) = TEST_RESULTS.lock().unwrap().clone() {
+        let nq = zing_core::namequery::NameQuery::parse(q);
+        let items = items.into_iter().filter(|it| nq.matches(path::file_name(&it.path).as_bytes())).collect();
+        return Ok(Response::Found { items, more: false });
+    }
+    indexproto::query(&Request::Search { query: q.into(), limit: LIMIT })
+}
+
+impl App {
+    pub fn open_search(&mut self) {
+        if self.palette.as_ref().is_some_and(|p| p.search.is_some()) {
+            return;
+        }
+        self.close_palette();
+        self.palette = Some(Palette {
+            entries: Vec::new(),
+            query: String::new(),
+            matches: Vec::new(),
+            sel: 0,
+            top: 0,
+            search: Some(Results::default()),
+        });
+        if let Some(lay) = self.palette_layout() {
+            // 右側留給結果數
+            let mut r = lay.input.inset(10.0, 0.0);
+            r.r -= COUNT_W;
+            window::begin_palette_edit(self, r);
+        }
+        self.invalidate();
+    }
+
+    /// 輸入框內容改變：稍候再查詢（連續輸入只查最後一次）
+    pub fn search_query_changed(&mut self) {
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), crate::app::TIMER_SEARCH, DEBOUNCE_MS, None);
+        }
+    }
+
+    pub fn on_search_timer(&mut self) {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(self.hwnd), crate::app::TIMER_SEARCH);
+        }
+        let isolated = self.isolated;
+        let Some(p) = self.palette.as_mut() else { return };
+        let Some(r) = p.search.as_mut() else { return };
+        r.generation += 1;
+        let q = p.query.trim().to_string();
+        if q.is_empty() {
+            r.items.clear();
+            r.more = false;
+            r.state = State::Idle;
+            p.matches.clear();
+            self.invalidate();
+            return;
+        }
+        #[cfg(feature = "smoke")]
+        let isolated = isolated && TEST_RESULTS.lock().unwrap().is_none();
+        if isolated {
+            r.state = State::NoService;
+            self.invalidate();
+            return;
+        }
+        r.state = State::Pending;
+        let (generation, n) = (r.generation, self.notifier.clone());
+        self.pool.spawn(move || n.send(Msg::SearchResults { generation, result: query(&q) }));
+        self.invalidate();
+    }
+
+    pub fn on_search_results(&mut self, generation: u64, result: Result<Response, QueryError>) {
+        let show_hidden = self.show_hidden;
+        let Some(p) = self.palette.as_mut() else { return };
+        let Some(r) = p.search.as_mut().filter(|r| r.generation == generation) else { return };
+        match result {
+            Ok(Response::Found { items, more }) => {
+                r.items = items.into_iter().filter(|it| show_hidden || !it.hidden).collect();
+                r.more = more;
+                r.state = State::Done;
+            }
+            // 舊版服務不認得搜尋請求
+            Ok(Response::Error(e)) if e == "無法解析請求" => {
+                r.state = State::Error("索引服務是舊版，不支援搜尋：在命令面板重新執行「啟用 NTFS 索引服務」更新".into())
+            }
+            Ok(Response::Error(e)) => r.state = State::Error(e),
+            Ok(_) => r.state = State::Error("索引服務的回應不符".into()),
+            Err(QueryError::NotRunning) => r.state = State::NoService,
+            Err(QueryError::Failed(e)) => r.state = State::Error(e),
+        }
+        if r.state != State::Done {
+            r.items.clear();
+        }
+        p.matches = (0..r.items.len()).collect();
+        p.sel = 0;
+        p.top = 0;
+        self.invalidate();
+    }
+
+    /// Enter：前往所在的資料夾並選取；Ctrl+Enter：開啟
+    pub fn open_search_item(&mut self, item: SearchItem, open: bool) {
+        let p = self.active_pane;
+        if open {
+            if item.dir {
+                self.navigate(p, item.path, true);
+            } else {
+                let dir = path::parent(&item.path);
+                services::launch(&self.notifier, item.path, None, dir, None, services::Show::Normal);
+            }
+            return;
+        }
+        match path::parent(&item.path) {
+            Some(dir) => {
+                let name = path::file_name(&item.path).to_string();
+                self.navigate(p, dir, true);
+                self.tab_mut().pending_select = Some((name, false));
+            }
+            None => self.navigate(p, item.path, true),
+        }
+    }
+
+    pub fn paint_search(&self, p: &Palette, lay: &PaletteLayout) {
+        let Some(r) = &p.search else { return };
+        let c = &self.theme.color;
+        let g = &self.gfx;
+        // 輸入框右側：結果數
+        if r.state == State::Done && !p.query.trim().is_empty() {
+            let n = if r.more { format!("{}+ 個", r.items.len()) } else { format!("{} 個", r.items.len()) };
+            let ir = lay.input;
+            g.text(&n, Font::SmallRight, Rect::new(ir.l, ir.t, ir.r - 10.0, ir.b), c.text_secondary);
+        }
+        let row0 = lay.rows[0];
+        if p.matches.is_empty() {
+            let text = match &r.state {
+                State::Idle => "輸入名稱搜尋所有 NTFS 磁碟（空白分隔多個詞，可用 * ?；Enter 前往所在位置、Ctrl+Enter 開啟）".to_string(),
+                State::Pending => "搜尋中…".to_string(),
+                State::Done => "找不到符合的項目".to_string(),
+                State::NoService => "全磁碟搜尋需要 NTFS 索引服務：在命令面板執行「啟用 NTFS 索引服務」".to_string(),
+                State::Error(e) => format!("搜尋失敗：{e}"),
+            };
+            g.text(&text, Font::Text, Rect::new(row0.l + 10.0, row0.t, row0.r - 10.0, row0.b), c.text_secondary);
+            return;
+        }
+        for (i, row) in lay.rows.iter().enumerate() {
+            let mi = p.top + i;
+            let Some(&k) = p.matches.get(mi) else { break };
+            let it = &r.items[k];
+            if mi == p.sel {
+                g.fill_round(*row, self.theme.metrics.radius, c.selection);
+            } else if self.hover == Hit::PaletteRow(mi) {
+                g.fill_round(*row, self.theme.metrics.radius, c.hover);
+            }
+            let (fg, dim) = if mi == p.sel {
+                (c.selection_text, c.selection_text.with_alpha(170))
+            } else {
+                (c.text, c.text_secondary)
+            };
+            let size = if it.dir { format!("資料夾 {}", format::size_short(it.size)) } else { format::size_short(it.size) };
+            g.text(&size, Font::SmallRight, Rect::new(row.l, row.t, row.r - 10.0, row.b), dim);
+            let right = row.r - 10.0 - g.measure(&size, Font::Small) - 16.0;
+            let name = path::file_name(&it.path);
+            let name_r = Rect::new(row.l + 10.0, row.t, right, row.b);
+            g.text(name, Font::Text, name_r, fg);
+            // 所在的資料夾以次要顏色接在名稱後面
+            let x = name_r.l + g.measure(name, Font::Text) + 12.0;
+            if x + 40.0 < right {
+                let dir = path::parent(&it.path).unwrap_or_default();
+                g.text(&dir, Font::Small, Rect::new(x, row.t, right, row.b), dim);
+            }
+        }
+        if p.matches.len() > MAX_ROWS {
+            let card = lay.card;
+            let track = Rect::new(card.r - 5.0, lay.rows[0].t, card.r - 2.0, lay.rows[lay.rows.len() - 1].b);
+            let h = track.h() * MAX_ROWS as f32 / p.matches.len() as f32;
+            let y = track.t + track.h() * p.top as f32 / p.matches.len() as f32;
+            g.fill_round(Rect::new(track.l, y, track.r, y + h), 1.5, c.text_secondary.with_alpha(110));
+        }
+    }
+}

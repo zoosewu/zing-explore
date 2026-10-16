@@ -20,6 +20,7 @@ mod settings;
 mod shell;
 mod shellhost;
 mod script;
+mod search;
 mod sizes;
 mod themeedit;
 mod thumbs;

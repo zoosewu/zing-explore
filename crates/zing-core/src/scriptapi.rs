@@ -29,6 +29,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("nav.goto", &["path string 路徑"], "切換到資料夾（同 `go`）", "nav[\"goto\"](\"C:\\\\Windows\") -- goto 是 Lua 的保留字，要這樣寫；也可以用 go()"),
     spec("address.edit", &[], "編輯網址列", "address.edit()"),
     spec("palette.open", &[], "開啟命令面板", "palette.open()"),
+    spec("search.open", &[], "全磁碟搜尋：以名稱搜尋所有 NTFS 磁碟（需要 NTFS 索引服務）", "search.open()"),
     spec("jobs.toggle", &[], "顯示／隱藏檔案作業面板", "jobs.toggle()"),
     spec("jobs.clear", &[], "清除已完成的檔案作業", "jobs.clear()"),
     spec("file.copy", &[], "複製選取項目到剪貼簿", "file.copy()"),
@@ -112,6 +113,15 @@ pub const GLOBALS: &[Spec] = &[
         "顯示選擇資料夾的對話方塊（等待到使用者選擇）",
         "local dest = pick_folder(\"解壓縮到\", cwd())",
     ),
+    spec(
+        "clipboard",
+        &[
+            "text? string 要放到剪貼簿的文字；省略時讀取",
+            "return string|boolean|nil 讀取時為剪貼簿的文字（沒有文字時為 nil）；寫入時為是否成功",
+        ],
+        "讀取或寫入剪貼簿的文字（換行一律是 \\n，寫入時轉成 Windows 的 \\r\\n）",
+        "clipboard(table.concat(sel() | map(path.name) | list, \"\\n\"))\nlocal text = clipboard()",
+    ),
     spec("exec", &["script string 命令腳本（同設定檔的 cmd，可用 {sel} 等變數）"], "執行命令腳本", "exec(\"copy {sel} --to={dest}\")"),
     spec("log", &["... any"], "寫入 scripts\\zing.log（除錯用）", "log(\"選取\", #sel())"),
 ];
@@ -135,6 +145,15 @@ pub const PRELUDE: &[Spec] = &[
     spec("partial", &["f function", "... any 先套用的參數", "return function"], "固定前幾個參數", "local to_backup = partial(path.join, \"D:\\\\備份\")"),
     spec("freeze", &["t table", "return table"], "回傳不可變的唯讀版本（修改時產生錯誤）", "local cfg = freeze({ dest = \"D:\\\\\" })"),
     spec("is_dir", &["p string", "return boolean"], "是否為資料夾（讀取檔案系統）", "local dirs = sel() | filter(is_dir) | list"),
+    spec(
+        "stat",
+        &[
+            "p string 檔案或資料夾",
+            "return {size: integer, modified: integer?, created: integer?, accessed: integer?, is_dir: boolean, readonly: boolean, hidden: boolean, system: boolean}?, string? 時間為 Unix 秒數（可給 os.date）；資料夾的 size 為 0；失敗時為 nil 與錯誤訊息",
+        ],
+        "檔案資訊：大小、修改／建立／存取時間、屬性（讀取檔案系統）",
+        "local month = os.date(\"%Y-%m\", stat(sel()[1]).modified)\nlocal big = sel() | filter(function(p) return stat(p).size > 100 * 1024 * 1024 end) | list",
+    ),
     spec("path.name", &["p string", "return string"], "檔名（含副檔名）", "path.name(\"C:\\\\a\\\\b.txt\") --> \"b.txt\""),
     spec("path.stem", &["p string", "return string"], "主檔名（不含副檔名）", "path.stem(\"b.tar.gz\") --> \"b.tar\""),
     spec("path.ext", &["p string", "return string"], "副檔名（小寫、不含點；沒有時為空字串）", "path.ext(\"A.JPG\") --> \"jpg\""),

@@ -12,6 +12,7 @@ pub mod guard;
 pub mod indexproto;
 pub mod keymap;
 pub mod listing;
+pub mod namequery;
 pub mod ntfs;
 pub mod palette;
 pub mod path;
