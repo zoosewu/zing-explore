@@ -795,6 +795,22 @@ thumb.set{ image = "D:\\封面.jpg" }
 thumb.clear()
 ```
 
+### `settings.open()`
+
+開啟設定頁（修改會寫回 config.toml 的對應行，保留註解）
+
+```lua
+settings.open()
+```
+
+### `keys.edit()`
+
+開啟快速鍵編輯器（結果存在程式旁的 keys.toml）
+
+```lua
+keys.edit()
+```
+
 ### `view.preview()`
 
 顯示／隱藏預覽窗格

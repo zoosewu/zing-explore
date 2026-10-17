@@ -78,11 +78,11 @@ impl SortKey {
 
     pub fn label(self) -> &'static str {
         match self {
-            SortKey::Name => "名稱",
-            SortKey::Path => "路徑",
-            SortKey::Ext => "副檔名",
-            SortKey::Size => "大小",
-            SortKey::Date => "修改日期",
+            SortKey::Name => tr!("名稱"),
+            SortKey::Path => tr!("路徑"),
+            SortKey::Ext => tr!("副檔名"),
+            SortKey::Size => tr!("大小"),
+            SortKey::Date => tr!("修改日期"),
         }
     }
 

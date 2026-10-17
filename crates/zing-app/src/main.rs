@@ -9,10 +9,12 @@ mod index;
 mod views;
 mod input;
 mod jobs;
+mod keys;
 mod luadebug;
 mod model;
 mod palette;
 mod perf;
+mod prefspage;
 mod preview;
 mod prevhost;
 mod services;
@@ -52,6 +54,8 @@ mod smoke {
     pub fn tick(_hwnd: HWND) {}
 }
 mod view;
+#[macro_use]
+extern crate zing_core;
 mod window;
 
 use windows::Win32::Graphics::Gdi::UpdateWindow;
@@ -70,7 +74,7 @@ fn main() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
     if let Err(e) = run(perf, smoke) {
-        fatal(&format!("zing-explore 無法啟動：{}", e.message()));
+        fatal(&tr!("zing-explore 無法啟動：{e}", e = e.message()));
     }
 }
 

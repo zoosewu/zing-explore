@@ -57,7 +57,7 @@ pub fn file_name(p: &str) -> &str {
 
 /// 麵包屑：每段的顯示名稱與完整路徑。第一段固定為「此電腦」。
 pub fn segments(p: &str) -> Vec<(String, String)> {
-    let mut out = vec![("此電腦".to_string(), String::new())];
+    let mut out = vec![(tr!("此電腦").to_string(), String::new())];
     if p.is_empty() {
         return out;
     }

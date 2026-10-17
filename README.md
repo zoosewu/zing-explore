@@ -1,5 +1,7 @@
 # zing-explore
 
+繁體中文 | [English](README.en.md) | [日本語](README.ja.md)
+
 輕量、快速、可自訂的 Windows 11 檔案總管（執行檔 `zing.exe`）。Rust + Win32 + Direct2D，執行檔約 1 MB。
 
 ## 建置與執行
@@ -39,7 +41,12 @@ cargo build --release
 - 資料夾內容變更自動更新
 - 三種內建風格，各有深色／淺色並可跟隨系統：緊湊（預設，高密度、直角、完整路徑）、Fluent（寬鬆圓角）、
   折衷（Fluent 外觀、中等密度）；命令面板「主題：…」切換，`Ctrl+Shift+T` 切換深淺色時保留風格；可載入自訂主題檔
+- 設定頁（`Ctrl+,`）：介面語言、主題、樹狀列與命令面板的位置、顯示隱藏檔案、啟動資料夾、資料夾大小等常用設定，
+  修改立即生效，並寫回 `config.toml` 中的那一行（保留檔案的註解與排列）；也能從這裡開啟快速鍵、主題編輯器與設定檔
 - 快速鍵、工具列按鈕全部由設定檔定義，命令可帶變數（`{sel}`、`{dest}`、`{path}`…；`{ask:提示}` 執行時詢問）
+- 快速鍵編輯器（命令面板「編輯快速鍵」）：篩選命令，`Enter` 後按下新的組合鍵即可指定（已被使用的按鍵會從原本的命令移除），
+  `Ctrl+Delete` 移除、`Ctrl+R` 還原預設；結果存在 `zing.exe` 旁的 `keys.toml`（優先於 `config.toml`，不會改寫設定檔）
+- 介面語言：繁體中文、英文、日文，預設跟隨 Windows 的顯示語言，可在設定檔指定 `language = "en"`（`auto`／`zh-TW`／`en`／`ja`）
 - 資料夾大小：進入資料夾就顯示每個子資料夾的大小，可依大小排序（見下方「資料夾大小」）
 - 樹狀列：看得到的節點先在背景載入子資料夾，點擊前就知道能不能展開（沒有子資料夾就不顯示箭頭），
   點了立即展開；網路磁碟、隨身碟不預先載入，一律顯示箭頭。展開中的資料夾在別處新增、刪除、改名子資料夾時自動更新
@@ -49,11 +56,12 @@ cargo build --release
 
 ## 自訂
 
-設定檔：`zing.exe` 旁的 `config.toml`（`Ctrl+,` 開啟，`Ctrl+Shift+R` 重新載入）。設定、主題與工作階段都放在程式所在的資料夾（可攜式），
+設定檔：`zing.exe` 旁的 `config.toml`（`Ctrl+,` 開啟設定頁，設定頁的「編輯設定檔」或命令面板以記事本開啟，`Ctrl+Shift+R` 重新載入）。設定、主題與工作階段都放在程式所在的資料夾（可攜式），
 重灌系統或換電腦時連同程式一起複製即可；請放在一般使用者可寫入的位置（不要放在 Program Files）。
 範本見 [`crates/zing-core/src/default_config.toml`](crates/zing-core/src/default_config.toml)。
 
 ```toml
+language = "auto"       # auto（跟隨 Windows）| zh-TW | en | ja
 theme = "system"        # system | dark | light（緊湊）、fluent | balanced（跟隨系統）、fluent-dark…、自訂主題名稱
 
 [[key]]
@@ -110,7 +118,7 @@ end
 - [organize.lua](examples/scripts/organize.lua)：依副檔名移到「圖片」「影片」「文件」等子資料夾，或依修改日期移到「年-月」（`stat()`）
 - [folder_view.lua](examples/scripts/folder_view.lua)：事件函式，相片資料夾自動切換成縮圖、資料夾以封面圖片當縮圖
 
-完整的函式說明見 [docs/lua.md](docs/lua.md)（由程式碼產生，永遠與程式一致）。
+完整的函式說明見 [docs/lua.md](docs/lua.md)（由程式碼產生，永遠與程式一致；另有 [English](docs/lua.en.md)、[日本語](docs/lua.ja.md)）。
 
 主題（命令面板）：
 - 「編輯目前的主題」：右側面板列出配色、字型、尺寸、外觀，修改立即套用；顏色可點色塊選色或輸入 `#rrggbb`，
@@ -175,3 +183,9 @@ address = "path"        # path（完整路徑）| breadcrumb（麵包屑）
 ## 效能
 
 每次變更都要通過 `pwsh tools/perf.ps1` 與 `pwsh tools/smoke.ps1`（門檻與規則見 [CLAUDE.md](CLAUDE.md)）。
+
+## 翻譯
+
+介面文字以繁體中文為原文，翻譯在 `crates/zing-core/i18n/en.toml`、`ja.toml`（`"原文" = "翻譯"`）。
+`cargo test -p zing-core i18n` 會檢查每個原文都有翻譯、參數名稱一致；`ZING_I18N_MISSING=1` 時列出缺少的條目。
+Lua API 文件（`docs/lua*.md`）由 `scriptapi.rs` 與同一份翻譯產生。

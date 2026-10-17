@@ -5,6 +5,22 @@ use serde::{Deserialize, Serialize};
 use crate::keymap::KeyChord;
 
 pub const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
+/// 英文、日文版的預設設定（只有註解與按鈕名稱不同）：建立使用者設定檔時當作範本
+const DEFAULT_CONFIG_EN: &str = include_str!("default_config.en.toml");
+const DEFAULT_CONFIG_JA: &str = include_str!("default_config.ja.toml");
+
+/// 預設工具列按鈕的名稱：設定資料是繁體中文，顯示時翻譯（`i18n::tr_str`）
+#[cfg_attr(not(test), allow(dead_code))]
+const DEFAULT_BUTTON_LABELS: [&str; 2] = [tr_key!("新資料夾"), tr_key!("終端機")];
+
+/// 建立使用者設定檔時的範本（註解用 `lang` 的語言）
+pub fn default_config_for(lang: crate::i18n::Lang) -> &'static str {
+    match lang {
+        crate::i18n::Lang::ZhTw => DEFAULT_CONFIG,
+        crate::i18n::Lang::En => DEFAULT_CONFIG_EN,
+        crate::i18n::Lang::Ja => DEFAULT_CONFIG_JA,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -88,6 +104,7 @@ impl Thumbnailer {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RawConfig {
+    pub language: Option<String>,
     pub theme: Option<String>,
     pub show_hidden: Option<bool>,
     pub start_path: Option<String>,
@@ -100,8 +117,19 @@ pub struct RawConfig {
     pub thumbnailer: Vec<Thumbnailer>,
 }
 
+/// `keys.toml`（快速鍵編輯器寫的檔案）
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct RawKeys {
+    key: Vec<KeyBinding>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// 介面語言：auto（跟隨 Windows 的顯示語言）| zh-TW | en | ja
+    pub language: crate::i18n::Lang,
+    /// 設定檔中的寫法（`auto`、`zh-TW`、`en`、`ja`）：設定頁顯示用
+    pub language_setting: String,
     pub theme: String,
     pub show_hidden: bool,
     pub start_path: String,
@@ -111,6 +139,8 @@ pub struct Config {
     pub folder_sizes: FolderSizesConfig,
     /// 解析後的快速鍵；後定義者優先
     pub keys: Vec<(KeyChord, String)>,
+    /// 預設設定＋config.toml 的快速鍵（不含 keys.toml）：快速鍵編輯器以此判斷哪些是改過的
+    pub config_keys: Vec<(KeyChord, String)>,
     pub buttons: Vec<Button>,
     /// 外部命令縮圖產生器（預設 + 使用者，使用者的排前面、先比對）
     pub thumbnailers: Vec<Thumbnailer>,
@@ -119,31 +149,60 @@ pub struct Config {
 impl Config {
     /// 由預設設定與使用者設定（可無）組合。回傳設定與非致命的警告。
     pub fn load(user_src: Option<&str>) -> (Self, Vec<String>) {
+        Self::load_with_keys(user_src, None)
+    }
+
+    /// 另外套用快速鍵編輯器寫的 `keys.toml`（優先於 config.toml 的 `[[key]]`）
+    pub fn load_with_keys(user_src: Option<&str>, keys_src: Option<&str>) -> (Self, Vec<String>) {
         let mut warnings = Vec::new();
         let base: RawConfig = toml::from_str(DEFAULT_CONFIG).expect("內建預設設定必須合法");
         let user = match user_src.map(toml::from_str::<RawConfig>) {
             Some(Ok(u)) => u,
             Some(Err(e)) => {
-                warnings.push(format!("設定檔格式錯誤，已改用預設值：{e}"));
+                warnings.push(tr!("設定檔格式錯誤，已改用預設值：{e}", e));
                 RawConfig::default()
             }
             None => RawConfig::default(),
         };
 
-        let mut keys = Vec::new();
-        for b in base.key.iter().chain(user.key.iter()) {
-            match KeyChord::parse(&b.key) {
-                Ok(chord) => {
-                    keys.retain(|(c, _)| *c != chord);
-                    if !b.cmd.trim().is_empty() {
-                        keys.push((chord, b.cmd.clone()));
-                    }
-                }
-                Err(e) => warnings.push(e),
+        let edited = match keys_src.map(toml::from_str::<RawKeys>) {
+            Some(Ok(k)) => k.key,
+            Some(Err(e)) => {
+                warnings.push(tr!("keys.toml 格式錯誤，已忽略：{e}", e));
+                Vec::new()
             }
-        }
+            None => Vec::new(),
+        };
+        let mut keys = Vec::new();
+        let mut apply = |list: &[KeyBinding], keys: &mut Vec<(KeyChord, String)>| {
+            for b in list {
+                match KeyChord::parse(&b.key) {
+                    Ok(chord) => {
+                        keys.retain(|(c, _)| *c != chord);
+                        if !b.cmd.trim().is_empty() {
+                            keys.push((chord, b.cmd.clone()));
+                        }
+                    }
+                    Err(e) => warnings.push(e),
+                }
+            }
+        };
+        apply(&base.key, &mut keys);
+        apply(&user.key, &mut keys);
+        let config_keys = keys.clone();
+        apply(&edited, &mut keys);
 
+        let language = user.language.or(base.language).unwrap_or_default();
+        let (language, language_setting) = match crate::i18n::Lang::parse(&language) {
+            Some(l) => (l, language),
+            None => {
+                warnings.push(tr!("language 需為 auto、zh-TW、en 或 ja：{language}", language));
+                (crate::i18n::system(), "auto".into())
+            }
+        };
         let cfg = Config {
+            language,
+            language_setting,
             theme: user.theme.or(base.theme).unwrap_or_else(|| "system".into()),
             show_hidden: user.show_hidden.or(base.show_hidden).unwrap_or(false),
             start_path: user.start_path.or(base.start_path).unwrap_or_default(),
@@ -152,6 +211,7 @@ impl Config {
             palette: user.palette.or(base.palette).unwrap_or_default(),
             folder_sizes: user.folder_sizes.or(base.folder_sizes).unwrap_or_default(),
             keys,
+            config_keys,
             buttons: user.button.or(base.button).unwrap_or_default(),
             thumbnailers: user.thumbnailer.into_iter().chain(base.thumbnailer).collect(),
         };
@@ -190,6 +250,37 @@ mod tests {
         assert_eq!(cfg.command_for(k), Some("file.copy"));
         assert!(!cfg.buttons.is_empty());
         assert_eq!(cfg.palette.position, PalettePosition::Top);
+    }
+
+    #[test]
+    fn localized_templates_match() {
+        let summary = |c: &Config| {
+            let mut keys: Vec<(String, String)> = c.keys.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+            keys.sort();
+            let buttons: Vec<String> = c.buttons.iter().map(|b| b.cmd.clone()).collect();
+            (keys, buttons, c.theme.clone(), c.show_hidden, c.layout.tree, c.palette.position, c.folder_sizes.auto)
+        };
+        let (zh, _) = Config::load(None);
+        let labels: Vec<&str> = zh.buttons.iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(labels, DEFAULT_BUTTON_LABELS);
+        for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Ja] {
+            let (c, warn) = Config::load(Some(default_config_for(lang)));
+            assert!(warn.is_empty(), "{lang:?}: {warn:?}");
+            assert_eq!(summary(&c), summary(&zh), "{lang:?} 的範本與預設設定不一致");
+            // 範本的按鈕名稱就是翻譯
+            for (b, k) in c.buttons.iter().zip(DEFAULT_BUTTON_LABELS) {
+                assert_eq!(b.label, crate::i18n::tr_in(lang, k));
+            }
+        }
+    }
+
+    #[test]
+    fn language() {
+        let (cfg, warn) = Config::load(Some("language = \"ja\""));
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(cfg.language, crate::i18n::Lang::Ja);
+        let (_, warn) = Config::load(Some("language = \"klingon\""));
+        assert_eq!(warn.len(), 1);
     }
 
     #[test]

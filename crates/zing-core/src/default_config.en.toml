@@ -1,0 +1,219 @@
+# zing-explore default settings. The user config file (config.toml next to zing.exe) overrides these values;
+# for shortcuts the later definition wins, and cmd = "" disables a default shortcut.
+
+# UI language: auto (follows the Windows display language) | zh-TW | en | ja
+language = "auto"
+# Built-in: system (compact, follows system light/dark) | dark | light
+#           fluent | balanced (follow system light/dark) | fluent-dark | fluent-light | balanced-dark | balanced-light
+# or a user theme name (themes\<name>.toml next to zing.exe; style = "fluent" uses a style as the base)
+theme = "system"
+show_hidden = false
+# empty restores the last folder
+start_path = ""
+favorites = []
+
+[layout]
+# left | right | hidden
+tree = "left"
+
+[palette]
+# Command palette (Ctrl+Shift+P) position: top (top of the window) | center (window center, input stays put) | middle (whole panel always centered)
+position = "top"
+
+# External thumbnail generators (several allowed, the first match wins, before Windows thumbnails). {in} source file, {out} output PNG, {size} edge length.
+# The program is started directly, not through a shell. Thumbnails are cached in %LOCALAPPDATA%\zing-explore\thumbs (redone when path, modification time or size change).
+# [[thumbnailer]]
+# match = "*.stl;*.3mf"
+# cmd = 'stl-thumb -s {size} "{in}" "{out}"'
+
+[folder_sizes]
+# With the NTFS index service (command palette: Enable NTFS index service), sizes always come instantly from the index and this setting has no effect.
+# Without the index (service not enabled, non-NTFS drives):
+# true: when entering a folder on a local fixed drive, calculate subfolder sizes folder by folder at background priority (not for network or removable drives)
+# false: calculate only when Ctrl+Shift+S (view.foldersizes) is pressed
+auto = true
+
+# ---- Navigation ----
+[[key]]
+key = "Alt+Left"
+cmd = "nav.back"
+[[key]]
+key = "MouseBack"
+cmd = "nav.back"
+[[key]]
+key = "BrowserBack"
+cmd = "nav.back"
+[[key]]
+key = "Alt+Right"
+cmd = "nav.forward"
+[[key]]
+key = "MouseForward"
+cmd = "nav.forward"
+[[key]]
+key = "BrowserForward"
+cmd = "nav.forward"
+[[key]]
+key = "Alt+Up"
+cmd = "nav.up"
+[[key]]
+key = "Backspace"
+cmd = "nav.up"
+[[key]]
+key = "Enter"
+cmd = "nav.open"
+[[key]]
+key = "F5"
+cmd = "nav.refresh"
+[[key]]
+key = "Ctrl+L"
+cmd = "address.edit"
+[[key]]
+key = "Alt+D"
+cmd = "address.edit"
+
+# ---- Files ----
+[[key]]
+key = "Ctrl+C"
+cmd = "file.copy"
+[[key]]
+key = "Ctrl+X"
+cmd = "file.cut"
+[[key]]
+key = "Ctrl+V"
+cmd = "file.paste"
+[[key]]
+key = "Delete"
+cmd = "file.delete"
+[[key]]
+key = "Shift+Delete"
+cmd = "file.delete --permanent"
+[[key]]
+key = "F2"
+cmd = "file.rename"
+[[key]]
+key = "Ctrl+Shift+N"
+cmd = "file.newfolder"
+[[key]]
+key = "Alt+Enter"
+cmd = "file.properties"
+[[key]]
+key = "Ctrl+Shift+C"
+cmd = "file.copypath"
+[[key]]
+key = "F6"
+cmd = "copy --move --to={dest}"
+[[key]]
+key = "F7"
+cmd = "copy --to={dest}"
+
+# ---- Selection ----
+[[key]]
+key = "Ctrl+A"
+cmd = "sel.all"
+[[key]]
+key = "Ctrl+Shift+A"
+cmd = "sel.none"
+[[key]]
+key = "Ctrl+I"
+cmd = "sel.invert"
+
+# ---- Tabs and panes ----
+[[key]]
+key = "Ctrl+T"
+cmd = "tab.new"
+[[key]]
+key = "Ctrl+W"
+cmd = "tab.close"
+[[key]]
+key = "Ctrl+Tab"
+cmd = "tab.next"
+[[key]]
+key = "Ctrl+Shift+Tab"
+cmd = "tab.prev"
+[[key]]
+key = "Ctrl+Backslash"
+cmd = "pane.split"
+[[key]]
+key = "Ctrl+Shift+W"
+cmd = "pane.close"
+[[key]]
+key = "Tab"
+cmd = "pane.focusnext"
+[[key]]
+key = "Ctrl+B"
+cmd = "tree.toggle"
+
+# ---- View ----
+[[key]]
+key = "Ctrl+Shift+S"
+cmd = "view.foldersizes"
+
+# View: list / small / medium / large thumbnails (Ctrl+wheel adjusts the size continuously), remembered per folder
+[[key]]
+key = "Alt+P"
+cmd = "view.preview"
+
+[[key]]
+key = "Ctrl+Shift+1"
+cmd = "view.mode list"
+
+[[key]]
+key = "Ctrl+Shift+2"
+cmd = "view.mode small"
+
+[[key]]
+key = "Ctrl+Shift+3"
+cmd = "view.mode medium"
+
+[[key]]
+key = "Ctrl+Shift+4"
+cmd = "view.mode large"
+
+[[key]]
+key = "Ctrl+H"
+cmd = "view.togglehidden"
+[[key]]
+key = "Ctrl+1"
+cmd = "view.sort --by=name"
+[[key]]
+key = "Ctrl+2"
+cmd = "view.sort --by=modified"
+[[key]]
+key = "Ctrl+3"
+cmd = "view.sort --by=type"
+[[key]]
+key = "Ctrl+4"
+cmd = "view.sort --by=size"
+[[key]]
+key = "Ctrl+D"
+cmd = "favorites.add"
+[[key]]
+key = "Ctrl+Shift+T"
+cmd = "theme.toggle"
+[[key]]
+key = "Ctrl+Comma"
+cmd = "settings.open"
+[[key]]
+key = "Ctrl+Shift+P"
+cmd = "palette.open"
+
+# Search all drives (needs the NTFS index service)
+[[key]]
+key = "Ctrl+F"
+cmd = "search.open"
+
+[[key]]
+key = "Ctrl+J"
+cmd = "jobs.toggle"
+
+[[key]]
+key = "Ctrl+Shift+R"
+cmd = "config.reload"
+
+# ---- Toolbar buttons ----
+[[button]]
+label = "New folder"
+cmd = "file.newfolder"
+[[button]]
+label = "Terminal"
+cmd = "run wt.exe -d {path}"

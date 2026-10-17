@@ -8,7 +8,9 @@ use crate::volindex::{Child, Totals};
 pub const PIPE_NAME: &str = r"\\.\pipe\zing-explore-index";
 /// 服務自己的版號：修改 zing-index（行為、協定、快照格式）時加 1。zing 啟動時比對已安裝的服務，
 /// 較舊就以 UAC 更新。1 是還沒有 `Request::Version` 的版本（回答「無法解析請求」）
-pub const SERVICE_VERSION: u32 = 4;
+pub const SERVICE_VERSION: u32 = 5;
+/// 服務無法解析請求時的錯誤（協定的一部分，不翻譯：舊版服務以此回答不認得的請求）
+pub const UNPARSABLE: &str = "無法解析請求";
 /// 回應的上限（子資料夾非常多的資料夾）；超過時截斷並標記
 pub const MAX_RESPONSE: usize = 16 << 20;
 
@@ -260,7 +262,7 @@ pub fn installed_version(r: &Result<Response, QueryError>) -> Option<u32> {
     match r {
         Ok(Response::Version(v)) => Some(*v),
         // 版號 1 的服務不認得這個請求
-        Ok(Response::Error(e)) if e == "無法解析請求" => Some(1),
+        Ok(Response::Error(e)) if e == UNPARSABLE => Some(1),
         _ => None,
     }
 }
@@ -331,8 +333,8 @@ pub fn query(req: &Request) -> Result<Response, QueryError> {
             Err(e) => return Err(fail(e)),
         }
     }
-    let text = String::from_utf8(out).map_err(|_| QueryError::Failed("回應不是 UTF-8".into()))?;
-    Response::decode(&text).ok_or_else(|| QueryError::Failed("無法解析回應".into()))
+    let text = String::from_utf8(out).map_err(|_| QueryError::Failed(tr!("回應不是 UTF-8").into()))?;
+    Response::decode(&text).ok_or_else(|| QueryError::Failed(tr!("無法解析回應").into()))
 }
 
 #[cfg(test)]

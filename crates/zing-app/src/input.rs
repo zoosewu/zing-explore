@@ -144,6 +144,7 @@ impl App {
             Hit::TreeEmpty => self.focus = Focus::Tree,
             Hit::Preview => {}
             Hit::ThemeRow(_) | Hit::ThemeSwatch(_) | Hit::ThemeButton(_) | Hit::ThemePanel => self.theme_click(hit),
+            Hit::SettingsRow(_) | Hit::SettingsButton(_) | Hit::SettingsPanel => self.settings_click(hit),
             // 批次重新命名面板開啟時在函式開頭處理
             Hit::BatchChip(_) | Hit::BatchField(_) | Hit::BatchRun | Hit::BatchCancel | Hit::Batch => {}
             Hit::PreviewSplitter => {
@@ -295,7 +296,7 @@ impl App {
                     NodeKind::FavRoot => {
                         let cur = self.tab().path.clone();
                         if !cur.is_empty() && !self.is_favorite(&cur) {
-                            let extras = vec![(MENU_FAV_ADD, "將目前資料夾加入我的最愛".to_string())];
+                            let extras = vec![(MENU_FAV_ADD, tr!("將目前資料夾加入我的最愛").to_string())];
                             self.show_context_menu(Vec::new(), String::new(), screen, extras, cur);
                         }
                     }
@@ -307,10 +308,10 @@ impl App {
                         if kind == NodeKind::Favorite {
                             let k = self.favorites.iter().position(|f| f.eq_ignore_ascii_case(&target)).unwrap_or(0);
                             if k > 0 {
-                                extras.push((MENU_FAV_UP, "我的最愛中上移".into()));
+                                extras.push((MENU_FAV_UP, tr!("我的最愛中上移").into()));
                             }
                             if k + 1 < self.favorites.len() {
-                                extras.push((MENU_FAV_DOWN, "我的最愛中下移".into()));
+                                extras.push((MENU_FAV_DOWN, tr!("我的最愛中下移").into()));
                             }
                         }
                         self.show_context_menu(vec![target.clone()], folder, screen, extras, target);
@@ -368,6 +369,10 @@ impl App {
             self.theme_wheel(tp, x, y, delta);
             return;
         }
+        if let Some(sp) = self.layout.settings_panel.filter(|r| r.contains(x, y)) {
+            self.settings_wheel(sp, delta);
+            return;
+        }
         if let Some(pr) = self.layout.preview.filter(|r| r.contains(x, y)) {
             let (_, content, _) = self.preview_rects(pr);
             let max = self.preview_max_scroll(content.h());
@@ -409,6 +414,12 @@ impl App {
         }
         const VK_BACK: u16 = 0x08;
         let plain = !mods.ctrl && !mods.alt && !mods.shift;
+
+        // 設定頁開著：Esc 收起選項或關閉設定頁（篩選與選取之前）
+        if plain && vk == VK_ESCAPE.0 && self.settings_page.is_some() {
+            self.settings_escape();
+            return true;
+        }
 
         // 篩選字串不為空時，Backspace 刪字、Esc 清除，優先於快速鍵
         if self.focus == Focus::List && plain && !self.tab().filter.is_empty() {

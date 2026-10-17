@@ -75,9 +75,9 @@ impl Volume {
     /// 開啟磁碟區（`letter` 如 'C'）；不是 NTFS 時回傳錯誤
     pub fn open(letter: char) -> Result<Volume, String> {
         let root = format!("{letter}:\\");
-        let (fs, _) = volume_info(&root).ok_or("無法讀取磁碟區資訊")?;
+        let (fs, _) = volume_info(&root).ok_or(tr!("無法讀取磁碟區資訊"))?;
         if fs != "NTFS" {
-            return Err(format!("檔案系統是 {fs}，不是 NTFS"));
+            return Err(tr!("檔案系統是 {fs}，不是 NTFS", fs));
         }
         let path = wide_z(&format!(r"\\.\{letter}:"));
         let handle = unsafe {
@@ -113,7 +113,7 @@ impl Volume {
         v.mft_valid = data.MftValidDataLength as u64;
         v.mft_lcn = data.MftStartLcn as u64;
         if v.cluster == 0 || v.record < 256 || v.sector < 256 || !v.record.is_multiple_of(v.sector) {
-            return Err("磁碟區參數不合理".into());
+            return Err(tr!("磁碟區參數不合理").into());
         }
         Ok(v)
     }
@@ -130,7 +130,7 @@ impl Volume {
         let mut n = 0u32;
         unsafe { ReadFile(self.handle, Some(buf), Some(&mut n), Some(&mut ov)) }.map_err(err)?;
         if n as usize != buf.len() {
-            return Err(format!("讀取不完整（{n} / {}）", buf.len()));
+            return Err(tr!("讀取不完整（{n} / {total}）", n, total = buf.len()));
         }
         Ok(())
     }
@@ -183,14 +183,14 @@ impl Volume {
         let mut rec = vec![0u8; self.record];
         self.read_at(self.mft_lcn * self.cluster, &mut rec)?;
         if !ntfs::apply_fixup(&mut rec, self.sector, true) {
-            return Err("$MFT 記錄損毀".into());
+            return Err(tr!("$MFT 記錄損毀").into());
         }
         let mut pieces = ntfs::data_runs(&rec);
         let needed = self.mft_valid.div_ceil(self.cluster);
         let covered: u64 = pieces.iter().flat_map(|p| &p.1).map(|r| r.clusters).sum();
         if covered < needed {
             // $MFT 非常零碎：其餘區段放在屬性清單指向的延伸記錄
-            let base = ntfs::parse_record(&rec, 0).ok_or("$MFT 記錄無法解析")?;
+            let base = ntfs::parse_record(&rec, 0).ok_or(tr!("$MFT 記錄無法解析"))?;
             for e in base.extensions {
                 if let Some(b) = self.get_record(e) {
                     pieces.extend(ntfs::data_runs(&b));
@@ -200,7 +200,7 @@ impl Volume {
         pieces.sort_by_key(|p| p.0);
         let runs: Vec<Run> = pieces.into_iter().flat_map(|p| p.1).collect();
         if runs.iter().map(|r| r.clusters).sum::<u64>() < needed {
-            return Err("找不到完整的 $MFT 位置".into());
+            return Err(tr!("找不到完整的 $MFT 位置").into());
         }
         Ok(runs)
     }
@@ -224,7 +224,7 @@ impl Volume {
                     break 'runs;
                 }
                 if cancel.load(Ordering::Relaxed) {
-                    return Err("已取消".into());
+                    return Err(tr!("已取消").into());
                 }
                 let n = left.min(chunk_clusters);
                 let bytes = (n * self.cluster) as usize;

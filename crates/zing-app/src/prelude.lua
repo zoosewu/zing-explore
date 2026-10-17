@@ -1,8 +1,19 @@
 -- zing-explore 內建函式庫：惰性串流、不可變、純函式、組合。說明見 docs/lua.md（由 scriptapi.rs 產生）。
 -- 由 Rust 提供：__invoke(名稱, 位置參數, 旗標)、__msg、__exec、__ask、__pick_folder、__log、__is_dir、__stat、
--- __clipboard_get、__clipboard_set、__expired、
+-- __clipboard_get、__clipboard_set、__expired、__tr、
 -- __spawn、__shell、__popen_open/read/write/close、__commands、__ctx
 -- Rust 提供的函式不會丟錯；錯誤一律在 Lua 這邊丟出（見 script.rs 開頭）
+
+-- 介面文字的翻譯（原文為繁體中文，見 zing_core::i18n）；args 代入 {名稱}
+local function tr(s, args)
+  s = __tr(s)
+  if args then
+    s = s:gsub("{(%w+)}", function(k)
+      if args[k] ~= nil then return tostring(args[k]) end
+    end)
+  end
+  return s
+end
 
 -- 鉤子：CPU 時間上限（每 10000 個指令問一次 Rust，超過時中止）；除錯器連線時另外處理行事件與執行中收到的請求。
 -- 鉤子是每個協程各自設定的，新建的協程也要設
@@ -13,7 +24,7 @@ local main = coroutine.running()
 local threads = setmetatable({}, { __mode = "k" })
 local function hook(event, line)
   if event == "count" then
-    if expired() then error("執行超過 CPU 時間上限，已中止", 2) end
+    if expired() then error(tr("執行超過 CPU 時間上限，已中止"), 2) end
     if dbg then dbg.count() end
   elseif dbg then
     dbg.line(line)
@@ -54,7 +65,7 @@ end
 local Frozen = {}
 
 local function readonly()
-  error("不可變的資料不能修改", 2)
+  error(tr("不可變的資料不能修改"), 2)
 end
 
 --- 回傳不可變的唯讀版本
@@ -99,7 +110,7 @@ local function from(src)
     -- 迭代函式只能走一次
     return make(function() return src end)
   end
-  error("seq 需要清單、Seq 或迭代函式", 3)
+  error(tr("seq 需要清單、Seq 或迭代函式"), 3)
 end
 
 --- 建立惰性串流
@@ -212,7 +223,7 @@ end
 
 local function bor(a, b)
   if type(b) ~= "function" then
-    error("| 的右邊必須是函式（管線步驟）", 2)
+    error(tr("| 的右邊必須是函式（管線步驟）"), 2)
   end
   return b(a)
 end
@@ -357,7 +368,7 @@ local function args_of(...)
         end
       end
     elseif v ~= nil then
-      error("命令參數只能是字串、數字、清單或表格", 3)
+      error(tr("命令參數只能是字串、數字、清單或表格"), 3)
     end
   end
   for i = 1, select("#", ...) do add((select(i, ...))) end
@@ -424,7 +435,7 @@ do
   -- 讀取模式邊執行邊讀；寫入模式寫進命令的標準輸入。close 時等命令結束並回傳結束狀態
   io.popen = function(cmd, mode)
     mode = mode or "r"
-    if mode ~= "r" and mode ~= "w" then error('io.popen 的模式只能是 "r" 或 "w"', 2) end
+    if mode ~= "r" and mode ~= "w" then error(tr("io.popen 的模式只能是 \"r\" 或 \"w\""), 2) end
     local id, err = open(tostring(cmd), mode, ctx().cwd)
     if not id then return nil, err end
     local f, closed = {}, false
@@ -445,14 +456,14 @@ do
     end
     function f:write(...)
       for i = 1, select("#", ...) do
-        if not write(id, (select(i, ...))) then return nil, "寫入失敗" end
+        if not write(id, (select(i, ...))) then return nil, tr("寫入失敗") end
       end
       return f
     end
     function f:flush() return f end
     function f:setvbuf() return true end
     function f:close()
-      if closed then return nil, "已經關閉" end
+      if closed then return nil, tr("已經關閉") end
       closed = true
       return status(close(id, true))
     end
@@ -485,7 +496,7 @@ function __show(v)
     local parts = {}
     for i, x in ipairs(v) do
       if i > 20 then
-        parts[#parts + 1] = "…（共 " .. #v .. " 項）"
+        parts[#parts + 1] = tr("…（共 {n} 項）", { n = #v })
         break
       end
       parts[#parts + 1] = tostring(x)

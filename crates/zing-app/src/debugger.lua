@@ -5,6 +5,17 @@
 -- 載入後交給 prelude 的鉤子（__attach_debugger），閒置時收到的訊息由 Rust 呼叫 __debugger.handle(訊息)。
 -- 鉤子執行期間 Lua 不會再觸發鉤子，所以除錯器本身的程式碼不會被中斷點或單步攔下。
 
+-- 介面文字的翻譯（原文為繁體中文，見 zing_core::i18n）；args 代入 {名稱}
+local function tr(s, args)
+  s = __tr(s)
+  if args then
+    s = s:gsub("{(%w+)}", function(k)
+      if args[k] ~= nil then return tostring(args[k]) end
+    end)
+  end
+  return s
+end
+
 local send, wait, poll = __dbg_send, __dbg_wait, __dbg_poll
 local SCRIPTS = (__scripts_dir or ""):gsub("[\\/]+$", "")
 local PRELUDE_SOURCE = __prelude_source or ""
@@ -68,7 +79,7 @@ local function decode(s)
           i = i + 2
         end
       elseif c == "" then
-        error("JSON 字串沒有結束")
+        error(tr("JSON 字串沒有結束"))
       else
         local j = s:find('["\\]', i) or #s + 1
         out[#out + 1] = s:sub(i, j - 1)
@@ -87,7 +98,7 @@ local function decode(s)
       local c = s:sub(pos, pos)
       pos = pos + 1
       if c == close then return end
-      if c ~= "," then error("JSON 格式錯誤（位置 " .. pos .. "）") end
+      if c ~= "," then error(tr("JSON 格式錯誤（位置 {pos}）", { pos = pos })) end
     end
   end
   function value()
@@ -118,7 +129,7 @@ local function decode(s)
       end
     end
     local num = s:match("^-?[%d.eE+-]+", pos)
-    if not num then error("JSON 格式錯誤（位置 " .. pos .. "）") end
+    if not num then error(tr("JSON 格式錯誤（位置 {pos}）", { pos = pos })) end
     pos = pos + #num
     return math.tointeger(tonumber(num)) or tonumber(num)
   end
@@ -317,7 +328,7 @@ function handlers.initialize(req)
     supportsEvaluateForHovers = true,
     supportsConditionalBreakpoints = true,
     supportsLogPoints = true,
-    exceptionBreakpointFilters = array({ { filter = "error", label = "腳本錯誤時暫停", default = true } }),
+    exceptionBreakpointFilters = array({ { filter = "error", label = tr("腳本錯誤時暫停"), default = true } }),
   })
   event("initialized", {})
 end
@@ -325,11 +336,11 @@ end
 function handlers.attach(req)
   attached = true
   respond(req, {})
-  event("output", { category = "console", output = "已連線到 zing（腳本資料夾：" .. SCRIPTS .. "）\n" })
+  event("output", { category = "console", output = tr("已連線到 zing（腳本資料夾：{dir}）", { dir = SCRIPTS }) .. "\n" })
 end
 
 function handlers.launch(req)
-  respond(req, nil, "zing 的腳本除錯只支援附加（attach）：請先開啟 zing，再以 request = \"attach\" 連線")
+  respond(req, nil, tr("zing 的腳本除錯只支援附加（attach）：請先開啟 zing，再以 request = \"attach\" 連線"))
 end
 
 function handlers.setBreakpoints(req)
@@ -344,7 +355,7 @@ function handlers.setBreakpoints(req)
       set[b.line] = { cond = b.condition, log = b.logMessage }
       out[#out + 1] = {
         verified = inside, line = b.line,
-        message = not inside and "只能在 zing 的 scripts 資料夾裡的腳本設定中斷點" or nil,
+        message = not inside and tr("只能在 zing 的 scripts 資料夾裡的腳本設定中斷點") or nil,
       }
     end
     bps[key] = next(set) and set or nil
@@ -368,7 +379,7 @@ end
 function handlers.configurationDone(req) respond(req, {}) end
 
 function handlers.threads(req)
-  respond(req, { threads = array({ { id = 1, name = "Lua 腳本" } }) })
+  respond(req, { threads = array({ { id = 1, name = tr("Lua 腳本") } }) })
 end
 
 -- 經 xpcall 等方式呼叫時 Lua 推不出函式名稱：找全域變數裡的同一個函式
@@ -390,7 +401,7 @@ function handlers.stackTrace(req)
       local info = L and getinfo(L, "nSlf")
       if not info then break end
       local name = info.name or global_name(info.func)
-        or (info.what == "main" and "（主程式）") or (info.what == "C" and "[C]") or "（匿名函式）"
+        or (info.what == "main" and tr("（主程式）")) or (info.what == "C" and "[C]") or tr("（匿名函式）")
       frames[#frames + 1] = {
         id = k + 1, name = name, source = source_of(info),
         line = info.currentline > 0 and info.currentline or 0, column = 1,
@@ -407,9 +418,9 @@ function handlers.scopes(req)
   local k = ((req.arguments or {}).frameId or 1) - 1
   respond(req, {
     scopes = array({
-      { name = "區域變數", variablesReference = ref({ kind = "locals", frame = k }), expensive = false },
-      { name = "上值", variablesReference = ref({ kind = "upvalues", frame = k }), expensive = false },
-      { name = "全域", variablesReference = ref({ kind = "table", value = _G }), expensive = true },
+      { name = tr("區域變數"), variablesReference = ref({ kind = "locals", frame = k }), expensive = false },
+      { name = tr("上值"), variablesReference = ref({ kind = "upvalues", frame = k }), expensive = false },
+      { name = tr("全域"), variablesReference = ref({ kind = "table", value = _G }), expensive = true },
     }),
   })
 end
@@ -431,7 +442,7 @@ function handlers.evaluate(req)
   local k = args.frameId and args.frameId - 1
   local v, err, has = evaluate(args.expression or "", k)
   if err then return respond(req, nil, err) end
-  if not has and args.context == "repl" then return respond(req, { result = "（沒有回傳值）", variablesReference = 0 }) end
+  if not has and args.context == "repl" then return respond(req, { result = tr("（沒有回傳值）"), variablesReference = 0 }) end
   local value, t, r = show(v)
   respond(req, { result = value, type = t, variablesReference = r })
 end
@@ -439,7 +450,7 @@ end
 function handlers.source(req)
   local r = (req.arguments or {}).sourceReference
   if r == 1 then return respond(req, { content = PRELUDE_SOURCE }) end
-  respond(req, nil, "沒有這個來源")
+  respond(req, nil, tr("沒有這個來源"))
 end
 
 function handlers.pause(req)
@@ -478,7 +489,7 @@ local function dispatch(text)
   if not ok or type(req) ~= "table" or req.type ~= "request" then return nil end
   local h = handlers[req.command]
   if not h then
-    respond(req, nil, "不支援的請求：" .. tostring(req.command))
+    respond(req, nil, tr("不支援的請求：{cmd}", { cmd = tostring(req.command) }))
     return nil
   end
   local ok2, r = pcall(h, req)
@@ -625,7 +636,7 @@ function M.import(text)
     bp_lines[b.line] = true
   end
   update_hook()
-  event("output", { category = "console", output = "已重新載入腳本\n" })
+  event("output", { category = "console", output = tr("已重新載入腳本") .. "\n" })
 end
 
 function M.output(text)

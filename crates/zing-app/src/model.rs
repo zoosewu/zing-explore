@@ -87,7 +87,7 @@ impl Tab {
     }
 
     pub fn title(&self) -> String {
-        if self.path.is_empty() { "此電腦".into() } else { path::file_name(&self.path).to_string() }
+        if self.path.is_empty() { tr!("此電腦").into() } else { path::file_name(&self.path).to_string() }
     }
 
     /// 換資料夾前清空內容
@@ -375,7 +375,7 @@ impl Tree {
     pub fn build(favorites: &[String], drives: &Listing) -> Self {
         let mut nodes = vec![Node {
             path: String::new(),
-            name: "我的最愛".into(),
+            name: tr!("我的最愛").into(),
             depth: 0,
             kind: NodeKind::FavRoot,
             expanded: true,
@@ -389,7 +389,7 @@ impl Tree {
         }
         nodes.push(Node {
             path: String::new(),
-            name: "此電腦".into(),
+            name: tr!("此電腦").into(),
             depth: 0,
             kind: NodeKind::Pc,
             expanded: true,

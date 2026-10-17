@@ -97,13 +97,13 @@ impl ShellHost {
         {
             h.shared.abandoned.store(true, Ordering::Release);
             self.host = None;
-            self.notifier.status("前一個 Shell 動作沒有回應（可能是第三方擴充功能），已改用新的執行緒", true);
+            self.notifier.status(tr!("前一個 Shell 動作沒有回應（可能是第三方擴充功能），已改用新的執行緒"), true);
         }
         if self.host.is_none() {
             self.host = spawn(self.notifier.clone(), self.main_hwnd);
         }
         let Some(h) = &self.host else {
-            self.notifier.status("無法建立 Shell 執行緒", true);
+            self.notifier.status(tr!("無法建立 Shell 執行緒"), true);
             return;
         };
         if h.tx.send(job).is_ok() {
@@ -289,19 +289,19 @@ fn run_job(job: ShellJob) {
                 Ok(MenuResult::Rename) => n.send(Msg::MenuRename),
                 Ok(MenuResult::Extra(id)) => n.send(Msg::MenuExtra { id, target }),
                 Ok(_) => {}
-                Err(e) => n.status(format!("無法顯示選單：{}", e.message()), true),
+                Err(e) => n.status(tr!("無法顯示選單：{e}", e = e.message()), true),
             }
         }
         ShellJob::SetClipboard { paths, cut } => match shell::set_clipboard(&paths, cut) {
-            Ok(()) => n.status(format!("已{} {} 個項目", if cut { "剪下" } else { "複製" }, paths.len()), false),
-            Err(e) => n.status(format!("無法存取剪貼簿：{}", e.message()), true),
+            Ok(()) => n.status(if cut { tr!("已剪下 {n} 個項目", n = paths.len()) } else { tr!("已複製 {n} 個項目", n = paths.len()) }, false),
+            Err(e) => n.status(tr!("無法存取剪貼簿：{e}", e = e.message()), true),
         },
         ShellJob::SetText { text, status, reply } => {
             let r = crate::window::set_clipboard_text(host, &text);
             match &r {
                 Ok(()) if !status.is_empty() => n.status(status, false),
                 Ok(()) => {}
-                Err(e) if reply.is_none() => n.status(format!("無法存取剪貼簿：{}", e.message()), true),
+                Err(e) if reply.is_none() => n.status(tr!("無法存取剪貼簿：{e}", e = e.message()), true),
                 Err(_) => {}
             }
             if let Some(reply) = reply {
@@ -315,7 +315,7 @@ fn run_job(job: ShellJob) {
                 }
                 n.send(Msg::Paste { sources, dest, cut });
             }
-            None => n.status("剪貼簿上沒有檔案", true),
+            None => n.status(tr!("剪貼簿上沒有檔案"), true),
         },
         ShellJob::Properties { paths } => shell::properties(host, &paths),
         ShellJob::Flush(ack) => {

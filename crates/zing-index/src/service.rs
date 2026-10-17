@@ -32,9 +32,9 @@ use zing_core::text::wide_z;
 use crate::server::{self, Server};
 
 pub const SERVICE_NAME: &str = "zing-index";
-const DISPLAY_NAME: &str = "zing-explore 索引服務";
+const DISPLAY_NAME: &str = tr_key!("zing-explore 索引服務");
 const DESCRIPTION: &str =
-    "讀取 NTFS 主檔案表與變更日誌，提供 zing-explore 資料夾大小與子資料夾清單。停用後 zing-explore 改用逐資料夾掃描。";
+    tr_key!("讀取 NTFS 主檔案表與變更日誌，提供 zing-explore 資料夾大小與子資料夾清單。停用後 zing-explore 改用逐資料夾掃描。");
 
 static SERVER: OnceLock<Arc<Server>> = OnceLock::new();
 static STATUS: AtomicUsize = AtomicUsize::new(0);
@@ -203,10 +203,10 @@ pub fn install() -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(250));
             copied = std::fs::copy(&me, &dest);
         }
-        copied.map_err(|e| format!("無法複製到 {}：{e}", dest.display()))?;
+        copied.map_err(|e| tr!("無法複製到 {dest}：{e}", dest = dest.display(), e))?;
     }
     let bin = wide_z(&format!("\"{}\" --service", dest.display()));
-    let display = wide_z(DISPLAY_NAME);
+    let display = wide_z(zing_core::i18n::tr(DISPLAY_NAME));
     let svc = match existing {
         Some(svc) => {
             unsafe {
@@ -250,14 +250,14 @@ pub fn install() -> Result<(), String> {
             .map_err(|e| e.message())?)
         }
     };
-    let mut desc = wide_z(DESCRIPTION);
+    let mut desc = wide_z(zing_core::i18n::tr(DESCRIPTION));
     let d = SERVICE_DESCRIPTIONW { lpDescription: PWSTR(desc.as_mut_ptr()) };
     // 延遲自動啟動：開機後等其他服務啟動完才開始，不拖慢開機
     let delayed = SERVICE_DELAYED_AUTO_START_INFO { fDelayedAutostart: true.into() };
     unsafe {
         let _ = ChangeServiceConfig2W(svc.0, SERVICE_CONFIG_DESCRIPTION, Some(&d as *const _ as *const _));
         let _ = ChangeServiceConfig2W(svc.0, SERVICE_CONFIG_DELAYED_AUTO_START_INFO, Some(&delayed as *const _ as *const _));
-        StartServiceW(svc.0, None).map_err(|e| format!("服務已安裝，但無法啟動：{}", e.message()))?;
+        StartServiceW(svc.0, None).map_err(|e| tr!("服務已安裝，但無法啟動：{e}", e = e.message()))?;
     }
     server::log(false, &format!("已安裝服務：{}", dest.display()));
     Ok(())

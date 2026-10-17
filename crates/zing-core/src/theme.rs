@@ -29,12 +29,12 @@ impl Color {
     }
 
     pub fn parse(s: &str) -> Result<Self, String> {
-        let h = s.strip_prefix('#').ok_or_else(|| format!("顏色需以 # 開頭：{s}"))?;
-        let v = u32::from_str_radix(h, 16).map_err(|_| format!("顏色格式錯誤：{s}"))?;
+        let h = s.strip_prefix('#').ok_or_else(|| tr!("顏色需以 # 開頭：{s}", s))?;
+        let v = u32::from_str_radix(h, 16).map_err(|_| tr!("顏色格式錯誤：{s}", s))?;
         match h.len() {
             6 => Ok(Self::rgb(v)),
             8 => Ok(Self { a: v as u8, ..Self::rgb(v >> 8) }),
-            _ => Err(format!("顏色需為 #rrggbb 或 #rrggbbaa：{s}")),
+            _ => Err(tr!("顏色需為 #rrggbb 或 #rrggbbaa：{s}", s)),
         }
     }
 
@@ -334,10 +334,10 @@ impl Theme {
 
     /// 解析主題 TOML。未指定 `mode` 的欄位會以對應模式的內建主題補上。
     pub fn from_toml(src: &str) -> Result<Self, String> {
-        let raw: toml::Table = toml::from_str(src).map_err(|e| format!("主題檔格式錯誤：{e}"))?;
+        let raw: toml::Table = toml::from_str(src).map_err(|e| tr!("主題檔格式錯誤：{e}", e))?;
         let version = raw.get("format_version").and_then(|v| v.as_integer()).unwrap_or(1);
         if version > FORMAT_VERSION as i64 {
-            return Err(format!("主題檔版本 {version} 比程式支援的版本新（{FORMAT_VERSION}）"));
+            return Err(tr!("主題檔版本 {version} 比程式支援的版本新（{FORMAT_VERSION}）", version, FORMAT_VERSION));
         }
         let mode = match raw.get("mode").and_then(|v| v.as_str()) {
             Some("light") => Mode::Light,
@@ -345,12 +345,12 @@ impl Theme {
         };
         let style = match raw.get("style").and_then(|v| v.as_str()) {
             None => Style::Compact,
-            Some(s) => Style::parse(s).ok_or_else(|| format!("style 需為 compact、fluent 或 balanced：{s}"))?,
+            Some(s) => Style::parse(s).ok_or_else(|| tr!("style 需為 compact、fluent 或 balanced：{s}", s))?,
         };
         let base = Self::builtin_style(style, mode);
         let mut merged = toml::Table::try_from(&base).map_err(|e| e.to_string())?;
         merge(&mut merged, raw);
-        let theme: Theme = merged.try_into().map_err(|e: toml::de::Error| format!("主題檔內容錯誤：{e}"))?;
+        let theme: Theme = merged.try_into().map_err(|e: toml::de::Error| tr!("主題檔內容錯誤：{e}", e))?;
         theme.validate()?;
         Ok(theme)
     }
@@ -363,10 +363,10 @@ impl Theme {
         let m = &self.metrics;
         let sane = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
         if !sane(self.font.size, 6.0, 48.0) {
-            return Err("font.size 需介於 6 到 48".into());
+            return Err(tr!("font.size 需介於 6 到 48").into());
         }
         if !sane(m.row_height, 12.0, 96.0) || !sane(m.tree_width, 80.0, 1200.0) {
-            return Err("metrics 數值超出合理範圍".into());
+            return Err(tr!("metrics 數值超出合理範圍").into());
         }
         Ok(())
     }
@@ -404,7 +404,7 @@ pub struct Field {
 }
 
 const fn color(label: &'static str, key: &'static [&'static str]) -> Field {
-    Field { group: "配色", label, path: key, kind: FieldKind::Color }
+    Field { group: tr_key!("配色"), label, path: key, kind: FieldKind::Color }
 }
 
 const fn num(group: &'static str, label: &'static str, path: &'static [&'static str], min: f32, max: f32, step: f32) -> Field {
@@ -412,42 +412,42 @@ const fn num(group: &'static str, label: &'static str, path: &'static [&'static 
 }
 
 pub const FIELDS: &[Field] = &[
-    color("背景", &["color", "background"]),
-    color("次要區域", &["color", "surface"]),
-    color("文字", &["color", "text"]),
-    color("次要文字", &["color", "text_secondary"]),
-    color("框線", &["color", "border"]),
-    color("滑過", &["color", "hover"]),
-    color("選取", &["color", "selection"]),
-    color("選取的文字", &["color", "selection_text"]),
-    color("非作用中的選取", &["color", "selection_inactive"]),
-    color("強調色", &["color", "accent"]),
-    color("資料夾", &["color", "folder"]),
-    color("錯誤", &["color", "error"]),
-    Field { group: "字型", label: "字型名稱", path: &["font", "family"], kind: FieldKind::Text },
-    num("字型", "字級", &["font", "size"], 8.0, 24.0, 0.5),
-    num("尺寸", "列高", &["metrics", "row_height"], 16.0, 64.0, 1.0),
-    num("尺寸", "圓角", &["metrics", "radius"], 0.0, 16.0, 1.0),
-    num("尺寸", "工具列高度", &["metrics", "toolbar_height"], 24.0, 80.0, 1.0),
-    num("尺寸", "分頁列高度", &["metrics", "tab_height"], 20.0, 64.0, 1.0),
-    num("尺寸", "狀態列高度", &["metrics", "status_height"], 16.0, 48.0, 1.0),
-    num("尺寸", "樹狀列寬度", &["metrics", "tree_width"], 120.0, 600.0, 10.0),
-    num("尺寸", "間距", &["metrics", "padding"], 0.0, 24.0, 1.0),
-    Field { group: "外觀", label: "網址列", path: &["chrome", "address"], kind: FieldKind::Choice(&["path", "breadcrumb"]) },
-    Field { group: "外觀", label: "分頁強調線", path: &["chrome", "tab_accent"], kind: FieldKind::Bool },
-    Field { group: "外觀", label: "選取底色避開圖示", path: &["chrome", "selection_after_icon"], kind: FieldKind::Bool },
-    Field { group: "外觀", label: "標題列 Mica 效果", path: &["effects", "backdrop"], kind: FieldKind::Choice(&["mica", "none"]) },
+    color(tr_key!("背景"), &["color", "background"]),
+    color(tr_key!("次要區域"), &["color", "surface"]),
+    color(tr_key!("文字"), &["color", "text"]),
+    color(tr_key!("次要文字"), &["color", "text_secondary"]),
+    color(tr_key!("框線"), &["color", "border"]),
+    color(tr_key!("滑過"), &["color", "hover"]),
+    color(tr_key!("選取"), &["color", "selection"]),
+    color(tr_key!("選取的文字"), &["color", "selection_text"]),
+    color(tr_key!("非作用中的選取"), &["color", "selection_inactive"]),
+    color(tr_key!("強調色"), &["color", "accent"]),
+    color(tr_key!("資料夾"), &["color", "folder"]),
+    color(tr_key!("錯誤"), &["color", "error"]),
+    Field { group: tr_key!("字型"), label: tr_key!("字型名稱"), path: &["font", "family"], kind: FieldKind::Text },
+    num(tr_key!("字型"), tr_key!("字級"), &["font", "size"], 8.0, 24.0, 0.5),
+    num(tr_key!("尺寸"), tr_key!("列高"), &["metrics", "row_height"], 16.0, 64.0, 1.0),
+    num(tr_key!("尺寸"), tr_key!("圓角"), &["metrics", "radius"], 0.0, 16.0, 1.0),
+    num(tr_key!("尺寸"), tr_key!("工具列高度"), &["metrics", "toolbar_height"], 24.0, 80.0, 1.0),
+    num(tr_key!("尺寸"), tr_key!("分頁列高度"), &["metrics", "tab_height"], 20.0, 64.0, 1.0),
+    num(tr_key!("尺寸"), tr_key!("狀態列高度"), &["metrics", "status_height"], 16.0, 48.0, 1.0),
+    num(tr_key!("尺寸"), tr_key!("樹狀列寬度"), &["metrics", "tree_width"], 120.0, 600.0, 10.0),
+    num(tr_key!("尺寸"), tr_key!("間距"), &["metrics", "padding"], 0.0, 24.0, 1.0),
+    Field { group: tr_key!("外觀"), label: tr_key!("網址列"), path: &["chrome", "address"], kind: FieldKind::Choice(&["path", "breadcrumb"]) },
+    Field { group: tr_key!("外觀"), label: tr_key!("分頁強調線"), path: &["chrome", "tab_accent"], kind: FieldKind::Bool },
+    Field { group: tr_key!("外觀"), label: tr_key!("選取底色避開圖示"), path: &["chrome", "selection_after_icon"], kind: FieldKind::Bool },
+    Field { group: tr_key!("外觀"), label: tr_key!("標題列 Mica 效果"), path: &["effects", "backdrop"], kind: FieldKind::Choice(&["mica", "none"]) },
 ];
 
 /// 選項的顯示名稱
 pub fn choice_label(v: &str) -> &str {
     match v {
-        "path" => "完整路徑",
-        "breadcrumb" => "麵包屑",
-        "mica" => "開",
-        "none" => "關",
-        "true" => "是",
-        "false" => "否",
+        "path" => tr!("完整路徑"),
+        "breadcrumb" => tr!("麵包屑"),
+        "mica" => tr!("開"),
+        "none" => tr!("關"),
+        "true" => tr!("是"),
+        "false" => tr!("否"),
         other => other,
     }
 }
@@ -485,15 +485,18 @@ impl Theme {
         let new = match f.kind {
             FieldKind::Color => toml::Value::String(Color::parse(value)?.to_hex()),
             FieldKind::Number { min, max, .. } => {
-                let x: f32 = value.parse().map_err(|_| format!("{} 需為數字", f.label))?;
+                let label = crate::i18n::tr(f.label);
+                let x: f32 = value.parse().map_err(|_| tr!("{label} 需為數字", label))?;
                 if !x.is_finite() || x < min || x > max {
-                    return Err(format!("{} 需介於 {min} 到 {max}", f.label));
+                    return Err(tr!("{label} 需介於 {min} 到 {max}", label, min, max));
                 }
                 toml::Value::Float(x as f64)
             }
-            FieldKind::Text if value.is_empty() => return Err(format!("{} 不能是空的", f.label)),
+            FieldKind::Text if value.is_empty() => return Err(tr!("{label} 不能是空的", label = crate::i18n::tr(f.label))),
             FieldKind::Text => toml::Value::String(value.to_string()),
-            FieldKind::Choice(opts) if !opts.contains(&value) => return Err(format!("{} 的值不正確：{value}", f.label)),
+            FieldKind::Choice(opts) if !opts.contains(&value) => {
+                return Err(tr!("{label} 的值不正確：{value}", label = crate::i18n::tr(f.label), value));
+            }
             FieldKind::Choice(_) => toml::Value::String(value.to_string()),
             FieldKind::Bool => toml::Value::Boolean(value == "true"),
         };
@@ -504,7 +507,7 @@ impl Theme {
                 .entry(key.to_string())
                 .or_insert_with(|| toml::Value::Table(toml::Table::new()))
                 .as_table_mut()
-                .ok_or("主題格式錯誤")?;
+                .ok_or(tr!("主題格式錯誤"))?;
         }
         cur.insert(f.path[f.path.len() - 1].to_string(), new);
         let theme: Theme = t.try_into().map_err(|e: toml::de::Error| e.to_string())?;
@@ -573,13 +576,13 @@ impl Theme {
 pub fn valid_theme_name(name: &str) -> Result<(), String> {
     let n = name.trim();
     if n.is_empty() {
-        return Err("名稱不能是空的".into());
+        return Err(tr!("名稱不能是空的").into());
     }
     if let Some(p) = crate::batchrename::validate(n) {
-        return Err(format!("名稱不能當檔名：{}", p.describe()));
+        return Err(tr!("名稱不能當檔名：{reason}", reason = p.describe()));
     }
     if Theme::resolve_builtin(n, false).is_some() {
-        return Err(format!("「{n}」是內建主題的名稱"));
+        return Err(tr!("「{n}」是內建主題的名稱", n));
     }
     Ok(())
 }

@@ -102,6 +102,8 @@ pub enum EditKind {
     /// 主題編輯器：欄位的值、另存新主題的名稱
     ThemeField { field: usize },
     ThemeSaveAs,
+    /// 設定頁的文字欄位
+    Pref { field: usize },
     /// Lua 腳本的 ask()
     Ask,
 }
@@ -146,6 +148,8 @@ pub struct App {
     /// 目前主題的名稱（內建名稱或 themes 資料夾中的檔名）
     pub theme_name: String,
     pub theme_editor: Option<crate::themeedit::ThemeEditor>,
+    /// 設定頁（settings.open）
+    pub settings_page: Option<crate::prefspage::SettingsPage>,
     pub scripts: crate::script::Scripts,
     /// Lua 腳本的 ask() 等待中的提示與回答通道
     pub ask: Option<(String, AskReply)>,
@@ -196,7 +200,7 @@ impl App {
     pub fn new(hwnd: HWND, dpi: f32, perf: Option<Perf>, smoke_dir: Option<String>) -> windows::core::Result<Self> {
         let isolated = perf.is_some() || smoke_dir.is_some();
         // 第一幀之前必須知道設定與主題；檔案很小且在本機，屬於明確的例外
-        let (config, warnings, session, theme, theme_warning, theme_name) = if smoke_dir.is_some() {
+        let (mut config, warnings, session, theme, theme_warning, theme_name) = if smoke_dir.is_some() {
             let (config, warnings) = Config::load(None);
             (config, warnings, Session::default(), Theme::dark(), None, "dark".to_string())
         } else {
@@ -208,6 +212,11 @@ impl App {
             let (theme, theme_warning) = settings::resolve_theme(&theme_name);
             (config, warnings, session, theme, theme_warning, theme_name)
         };
+        // 隔離模式（效能、冒煙測試）固定用繁體中文，結果才可重現
+        if isolated {
+            config.language = zing_core::i18n::Lang::ZhTw;
+        }
+        zing_core::i18n::set(config.language);
         crate::perf::mark("config");
         let gfx = Gfx::new(hwnd, dpi, &theme, perf.is_some())?;
         crate::perf::mark("gfx");
@@ -239,6 +248,7 @@ impl App {
             batch: None,
             theme_name,
             theme_editor: None,
+            settings_page: None,
             scripts: Default::default(),
             ask: None,
             theme_watch: None,
@@ -862,9 +872,9 @@ impl App {
                     Ok(()) => {
                         self.thumbs.forget(&p);
                         let name = path::file_name(&p);
-                        self.set_status(if set { format!("已設定縮圖：{name}") } else { format!("已移除自訂縮圖：{name}") }, false);
+                        self.set_status(if set { tr!("已設定縮圖：{name}", name) } else { tr!("已移除自訂縮圖：{name}", name) }, false);
                     }
-                    Err(e) => self.set_status(format!("無法設定縮圖：{e}"), true),
+                    Err(e) => self.set_status(tr!("無法設定縮圖：{e}", e), true),
                 }
                 self.invalidate();
             }
@@ -872,24 +882,30 @@ impl App {
             Msg::IndexAction { text, error, changed } => self.on_index_action(text, error, changed),
             Msg::IndexOutdated { installed } => self.on_index_outdated(installed),
             Msg::Paste { sources, dest, cut } => self.submit_op(FileOp::Transfer { sources, dest, mov: cut }),
-            Msg::ConfigLoaded { config, theme, warnings } => {
+            Msg::ConfigLoaded { mut config, theme, warnings } => {
                 if config.thumbnailers != self.config.thumbnailers {
                     self.thumbs.set_thumbnailers(config.thumbnailers.clone());
                 }
+                if self.isolated {
+                    config.language = self.config.language;
+                }
+                let lang = config.language;
                 self.config = config;
+                self.set_language(lang);
                 // 重新載入設定時以設定檔的主題為準
                 self.theme_name = self.config.theme.clone();
                 self.tree_side = self.config.layout.tree;
                 self.apply_theme(theme);
                 match warnings.into_iter().next() {
                     Some(w) => self.set_status(w, true),
-                    None => self.set_status("已重新載入設定", false),
+                    None => self.set_status(tr!("已重新載入設定"), false),
                 }
             }
             Msg::ThemeLoaded { name, result } => self.on_theme_loaded(name, result),
             Msg::ThemeSaved { name, result } => self.on_theme_saved(name, result),
             Msg::ThemeFileTime { name, mtime } => self.on_theme_file_time(name, mtime),
             Msg::ThemeImport(result) => self.on_theme_import(result),
+            Msg::UserThemes(themes) => self.on_user_themes(themes),
             Msg::AddressResolved { pane, target, normalized, is_dir, cwd } => {
                 if is_dir && pane < self.panes.len() {
                     self.navigate(pane, normalized, true);
@@ -952,7 +968,7 @@ impl App {
                 if name != "ask" {
                     return self.variable(name, param);
                 }
-                let prompt = param.filter(|p| !p.trim().is_empty()).unwrap_or("輸入").to_string();
+                let prompt = param.filter(|p| !p.trim().is_empty()).unwrap_or(tr!("輸入")).to_string();
                 match answers.iter().find(|(p, _)| *p == prompt) {
                     Some((_, a)) => Ok(Some(vec![a.clone()])),
                     None => {
@@ -993,7 +1009,7 @@ impl App {
             "path" => one(tab.path.clone()),
             "dest" => match self.dest_path() {
                 Some(d) => one(d),
-                None => Err("沒有目標窗格：先用 Ctrl+\\ 分割窗格".into()),
+                None => Err(tr!("沒有目標窗格：先用 Ctrl+\\ 分割窗格").into()),
             },
             "file" => one(focused.map(|i| tab.full_path(i)).unwrap_or_default()),
             "name" => one(focused.map(|i| tab.listing.name_string(i)).unwrap_or_default()),
@@ -1031,12 +1047,14 @@ impl App {
             }
             "nav.home" => self.navigate(p, std::env::var("USERPROFILE").unwrap_or_default(), true),
             "nav.goto" => {
-                let target = inv.flag("path").or_else(|| inv.positional().next()).ok_or("nav.goto 需要路徑")?;
+                let target = inv.flag("path").or_else(|| inv.positional().next()).ok_or(tr!("nav.goto 需要路徑"))?;
                 self.navigate(p, target.to_string(), true);
             }
             "address.edit" => window::begin_address_edit(self),
             "palette.open" => self.open_palette(),
             "search.open" => self.open_search(),
+            "keys.edit" => self.open_key_editor(),
+            "settings.open" => self.open_settings(),
             "jobs.toggle" => self.jobs_toggle(),
             "jobs.clear" => self.jobs_clear(),
             "file.copy" | "file.cut" => {
@@ -1050,7 +1068,7 @@ impl App {
             "file.paste" => {
                 let dest = self.tab().path.clone();
                 if dest.is_empty() {
-                    return Err("無法貼到「此電腦」".into());
+                    return Err(tr!("無法貼到「此電腦」").into());
                 }
                 self.shell_host.submit(ShellJob::Paste { dest });
             }
@@ -1068,13 +1086,13 @@ impl App {
             }
             "file.batchrename" => {
                 if !self.open_batch_rename() {
-                    return Err("請先選取兩個以上的項目".into());
+                    return Err(tr!("請先選取兩個以上的項目").into());
                 }
             }
             "file.newfolder" => {
                 let dir = self.tab().path.clone();
                 if dir.is_empty() {
-                    return Err("無法在「此電腦」建立資料夾".into());
+                    return Err(tr!("無法在「此電腦」建立資料夾").into());
                 }
                 self.submit_op(FileOp::NewFolder { dir });
             }
@@ -1107,22 +1125,22 @@ impl App {
             "file.copypath" => {
                 let paths = self.tab().target_paths();
                 let text = if paths.is_empty() { self.tab().path.clone() } else { paths.join("\r\n") };
-                self.shell_host.submit(ShellJob::SetText { text, status: "已複製路徑".into(), reply: None });
+                self.shell_host.submit(ShellJob::SetText { text, status: tr!("已複製路徑").into(), reply: None });
             }
             "copy" => {
-                let dest = inv.flag("to").filter(|d| !d.is_empty()).ok_or("copy 需要 --to=目的地")?;
+                let dest = inv.flag("to").filter(|d| !d.is_empty()).ok_or(tr!("copy 需要 --to=目的地"))?;
                 let mut sources: Vec<String> = inv.positional().map(String::from).collect();
                 if sources.is_empty() {
                     sources = self.tab().target_paths();
                 }
                 if sources.is_empty() {
-                    return Err("沒有選取任何項目".into());
+                    return Err(tr!("沒有選取任何項目").into());
                 }
                 self.submit_op(FileOp::Transfer { sources, dest: dest.to_string(), mov: inv.has("move") });
             }
             "run" => {
                 let mut args = inv.positional();
-                let program = args.next().ok_or("run 需要程式名稱")?.to_string();
+                let program = args.next().ok_or(tr!("run 需要程式名稱"))?.to_string();
                 let params: Vec<String> = args.map(quote_arg).collect();
                 let dir = self.tab().path.clone();
                 // 主控台程式預設不顯示視窗；--console 用於互動式終端機（cmd、pwsh…）
@@ -1187,7 +1205,7 @@ impl App {
                 }
             }
             "view.sort" => {
-                let key = inv.flag("by").and_then(SortKey::parse).ok_or("view.sort 需要 --by=name|modified|type|size")?;
+                let key = inv.flag("by").and_then(SortKey::parse).ok_or(tr!("view.sort 需要 --by=name|modified|type|size"))?;
                 let asc = if inv.has("desc") { Some(false) } else if inv.has("asc") { Some(true) } else { None };
                 self.set_sort(key, asc);
             }
@@ -1201,7 +1219,7 @@ impl App {
                     Some(p) => p.to_string(),
                     None => {
                         let tab = self.tab();
-                        tab.focused_entry().filter(|_| !tab.view.is_empty()).map(|e| tab.full_path(e)).ok_or("沒有選取項目")?
+                        tab.focused_entry().filter(|_| !tab.view.is_empty()).map(|e| tab.full_path(e)).ok_or(tr!("沒有選取項目"))?
                     }
                 };
                 match (inv.name.as_str(), inv.flag("image")) {
@@ -1216,20 +1234,14 @@ impl App {
                 self.set_view_mode(p, &mode)?;
             }
             "view.thumbsize" => {
-                let delta = inv.flag("delta").and_then(|d| d.parse::<i32>().ok()).ok_or("view.thumbsize 需要 --delta=")?;
+                let delta = inv.flag("delta").and_then(|d| d.parse::<i32>().ok()).ok_or(tr!("view.thumbsize 需要 --delta="))?;
                 self.zoom_thumbs(p, delta);
             }
             "index.install" | "index.uninstall" | "index.status" => self.index_command(&inv.name),
             "view.togglehidden" => {
-                self.show_hidden = !self.show_hidden;
+                self.set_show_hidden(!self.show_hidden);
                 let show_hidden = self.show_hidden;
-                for pane in &mut self.panes {
-                    for t in &mut pane.tabs {
-                        t.rebuild_view(show_hidden);
-                    }
-                }
-                self.tree.reset_probes();
-                self.set_status(if show_hidden { "顯示隱藏檔案" } else { "不顯示隱藏檔案" }, false);
+                self.set_status(if show_hidden { tr!("顯示隱藏檔案") } else { tr!("不顯示隱藏檔案") }, false);
             }
             "filter.clear" => self.set_filter(String::new()),
             "filter.set" => self.set_filter(inv.flag("text").unwrap_or_default().to_string()),
@@ -1242,7 +1254,7 @@ impl App {
                 self.remove_favorite(&target)?;
             }
             "favorites.move" => {
-                let by = inv.flag("by").and_then(|d| d.parse::<isize>().ok()).ok_or("favorites.move 需要 --by=（負數往上）")?;
+                let by = inv.flag("by").and_then(|d| d.parse::<isize>().ok()).ok_or(tr!("favorites.move 需要 --by=（負數往上）"))?;
                 // 預設：樹狀列焦點所在的我的最愛，否則目前資料夾
                 let focused = self.tree.nodes.get(self.tree.focus).filter(|n| self.focus == Focus::Tree && n.kind == NodeKind::Favorite);
                 let target = match inv.flag("path") {
@@ -1252,7 +1264,7 @@ impl App {
                 self.move_favorite(&target, by)?;
             }
             "theme.set" => {
-                let name = inv.flag("name").or_else(|| inv.positional().next()).ok_or("theme.set 需要 --name=")?.to_string();
+                let name = inv.flag("name").or_else(|| inv.positional().next()).ok_or(tr!("theme.set 需要 --name="))?.to_string();
                 self.load_theme_by_name(name);
             }
             "theme.toggle" => {
@@ -1272,7 +1284,7 @@ impl App {
                         None,
                         services::Show::Normal,
                     ),
-                    Err(e) => n.status(format!("無法建立設定檔：{e}"), true),
+                    Err(e) => n.status(tr!("無法建立設定檔：{e}", e), true),
                 });
             }
             "config.reload" => self.reload_config(),
@@ -1287,7 +1299,7 @@ impl App {
                 let n = self.notifier.clone();
                 self.scripts.call(&n, other, ctx);
             }
-            other => return Err(format!("未知命令：{other}")),
+            other => return Err(tr!("未知命令：{other}", other)),
         }
         Ok(())
     }
@@ -1305,7 +1317,7 @@ impl App {
     pub fn add_favorite(&mut self, p: String) -> Result<(), String> {
         let p = path::normalize(&p);
         if p.is_empty() {
-            return Err("「此電腦」不能加入我的最愛".into());
+            return Err(tr!("「此電腦」不能加入我的最愛").into());
         }
         if self.is_favorite(&p) {
             return Ok(());
@@ -1314,8 +1326,32 @@ impl App {
         self.session.favorites.push(p.clone());
         self.save_session_async();
         self.rebuild_tree();
-        self.set_status(format!("已加入我的最愛：{p}"), false);
+        self.set_status(tr!("已加入我的最愛：{p}", p), false);
         Ok(())
+    }
+
+    /// 切換介面語言（設定檔的 language）：大部分文字在繪製時翻譯，樹狀列的根節點要重建
+    pub fn set_show_hidden(&mut self, show_hidden: bool) {
+        self.show_hidden = show_hidden;
+        for pane in &mut self.panes {
+            for t in &mut pane.tabs {
+                t.rebuild_view(show_hidden);
+            }
+        }
+        self.tree.reset_probes();
+        self.invalidate();
+    }
+
+    pub fn set_language(&mut self, lang: zing_core::i18n::Lang) {
+        self.config.language = lang;
+        if zing_core::i18n::lang() == lang {
+            return;
+        }
+        zing_core::i18n::set(lang);
+        // 文字格式的語系跟著換（中日韓文字的字形）
+        let _ = self.gfx.apply_theme(&self.theme);
+        self.rebuild_tree();
+        self.invalidate();
     }
 
     /// 資料夾改名後：我的最愛、分頁中的舊路徑換成新路徑
@@ -1352,7 +1388,7 @@ impl App {
 
     /// 我的最愛往下移 `by` 個位置（負數往上）；順序記在工作階段（設定檔中的也能調整）
     pub fn move_favorite(&mut self, p: &str, by: isize) -> Result<(), String> {
-        let i = self.favorites.iter().position(|f| f.eq_ignore_ascii_case(p)).ok_or_else(|| format!("不在我的最愛中：{p}"))?;
+        let i = self.favorites.iter().position(|f| f.eq_ignore_ascii_case(p)).ok_or_else(|| tr!("不在我的最愛中：{p}", p))?;
         let j = (i as isize + by).clamp(0, self.favorites.len() as isize - 1) as usize;
         if i == j {
             return Ok(());
@@ -1374,14 +1410,14 @@ impl App {
 
     pub fn remove_favorite(&mut self, p: &str) -> Result<(), String> {
         if self.config.favorites.iter().any(|f| f.eq_ignore_ascii_case(p)) {
-            return Err("這個項目定義在設定檔的 favorites 中，請在設定檔移除（Ctrl+,）".into());
+            return Err(tr!("這個項目定義在設定檔的 favorites 中，請在設定檔移除（Ctrl+,）").into());
         }
         self.favorites.retain(|f| !f.eq_ignore_ascii_case(p));
         self.session.favorites.retain(|f| !f.eq_ignore_ascii_case(p));
         self.session.favorite_order.retain(|f| !f.eq_ignore_ascii_case(p));
         self.save_session_async();
         self.rebuild_tree();
-        self.set_status(format!("已從我的最愛移除：{p}"), false);
+        self.set_status(tr!("已從我的最愛移除：{p}", p), false);
         Ok(())
     }
 
@@ -1395,13 +1431,13 @@ impl App {
         };
         if let [one] = items {
             let mut extras = if single_dir { self.folder_extras(one) } else { Vec::new() };
-            extras.push((MENU_THUMB_SET, "設定縮圖…".into()));
+            extras.push((MENU_THUMB_SET, tr!("設定縮圖…").into()));
             if self.thumbs.is_custom(one) {
-                extras.push((MENU_THUMB_CLEAR, "移除自訂縮圖".into()));
+                extras.push((MENU_THUMB_CLEAR, tr!("移除自訂縮圖").into()));
             }
             (extras, one.clone())
         } else if items.is_empty() && !folder.is_empty() && !self.is_favorite(folder) {
-            (vec![(MENU_FAV_ADD, "將此資料夾加入我的最愛".into())], folder.to_string())
+            (vec![(MENU_FAV_ADD, tr!("將此資料夾加入我的最愛").into())], folder.to_string())
         } else {
             (Vec::new(), String::new())
         }
@@ -1409,11 +1445,11 @@ impl App {
 
     pub fn folder_extras(&self, p: &str) -> Vec<(u32, String)> {
         let fav = if self.is_favorite(p) {
-            (MENU_FAV_REMOVE, "從我的最愛移除".to_string())
+            (MENU_FAV_REMOVE, tr!("從我的最愛移除").to_string())
         } else {
-            (MENU_FAV_ADD, "加入我的最愛".to_string())
+            (MENU_FAV_ADD, tr!("加入我的最愛").to_string())
         };
-        vec![(MENU_NEW_TAB, "在新分頁開啟".into()), fav]
+        vec![(MENU_NEW_TAB, tr!("在新分頁開啟").into()), fav]
     }
 
     pub fn on_menu_extra(&mut self, id: u32, target: String) {
@@ -1528,7 +1564,7 @@ impl App {
                 EditKind::Address => {
                     let target = text.trim().to_string();
                     let pane = self.active_pane;
-                    if target.is_empty() || target == "此電腦" {
+                    if target.is_empty() || target == "此電腦" || target == tr!("此電腦") {
                         self.navigate(pane, String::new(), true);
                     } else {
                         // 檢查是否為資料夾會碰磁碟（網路路徑可能很慢），交給背景
@@ -1546,6 +1582,7 @@ impl App {
                 EditKind::Palette => {}
                 EditKind::ThemeField { field } => self.commit_theme_field(field, &text),
                 EditKind::ThemeSaveAs => self.save_theme_as(&text),
+                EditKind::Pref { field } => self.set_pref(field, text.trim().to_string()),
                 EditKind::Ask => {}
             }
         }

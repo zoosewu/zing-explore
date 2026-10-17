@@ -597,7 +597,7 @@ impl VolumeIndex {
 
     /// 讀入快照，回傳索引與變更日誌位置。記錄數超過 `max_records` 視為損毀（避免依檔頭配置過多記憶體）
     pub fn load(r: &mut impl Read, epoch: u64, max_records: usize) -> io::Result<(Self, (u64, i64))> {
-        let bad = || io::Error::new(io::ErrorKind::InvalidData, "索引快照格式不符");
+        let bad = || io::Error::new(io::ErrorKind::InvalidData, tr!("索引快照格式不符"));
         let mut b8 = [0u8; 8];
         let mut b4 = [0u8; 4];
         r.read_exact(&mut b4)?;

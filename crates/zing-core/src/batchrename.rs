@@ -58,13 +58,13 @@ pub enum Problem {
 impl Problem {
     pub fn describe(&self) -> String {
         match self {
-            Problem::Empty => "名稱是空的".into(),
-            Problem::BadChar(c) => format!("不能包含「{c}」"),
-            Problem::TrailingDotOrSpace => "結尾不能是空白或句點".into(),
-            Problem::Reserved => "是系統保留的名稱".into(),
-            Problem::TooLong => "名稱太長".into(),
-            Problem::Duplicate => "與另一個項目的新名稱相同".into(),
-            Problem::Exists => "資料夾中已有同名項目".into(),
+            Problem::Empty => tr!("名稱是空的").into(),
+            Problem::BadChar(c) => tr!("不能包含「{c}」", c),
+            Problem::TrailingDotOrSpace => tr!("結尾不能是空白或句點").into(),
+            Problem::Reserved => tr!("是系統保留的名稱").into(),
+            Problem::TooLong => tr!("名稱太長").into(),
+            Problem::Duplicate => tr!("與另一個項目的新名稱相同").into(),
+            Problem::Exists => tr!("資料夾中已有同名項目").into(),
         }
     }
 }
@@ -197,7 +197,7 @@ pub fn validate(name: &str) -> Option<Problem> {
 pub fn plan(items: &[(String, bool)], rule: &Rule, others: &[String]) -> Result<Vec<Planned>, String> {
     let re = if rule.regex && !rule.find.is_empty() {
         let pattern = if rule.case_sensitive { rule.find.clone() } else { format!("(?i){}", rule.find) };
-        Some(regex::Regex::new(&pattern).map_err(|e| format!("規則運算式有誤：{e}"))?)
+        Some(regex::Regex::new(&pattern).map_err(|e| tr!("規則運算式有誤：{e}", e))?)
     } else {
         None
     };

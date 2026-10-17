@@ -42,6 +42,8 @@ thread_local! {
     pub static APP: RefCell<Option<App>> = const { RefCell::new(None) };
     static EDIT_STYLE: RefCell<EditStyle> = RefCell::new(EditStyle::default());
     static DROP_TARGET: RefCell<Option<IDropTarget>> = const { RefCell::new(None) };
+    /// 快速鍵編輯器剛錄到（或處理掉）的鍵：放開之前它產生的字元與放開訊息不交給輸入框
+    static KEYS_SWALLOW: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
 }
 
 #[derive(Default)]
@@ -468,7 +470,7 @@ pub fn begin_rename(app: &mut App, tab: TabId, full: String) {
 pub fn begin_address_edit(app: &mut App) {
     app.layout = app.compute_layout();
     let r = app.layout.address.inset(8.0, 3.0);
-    let text = if app.tab().path.is_empty() { "此電腦".to_string() } else { app.tab().path.clone() };
+    let text = if app.tab().path.is_empty() { tr!("此電腦").to_string() } else { app.tab().path.clone() };
     let len = text.encode_utf16().count();
     create_edit(app, r, &text, len, EditKind::Address);
     app.invalidate();
@@ -549,6 +551,39 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 _ => {}
             }
             return DefSubclassProc(hwnd, msg, wparam, lparam);
+        }
+        // 快速鍵編輯器：錄製中的按鍵（含 Alt 組合）全部攔下；錄到的鍵在放開前產生的字元也不送進輸入框
+        if data == EDIT_PALETTE {
+            let vk = wparam.0 as u16;
+            match msg {
+                WM_KEYDOWN | WM_SYSKEYDOWN if with_app(|a| a.keys_recording()) == Some(true) => {
+                    const MODIFIERS: [u16; 11] = [0x10, 0x11, 0x12, 0x14, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4];
+                    if vk == 0x1B {
+                        with_app(|a| a.keys_cancel_record());
+                        KEYS_SWALLOW.set(vk);
+                    } else if !MODIFIERS.contains(&vk) && vk != 0xA5 {
+                        let m = Mods::current();
+                        let chord = zing_core::keymap::KeyChord { ctrl: m.ctrl, shift: m.shift, alt: m.alt, vk };
+                        with_app(|a| a.keys_record(chord));
+                        KEYS_SWALLOW.set(vk);
+                    }
+                    return LRESULT(0);
+                }
+                // Ctrl+Delete 移除、Ctrl+R 還原預設
+                WM_KEYDOWN if (vk == 0x2E || vk == b'R' as u16) && Mods::current().ctrl && with_app(|a| a.keys_mode()) == Some(true) => {
+                    with_app(|a| if vk == 0x2E { a.keys_clear() } else { a.keys_reset() });
+                    KEYS_SWALLOW.set(vk);
+                    return LRESULT(0);
+                }
+                WM_CHAR | WM_SYSCHAR if KEYS_SWALLOW.get() != 0 => return LRESULT(0),
+                WM_KEYUP | WM_SYSKEYUP if KEYS_SWALLOW.get() != 0 => {
+                    if KEYS_SWALLOW.get() == vk {
+                        KEYS_SWALLOW.set(0);
+                    }
+                    return LRESULT(0);
+                }
+                _ => {}
+            }
         }
         match msg {
             WM_GETDLGCODE => return LRESULT(DLGC_WANTALLKEYS as isize),
@@ -669,9 +704,9 @@ fn run_modal(hwnd: HWND, modal: Modal) {
             }
         }
         Modal::ConfirmThemeOverwrite { name, text } => {
-            let msg = wide_z(&format!("已有名為「{name}」的主題，要覆蓋嗎？"));
+            let msg = wide_z(&tr!("已有名為「{name}」的主題，要覆蓋嗎？", name));
             let ok = unsafe {
-                MessageBoxW(Some(hwnd), PCWSTR(msg.as_ptr()), w!("匯入主題"), MB_YESNO | MB_ICONQUESTION)
+                MessageBoxW(Some(hwnd), PCWSTR(msg.as_ptr()), PCWSTR(wide_z(tr!("匯入主題")).as_ptr()), MB_YESNO | MB_ICONQUESTION)
             } == IDYES;
             if ok {
                 with_app(|a| a.write_theme(name, text, true));
@@ -1110,7 +1145,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             let active = with_app(|a| if a.pending_exit { 0 } else { a.jobs.active() }).unwrap_or(0);
             if active > 0 {
                 exempt_stall();
-                let text = wide_z(&format!("還有 {active} 個檔案作業尚未完成，結束 zing-explore 會取消這些作業。\n\n要結束嗎？"));
+                let text = wide_z(&tr!("還有 {active} 個檔案作業尚未完成，結束 zing-explore 會取消這些作業。\n\n要結束嗎？", active));
                 let answer = unsafe { MessageBoxW(Some(hwnd), PCWSTR(text.as_ptr()), w!("zing-explore"), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) };
                 if answer == IDYES {
                     let _allow = zing_core::guard::allow_io("結束時儲存工作階段（之後程序即結束）");

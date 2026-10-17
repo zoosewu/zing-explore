@@ -27,9 +27,9 @@ pub enum EnumError {
 impl std::fmt::Display for EnumError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Cancelled => f.write_str("已取消"),
-            Self::NotFound => f.write_str("找不到這個資料夾"),
-            Self::AccessDenied => f.write_str("沒有存取權限"),
+            Self::Cancelled => f.write_str(tr!("已取消")),
+            Self::NotFound => f.write_str(tr!("找不到這個資料夾")),
+            Self::AccessDenied => f.write_str(tr!("沒有存取權限")),
             Self::Other(m) => f.write_str(m),
         }
     }

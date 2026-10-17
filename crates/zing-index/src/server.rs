@@ -406,7 +406,7 @@ impl Server {
             Some(Request::Children { path, since }) => self.children(pipe, &path, since),
             Some(Request::Search { query, limit }) => self.search(pipe, &query, limit),
             Some(Request::Version) => Response::Version(indexproto::SERVICE_VERSION),
-            None => Response::Error("無法解析請求".into()),
+            None => Response::Error(indexproto::UNPARSABLE.into()),
         };
         unsafe {
             let _ = WriteFile(pipe, Some(resp.encode().as_bytes()), None, None);

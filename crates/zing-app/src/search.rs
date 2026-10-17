@@ -51,9 +51,9 @@ pub struct Results {
 }
 
 /// 查詢語法的提示（空白時、無法解讀時顯示）
-const SYNTAX: &str = "ext:jpg;png  size:>10mb  dm:today / 2024-05 / 7d  file: folder:  !排除  路徑\\名稱  sort:size / date / name / path / ext";
+const SYNTAX: &str = tr_key!("ext:jpg;png  size:>10mb  dm:today / 2024-05 / 7d  file: folder:  !排除  路徑\\名稱  sort:size / date / name / path / ext");
 /// 排序按鍵的提示
-const SORT_KEYS: &str = "Ctrl+1–5 依名稱、路徑、副檔名、大小、日期排序（再按一次反向），Ctrl+0 取消排序";
+const SORT_KEYS: &str = tr_key!("Ctrl+1–5 依名稱、路徑、副檔名、大小、日期排序（再按一次反向），Ctrl+0 取消排序");
 
 fn query(q: &str) -> Result<Response, QueryError> {
     #[cfg(feature = "smoke")]
@@ -103,6 +103,7 @@ impl App {
             sel: 0,
             top: 0,
             search: Some(Results::default()),
+            keys: None,
         });
         if let Some(r) = self.palette_edit_rect() {
             window::begin_palette_edit(self, r);
@@ -166,11 +167,11 @@ impl App {
                 r.state = State::Done;
             }
             // 舊版服務不認得搜尋請求
-            Ok(Response::Error(e)) if e == "無法解析請求" => {
-                r.state = State::Error("索引服務是舊版，不支援搜尋：在命令面板重新執行「啟用 NTFS 索引服務」更新".into())
+            Ok(Response::Error(e)) if e == indexproto::UNPARSABLE => {
+                r.state = State::Error(tr!("索引服務是舊版，不支援搜尋：在命令面板重新執行「啟用 NTFS 索引服務」更新").into())
             }
             Ok(Response::Error(e)) => r.state = State::Error(e),
-            Ok(_) => r.state = State::Error("索引服務的回應不符".into()),
+            Ok(_) => r.state = State::Error(tr!("索引服務的回應不符").into()),
             Err(QueryError::NotRunning) => r.state = State::NoService,
             Err(QueryError::Failed(e)) => r.state = State::Error(e),
         }
@@ -212,7 +213,7 @@ impl App {
         let g = &self.gfx;
         // 輸入框右側：排序與結果數
         if r.state == State::Done && !p.query.trim().is_empty() {
-            let mut n = if r.more { format!("{}+ 個", r.items.len()) } else { format!("{} 個", r.items.len()) };
+            let mut n = if r.more { tr!("{n}+ 個", n = r.items.len()) } else { tr!("{n} 個", n = r.items.len()) };
             if let Some(s) = zing_core::namequery::NameQuery::parse(&p.query).sort {
                 n = format!("{} {}　{n}", s.key.label(), if s.desc { "↓" } else { "↑" });
             }
@@ -222,14 +223,16 @@ impl App {
         let row0 = lay.rows[0];
         if p.matches.is_empty() {
             let text = match &r.state {
-                State::Idle => format!(
-                    "輸入名稱搜尋所有 NTFS 磁碟（空白分隔多個詞，可用 * ?；Enter 前往所在位置、Ctrl+Enter 開啟）　{SORT_KEYS}　{SYNTAX}"
+                State::Idle => tr!(
+                    "輸入名稱搜尋所有 NTFS 磁碟（空白分隔多個詞，可用 * ?；Enter 前往所在位置、Ctrl+Enter 開啟）　{sort_keys}　{syntax}",
+                    sort_keys = zing_core::i18n::tr(SORT_KEYS),
+                    syntax = zing_core::i18n::tr(SYNTAX)
                 ),
-                State::Invalid(words) => format!("無法解讀：{words}　　{SYNTAX}"),
-                State::Pending => "搜尋中…".to_string(),
-                State::Done => "找不到符合的項目".to_string(),
-                State::NoService => "全磁碟搜尋需要 NTFS 索引服務：在命令面板執行「啟用 NTFS 索引服務」".to_string(),
-                State::Error(e) => format!("搜尋失敗：{e}"),
+                State::Invalid(words) => tr!("無法解讀：{words}　　{syntax}", words, syntax = zing_core::i18n::tr(SYNTAX)),
+                State::Pending => tr!("搜尋中…").to_string(),
+                State::Done => tr!("找不到符合的項目").to_string(),
+                State::NoService => tr!("全磁碟搜尋需要 NTFS 索引服務：在命令面板執行「啟用 NTFS 索引服務」").to_string(),
+                State::Error(e) => tr!("搜尋失敗：{e}", e),
             };
             g.text(&text, Font::Text, Rect::new(row0.l + 10.0, row0.t, row0.r - 10.0, row0.b), c.text_secondary);
             return;
@@ -248,7 +251,7 @@ impl App {
             } else {
                 (c.text, c.text_secondary)
             };
-            let mut info = if it.dir { format!("資料夾 {}", format::size_short(it.size)) } else { format::size_short(it.size) };
+            let mut info = if it.dir { tr!("資料夾 {size}", size = format::size_short(it.size)) } else { format::size_short(it.size) };
             if it.modified != 0 {
                 info = format!("{}　{info}", format::filetime_local(it.modified));
             }

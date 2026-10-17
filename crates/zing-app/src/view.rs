@@ -23,7 +23,7 @@ pub const NAV_BTN: f32 = 32.0;
 const SPLITTER_W: f32 = 5.0;
 const COL_MIN: f32 = 48.0;
 
-pub const COLUMN_TITLES: [&str; 4] = ["名稱", "修改日期", "類型", "大小"];
+pub const COLUMN_TITLES: [&str; 4] = [tr_key!("名稱"), tr_key!("修改日期"), tr_key!("類型"), tr_key!("大小")];
 pub const COLUMN_KEYS: [SortKey; 4] = [SortKey::Name, SortKey::Modified, SortKey::Type, SortKey::Size];
 
 #[derive(Clone, Debug, Default)]
@@ -56,6 +56,8 @@ pub struct Layout {
     pub tree_splitter: Option<Rect>,
     /// 主題編輯面板（窗格區域最右側）
     pub theme_panel: Option<Rect>,
+    /// 設定頁（與主題編輯面板同一個位置）
+    pub settings_panel: Option<Rect>,
     /// 預覽窗格（窗格區域右側）
     pub preview: Option<Rect>,
     pub preview_splitter: Option<Rect>,
@@ -91,6 +93,10 @@ pub enum Hit {
     ThemeSwatch(usize),
     ThemeButton(usize),
     ThemePanel,
+    /// 設定頁：列（`SettingsPage::rows` 的索引）、底部按鈕、面板其他位置
+    SettingsRow(usize),
+    SettingsButton(usize),
+    SettingsPanel,
     Tab(usize, usize),
     TabClose(usize, usize),
     TabNew(usize),
@@ -168,7 +174,7 @@ impl App {
         }
         let mut right = w - 8.0;
         for b in self.config.buttons.iter().rev() {
-            let bw = self.gfx.measure(&b.label, Font::Small) + 20.0;
+            let bw = self.gfx.measure(&zing_core::i18n::tr_str(&b.label), Font::Small) + 20.0;
             lay.buttons.insert(0, Rect::new(right - bw, cy - hh + 2.0, right, cy + hh - 2.0));
             right -= bw + 4.0;
         }
@@ -176,7 +182,7 @@ impl App {
         lay.filter_slot = Rect::new(right, cy - hh + 2.0, right, cy + hh - 2.0);
         if !tab.filter.is_empty() {
             // 左側圖示 26 + 右側關閉鈕 22 + 間距（與 ime_anchor 相同）
-            let cw = (self.gfx.measure(&format!("篩選：{}", tab.filter), Font::Small) + 54.0).min(280.0);
+            let cw = (self.gfx.measure(&tr!("篩選：{filter}", filter = tab.filter), Font::Small) + 54.0).min(280.0);
             lay.filter_chip = Some(Rect::new(right - cw, cy - hh + 2.0, right, cy + hh - 2.0));
             right -= cw + 6.0;
         }
@@ -214,6 +220,10 @@ impl App {
         if self.theme_editor.is_some() {
             let l = panes_area.r - crate::themeedit::PANEL_W.min(panes_area.w() * 0.5);
             lay.theme_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
+            panes_area.r = l - 1.0;
+        } else if self.settings_page.is_some() {
+            let l = panes_area.r - crate::prefspage::PANEL_W.min(panes_area.w() * 0.6);
+            lay.settings_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
             panes_area.r = l - 1.0;
         }
         if self.preview.visible {
@@ -341,6 +351,9 @@ impl App {
         if let Some(tp) = lay.theme_panel.filter(|r| r.contains(x, y)) {
             return self.theme_hit(tp, x, y);
         }
+        if let Some(sp) = lay.settings_panel.filter(|r| r.contains(x, y)) {
+            return self.settings_hit(sp, x, y);
+        }
         if lay.preview_splitter.is_some_and(|r| r.contains(x, y)) {
             return Hit::PreviewSplitter;
         }
@@ -451,6 +464,10 @@ impl App {
             self.paint_theme_editor(tp);
             self.gfx.vline(tp.l - 1.0, tp.t, tp.b, c.border);
         }
+        if let Some(sp) = lay.settings_panel {
+            self.paint_settings(sp);
+            self.gfx.vline(sp.l - 1.0, sp.t, sp.b, c.border);
+        }
         if let Some(pr) = lay.preview {
             self.paint_preview(pr);
             self.gfx.vline(pr.l - 1.0, pr.t, pr.b, c.border);
@@ -497,7 +514,7 @@ impl App {
             let r = Rect::new(a.l + 8.0, a.t, a.r - 8.0, a.b);
             if tab.path.is_empty() {
                 // 「此電腦」用一般字型：等寬字型沒有中文字形，啟動的第一幀會多一次字型後備查詢（約 1 ms）
-                g.text("此電腦", Font::Text, r, c.text_secondary);
+                g.text(tr!("此電腦"), Font::Text, r, c.text_secondary);
             } else {
                 g.text(&tab.path, Font::Mono, r, c.text);
             }
@@ -522,13 +539,13 @@ impl App {
         if let Some(chip) = lay.filter_chip {
             g.fill_round(chip, 14.0, c.accent.with_alpha(40));
             g.text(glyph::FILTER, Font::GlyphSmall, Rect::new(chip.l + 6.0, chip.t, chip.l + 24.0, chip.b), c.accent);
-            g.text(&format!("篩選：{}", tab.filter), Font::Small, Rect::new(chip.l + 26.0, chip.t, chip.r - 22.0, chip.b), c.text);
+            g.text(&tr!("篩選：{filter}", filter = tab.filter), Font::Small, Rect::new(chip.l + 26.0, chip.t, chip.r - 22.0, chip.b), c.text);
             g.text(glyph::CLOSE, Font::GlyphSmall, Rect::new(chip.r - 22.0, chip.t, chip.r - 4.0, chip.b), c.text_secondary);
         }
         for (i, r) in lay.buttons.iter().enumerate() {
             g.fill_round(*r, self.theme.metrics.radius, if self.hover == Hit::Button(i) { c.hover } else { c.surface });
             g.stroke_round(*r, self.theme.metrics.radius, c.border, 1.0);
-            g.text(&self.config.buttons[i].label, Font::Small, Rect::new(r.l + 10.0, r.t, r.r - 6.0, r.b), c.text);
+            g.text(&zing_core::i18n::tr_str(&self.config.buttons[i].label), Font::Small, Rect::new(r.l + 10.0, r.t, r.r - 6.0, r.b), c.text);
         }
     }
 
@@ -536,7 +553,7 @@ impl App {
     /// 回傳 (文字結尾的 x, 標籤的範圍)
     pub fn ime_anchor(&self) -> (f32, Rect) {
         let slot = self.layout.filter_slot;
-        let tw = self.gfx.measure(&format!("篩選：{}", self.tab().filter), Font::Small);
+        let tw = self.gfx.measure(&tr!("篩選：{filter}", filter = self.tab().filter), Font::Small);
         let cw = (tw + 54.0).min(280.0);
         let chip = Rect::new(slot.r - cw, slot.t, slot.r, slot.b);
         ((chip.l + 26.0 + tw).min(chip.r - 22.0), chip)
@@ -651,7 +668,7 @@ impl App {
             let font = if col == 3 { Font::SmallRight } else { Font::Small };
             let sorted_here = tab.spec.key == COLUMN_KEYS[col];
             let text_r = r - 22.0;
-            g.text(COLUMN_TITLES[col], font, Rect::new(l + 12.0, pl.header.t, text_r, pl.header.b), c.text_secondary);
+            g.text(zing_core::i18n::tr(COLUMN_TITLES[col]), font, Rect::new(l + 12.0, pl.header.t, text_r, pl.header.b), c.text_secondary);
             if sorted_here {
                 let arrow = if tab.spec.ascending { glyph::SORT_UP } else { glyph::SORT_DOWN };
                 g.text(arrow, Font::GlyphSmall, Rect::new(r - 20.0, pl.header.t, r - 4.0, pl.header.b), c.text_secondary);
@@ -730,7 +747,7 @@ impl App {
             }
             let (tl, tr) = pl.cols[2];
             if tr - tl > 20.0 {
-                let label = if tab.path.is_empty() { "磁碟機".to_string() } else { format::type_label(dir, tab.listing.ext(e)) };
+                let label = if tab.path.is_empty() { tr!("磁碟機").to_string() } else { format::type_label(dir, tab.listing.ext(e)) };
                 g.text(&label, Font::Text, Rect::new(tl + 12.0, y, tr - 6.0, y + rh), secondary);
             }
             let (sl, sr) = pl.cols[3];
@@ -748,11 +765,11 @@ impl App {
             let msg = if let Some(e) = &tab.error {
                 Some((e.clone(), c.error))
             } else if tab.loading {
-                Some(("正在載入…".to_string(), c.text_secondary))
+                Some((tr!("正在載入…").to_string(), c.text_secondary))
             } else if !tab.filter.is_empty() {
-                Some((format!("沒有符合「{}」的項目（Esc 清除篩選）", tab.filter), c.text_secondary))
+                Some((tr!("沒有符合「{filter}」的項目（Esc 清除篩選）", filter = tab.filter), c.text_secondary))
             } else {
-                Some(("這個資料夾是空的".to_string(), c.text_secondary))
+                Some((tr!("這個資料夾是空的").to_string(), c.text_secondary))
             };
             if let Some((m, col)) = msg {
                 g.text(&m, Font::Text, Rect::new(list.l + 20.0, list.t + 8.0, list.r - 20.0, list.t + 8.0 + rh), col);
@@ -847,7 +864,7 @@ impl App {
         let (name_r, content, props_r) = self.preview_rects(r);
         let rh = self.row_h();
         let Some(ld) = self.preview.loaded.as_ref().filter(|l| l.path == self.preview.target) else {
-            let msg = if self.preview.target.is_empty() { "選取檔案以預覽" } else { "載入中…" };
+            let msg = if self.preview.target.is_empty() { tr!("選取檔案以預覽") } else { tr!("載入中…") };
             g.text(msg, Font::Text, name_r, c.text_secondary);
             return;
         };
@@ -856,7 +873,7 @@ impl App {
         // 預覽處理常式的視窗蓋在內容區上：載入中顯示提示，完成後不畫
         match self.preview.host_state {
             crate::preview::HostState::Waiting => {
-                g.text("載入預覽…", Font::Text, Rect::new(content.l, content.t, content.r, content.t + rh), c.text_secondary);
+                g.text(tr!("載入預覽…"), Font::Text, Rect::new(content.l, content.t, content.r, content.t + rh), c.text_secondary);
             }
             crate::preview::HostState::Shown => {}
             _ => self.paint_preview_body(ld, content),
@@ -874,7 +891,7 @@ impl App {
                 g.preview_image(self.preview.image_id, p, content);
             }
             Body::Image(None) | Body::Folder { image: None, .. } => {
-                g.text("沒有可用的預覽", Font::Text, Rect::new(content.l, content.t, content.r, content.t + rh), c.text_secondary);
+                g.text(tr!("沒有可用的預覽"), Font::Text, Rect::new(content.l, content.t, content.r, content.t + rh), c.text_secondary);
             }
             Body::Text { lines, truncated } => {
                 let lh = self.caption_line_h();
@@ -889,7 +906,7 @@ impl App {
                 }
                 if *truncated && first + ((content.h() / lh) as usize) >= lines.len() {
                     let y = content.t + lines.len() as f32 * lh - self.preview.scroll;
-                    g.text("（只顯示檔案開頭）", Font::Small, Rect::new(content.l, y, content.r, y + lh), c.text_secondary);
+                    g.text(tr!("（只顯示檔案開頭）"), Font::Small, Rect::new(content.l, y, content.r, y + lh), c.text_secondary);
                 }
                 g.pop_clip();
             }
@@ -910,7 +927,7 @@ impl App {
             y += rh;
         };
         if let Body::Folder { items: Some(n), .. } = &ld.body {
-            row("項目", &format!("{n} 個"));
+            row(tr!("項目"), &tr!("{n} 個", n));
         }
         for (l, v) in ld.props.iter().take(PREVIEW_PROPS) {
             row(l, v);
@@ -925,21 +942,21 @@ impl App {
         g.hline(0.0, s.r, s.t, c.border);
         let tab = self.tab();
         let (n_sel, bytes) = tab.selection_count();
-        let mut left = format!("{} 個項目", tab.view.len());
+        let mut left = tr!("{n} 個項目", n = tab.view.len());
         if tab.view.len() != tab.listing.len() {
-            left.push_str(&format!("（共 {}）", tab.listing.len()));
+            left.push_str(&tr!("（共 {n}）", n = tab.listing.len()));
         }
         if n_sel > 0 {
-            left.push_str(&format!("　已選取 {n_sel} 個"));
+            left.push_str(&tr!("　已選取 {n_sel} 個", n_sel));
             if bytes > 0 {
-                left.push_str(&format!("（{}）", format::size_short(bytes)));
+                left.push_str(&tr!("（{size}）", size = format::size_short(bytes)));
             }
         }
         if tab.loading {
-            left.push_str("　載入中…");
+            left.push_str(tr!("　載入中…"));
         }
         if self.sizes.pending > 0 {
-            left.push_str(&format!("　計算資料夾大小（剩 {} 個）", self.sizes.pending));
+            left.push_str(&tr!("　計算資料夾大小（剩 {n} 個）", n = self.sizes.pending));
         }
         g.text(&left, Font::Small, Rect::new(12.0, s.t, s.r * 0.5, s.b), c.text_secondary);
         if let (Some(r), Some(text)) = (lay.jobs_indicator, self.jobs_indicator_text()) {
@@ -952,10 +969,14 @@ impl App {
         } else {
             let mut right = Vec::new();
             if self.show_hidden {
-                right.push("顯示隱藏檔".to_string());
+                right.push(tr!("顯示隱藏檔").to_string());
             }
-            right.push(format!("排序：{}{}", COLUMN_TITLES[COLUMN_KEYS.iter().position(|k| *k == tab.spec.key).unwrap_or(0)], if tab.spec.ascending { "↑" } else { "↓" }));
-            g.text(&right.join("　"), Font::SmallRight, Rect::new(s.r * 0.5, s.t, s.r - 12.0, s.b), c.text_secondary);
+            right.push(tr!(
+                "排序：{col}{arrow}",
+                col = zing_core::i18n::tr(COLUMN_TITLES[COLUMN_KEYS.iter().position(|k| *k == tab.spec.key).unwrap_or(0)]),
+                arrow = if tab.spec.ascending { "↑" } else { "↓" }
+            ));
+            g.text(&right.join(tr!("　")), Font::SmallRight, Rect::new(s.r * 0.5, s.t, s.r - 12.0, s.b), c.text_secondary);
         }
     }
 }

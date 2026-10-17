@@ -501,7 +501,7 @@ fn perform(hwnd: isize, op: FileOp, sink: Option<&IFileOperationProgressSink>) -
             }
             FileOp::NewFolder { dir } => {
                 fo.SetOperationFlags(FOF_ALLOWUNDO)?;
-                let name = unique_name(&dir, "新增資料夾");
+                let name = unique_name(&dir, tr!("新增資料夾"));
                 let name_w = wide_z(&name);
                 fo.NewItem(&shell_item(&dir)?, FILE_ATTRIBUTE_DIRECTORY.0, PCWSTR(name_w.as_ptr()), PCWSTR::null(), none_sink)?;
                 created = Some(name);

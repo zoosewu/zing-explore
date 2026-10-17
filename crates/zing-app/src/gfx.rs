@@ -32,9 +32,23 @@ use windows::Win32::Graphics::Dxgi::{
     IDXGIDevice1, IDXGIFactory2, IDXGISurface, IDXGISwapChain1,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, PostMessageW, WM_APP};
-use windows::core::{BOOL, HSTRING, Interface, Result, w};
+use windows::core::{BOOL, HSTRING, Interface, Result};
 
 use crate::icons::Icons;
+
+/// 文字的語系（決定中日韓文字用哪一種字形）：繁體中文 zh-TW、日文 ja-JP；英文介面用 Windows 的地區設定，
+/// 檔名中的中日韓文字才會用使用者習慣的字形
+fn text_locale() -> HSTRING {
+    match zing_core::i18n::lang() {
+        zing_core::i18n::Lang::ZhTw => HSTRING::from("zh-TW"),
+        zing_core::i18n::Lang::Ja => HSTRING::from("ja-JP"),
+        zing_core::i18n::Lang::En => {
+            let mut buf = [0u16; 85];
+            let n = unsafe { windows::Win32::Globalization::GetUserDefaultLocaleName(&mut buf) };
+            if n > 1 { HSTRING::from(String::from_utf16_lossy(&buf[..n as usize - 1]).as_str()) } else { HSTRING::from("en-US") }
+        }
+    }
+}
 
 /// 背景執行緒建立好硬體繪圖裝置時送出
 pub const WM_APP_GPU_READY: u32 = WM_APP + 4;
@@ -213,6 +227,7 @@ impl Gfx {
 
     fn create_formats(dw: &IDWriteFactory, theme: &Theme) -> Result<Formats> {
         let family = HSTRING::from(theme.font.family.as_str());
+        let locale = text_locale();
         let size = theme.font.size;
         let glyph_family = if font_exists(dw, "Segoe Fluent Icons") {
             HSTRING::from("Segoe Fluent Icons")
@@ -221,7 +236,7 @@ impl Gfx {
         };
         let mk = |fam: &HSTRING, weight: DWRITE_FONT_WEIGHT, size: f32, align: DWRITE_TEXT_ALIGNMENT| -> Result<IDWriteTextFormat> {
             unsafe {
-                let f = dw.CreateTextFormat(fam, None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("zh-TW"))?;
+                let f = dw.CreateTextFormat(fam, None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, &locale)?;
                 f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
                 f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
                 f.SetTextAlignment(align)?;

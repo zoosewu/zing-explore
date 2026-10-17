@@ -81,6 +81,14 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 拖曳出去與放置目標受 COM 限制必須在 UI 執行緒，透過 `App::modal` 在釋放 App 借用後執行；放置目標每次拖曳只解析一次路徑（快取）。
 - 測試卡住的 Shell 擴充功能：debug build 設定 `ZING_TEST_SHELL_DELAY_MS=8000`，第一個右鍵選單會延遲；UI 必須仍可操作，3 秒後再按右鍵會改用新主機。
 - 新增相依套件前，評估對執行檔大小與啟動時間的影響。
+- 介面文字（含錯誤訊息、命令面板標題、Lua API 說明、zing-index 的命令列輸出）一律經 `tr!`（`zing_core::i18n`，原文為繁體中文）；
+  常數表裡的原文用 `tr_key!` 標記、顯示時 `i18n::tr()`；Lua（prelude.lua、debugger.lua）用 `tr("…", { 名稱 = 值 })`。
+  新增或修改原文時同步補上 `crates/zing-core/i18n/en.toml`、`ja.toml`，`cargo test -p zing-core i18n` 會檢查缺漏、多餘與參數名稱
+  （`ZING_I18N_MISSING=1` 列出缺少的條目）。不翻譯：記錄檔、測試、`guard::io` 的說明、協定字串（`indexproto::UNPARSABLE`）。
+  隔離模式（效能、冒煙測試）固定用繁體中文；冒煙測試另有切換成英文、日文的步驟（截圖 `14-英文介面`、`15-日文介面`）。
+- 設定頁（`prefspage.rs`，命令 `settings.open`）：項目定義在 `zing_core::prefs::PREFS`，新增設定時同步加上 `Config::pref_value`／
+  `set_pref` 與設定頁的立即套用（`App::set_pref`）。寫回 config.toml 只改那一行（`prefs::write_pref`，保留註解），改不了（行內表、
+  多行字串）就回報錯誤、不寫入；隔離模式不寫檔。與主題編輯面板共用右側位置，兩者只開一個。
 - 執行外部程式一律經 `services::start`／`services::launch`：`Show::HideConsole`（`run`、Lua 的 `run`）時主控台程式以
   CREATE_NO_WINDOW 執行；開啟檔案、網址列輸入維持 `Show::Normal`（與檔案總管相同）。Lua 的 `os.execute`、`io.popen`
   在 prelude 換成不顯示主控台視窗的版本。
@@ -96,8 +104,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
     `debugger.lua`，VS Code 擴充功能在 `tools/vscode-zing-lua`（管道名稱兩邊要一致）。暫停時腳本執行緒只處理除錯訊息，
     其他工作排隊（`Queue`）、縮圖規則直接回答 None。prelude 的鉤子同時負責時間上限與除錯器，`debugger.lua` 呼叫 `stop`
     時不可寫成尾呼叫（`return stop(...)`），否則框架層級會錯。
-  - API 的說明只寫在 `zing_core::scriptapi`：新增或修改命令、全域函式、prelude 函式時同步更新，再以
-    `ZING_UPDATE_DOCS=1 cargo test -p zing-core` 重新產生 `docs/lua.md`（測試會檢查是否最新）；
+  - API 的說明只寫在 `zing_core::scriptapi`：新增或修改命令、全域函式、prelude 函式時同步更新（並補上翻譯），再以
+    `ZING_UPDATE_DOCS=1 cargo test -p zing-core` 重新產生 `docs/lua.md`、`lua.en.md`、`lua.ja.md`（測試會檢查是否最新）；
     `app_commands_match_scriptapi` 測試檢查命令清單與 `App::run` 一致。`tools/smoke.ps1` 每次先執行 `tools/check-lua-api.ps1`：
     以 Lua Language Server 檢查定義檔、`examples/scripts` 與 `docs/lua.md` 的每個範例，必須沒有任何問題
     （範例必須是合法的 Lua：管線是運算式，不能單獨成為一行）；沒有安裝 LuaLS 時只警告，修改 API 時務必安裝後執行。
@@ -133,7 +141,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   圖示與版本資訊由 `build.rs` 以 Windows SDK 的 `rc.exe` 編譯進執行檔。
 - 資料存放位置：
   - 使用者的設定與習慣放在 `zing.exe` 所在的資料夾（可攜式，重灌系統不受影響）：`config.toml`（設定）、
-    `themes\*.toml`（主題）、`session.toml`（視窗、分頁、我的最愛、命令面板最近使用）。路徑一律經 `settings::app_dir()`。
+    `themes\*.toml`（主題）、`session.toml`（視窗、分頁、我的最愛與其順序、命令面板最近使用）、
+    `keys.toml`（快速鍵編輯器寫的按鍵，只含與預設＋config.toml 不同的，見 `zing_core::keyedit`）。路徑一律經 `settings::app_dir()`。
   - 系統產生、可重建的資料（資料夾大小快取、縮圖快取…）放在 `%LOCALAPPDATA%\zing-explore\`（只屬於這台電腦、不漫遊，
     刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（沒有索引時的資料夾大小，見 `sizes.rs`）、
     `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`）、

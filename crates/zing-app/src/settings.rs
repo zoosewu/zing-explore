@@ -26,6 +26,11 @@ pub fn themes_dir() -> PathBuf {
     app_dir().join("themes")
 }
 
+/// 快速鍵編輯器寫的檔案（優先於 config.toml 的 [[key]]）
+pub fn keys_path() -> PathBuf {
+    app_dir().join("keys.toml")
+}
+
 fn session_path() -> PathBuf {
     app_dir().join("session.toml")
 }
@@ -34,7 +39,8 @@ fn session_path() -> PathBuf {
 pub fn load_config() -> (Config, Vec<String>) {
     zing_core::guard::io("讀取設定檔");
     let user = std::fs::read_to_string(config_path()).ok();
-    Config::load(user.as_deref())
+    let keys = std::fs::read_to_string(keys_path()).ok();
+    Config::load_with_keys(user.as_deref(), keys.as_deref())
 }
 
 /// 系統是否使用淺色應用程式主題
@@ -69,9 +75,9 @@ pub fn resolve_theme(name: &str) -> (Theme, Option<String>) {
     match std::fs::read_to_string(&file) {
         Ok(src) => match Theme::from_toml(&src) {
             Ok(t) => (t, None),
-            Err(e) => (Theme::dark(), Some(format!("主題「{name}」載入失敗：{e}"))),
+            Err(e) => (Theme::dark(), Some(tr!("主題「{name}」載入失敗：{e}", name, e))),
         },
-        Err(_) => (Theme::dark(), Some(format!("找不到主題「{name}」（{}）", file.display()))),
+        Err(_) => (Theme::dark(), Some(tr!("找不到主題「{name}」（{file}）", name, file = file.display()))),
     }
 }
 
@@ -149,13 +155,44 @@ impl Session {
     }
 }
 
+/// themes 資料夾中的使用者主題（檔名，不含 .toml），依名稱排序
+pub fn user_themes() -> Vec<String> {
+    zing_core::guard::io("列出使用者主題");
+    let mut v: Vec<String> = std::fs::read_dir(themes_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".toml").filter(|s| !s.is_empty()).map(String::from)
+        })
+        .collect();
+    v.sort_by(|a, b| zing_core::namequery::natural_cmp(a.to_lowercase().as_bytes(), b.to_lowercase().as_bytes()));
+    v
+}
+
+/// 設定頁：把 config.toml 中的 `key` 改成 `literal`（只改那一行，見 `zing_core::prefs::write_pref`）。
+/// 設定頁連續修改時依序寫入
+pub fn write_pref(key: &str, literal: &str) -> Result<(), String> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    zing_core::guard::io("寫入設定檔");
+    let path = ensure_user_config().map_err(|e| tr!("無法建立設定檔：{e}", e))?;
+    let src = std::fs::read_to_string(&path).map_err(|e| tr!("無法讀取 {path}：{e}", path = path.display(), e))?;
+    let out = zing_core::prefs::write_pref(&src, key, literal)?;
+    if out != src {
+        std::fs::write(&path, out).map_err(|e| tr!("無法寫入 {path}：{e}", path = path.display(), e))?;
+    }
+    Ok(())
+}
+
 /// 使用者設定檔不存在時，以預設設定為範本建立
 pub fn ensure_user_config() -> std::io::Result<PathBuf> {
     zing_core::guard::io("建立設定檔");
     let p = config_path();
     if !p.exists() {
         std::fs::create_dir_all(app_dir())?;
-        std::fs::write(&p, zing_core::config::DEFAULT_CONFIG)?;
+        std::fs::write(&p, zing_core::config::default_config_for(zing_core::i18n::lang()))?;
     }
     Ok(p)
 }

@@ -752,6 +752,34 @@ fn theme_row_pos(label: &str, value: bool) -> Option<(f32, f32)> {
     .flatten()
 }
 
+/// 設定頁中某個設定的列（`option` 為 Some 時是展開的第幾個選項）；`value` 為 true 時是數值處
+fn settings_row_pos(key: &str, option: Option<usize>, value: bool) -> Option<(f32, f32)> {
+    use crate::prefspage::Row;
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let panel = a.layout.settings_panel?;
+        let i = zing_core::prefs::PREFS.iter().position(|p| p.key == key)?;
+        let want = match option {
+            Some(o) => Row::Option(i, o),
+            None => Row::Field(i),
+        };
+        let k = a.settings_page.as_ref()?.rows().iter().position(|r| *r == want)?;
+        let pl = a.settings_layout(panel);
+        let rh = a.row_h();
+        let page = a.settings_page.as_mut()?;
+        let top = k as f32 * rh;
+        if top < page.scroll || top + rh > page.scroll + pl.list.h() {
+            page.scroll = (top - pl.list.h() / 2.0).max(0.0);
+        }
+        let scroll = page.scroll;
+        a.invalidate();
+        let (row, v) = a.settings_row_rects(pl.list, k, scroll);
+        let y = (row.t + row.b) / 2.0;
+        Some(if value { (v.l + 20.0, y) } else { (row.l + 20.0, y) })
+    })
+    .flatten()
+}
+
 fn theme_button_pos(k: usize) -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
@@ -1768,6 +1796,142 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
         |_, a| palette_closed(a),
     ));
+    // ------------------------------------------------ 快速鍵編輯器（隔離模式不寫 keys.toml）
+    let kc = |s: &str| zing_core::keymap::KeyChord::parse(s).unwrap();
+    let selected_cmd = |a: &App| -> Option<String> {
+        let p = a.palette.as_ref()?;
+        p.matches.get(p.sel).map(|&k| p.entries[k].cmd.clone())
+    };
+    v.push(step("快速鍵：開啟編輯器並篩選", |_| {
+        exec("keys.edit");
+        palette_type("重新整理");
+    }, move |_, a| {
+        expect("編輯器", a.keys_mode(), true)?;
+        expect("選取", selected_cmd(a).as_deref(), Some("nav.refresh"))
+    }));
+    // Enter 經由 post 的訊息開始錄製：下一步才按組合鍵
+    v.push(step("快速鍵：Enter 開始錄製", |_| palette_key(VK_RETURN), |_, a| expect("錄製中", a.keys_recording(), true)));
+    v.push(step("快速鍵：按下新的組合鍵", |_| palette_key_mods("cs", VIRTUAL_KEY(0x78)), move |_, a| {
+        expect("錄製結束", a.keys_recording(), false)?;
+        expect("新按鍵", a.config.command_for(kc("Ctrl+Shift+F9")), Some("nav.refresh"))?;
+        expect("原本的 F5", a.config.command_for(kc("F5")), None)?;
+        // 錄到的鍵不會變成篩選文字
+        expect("篩選文字", a.palette.as_ref().map(|p| p.query.as_str()), Some("重新整理"))
+    }));
+    v.push(step("快速鍵：再按 Enter", |_| palette_key(VK_RETURN), |_, a| expect("錄製中", a.keys_recording(), true)));
+    v.push(step("截圖：快速鍵編輯器（錄製中）", |_| {}, |c, _| screenshot(c, "13-快速鍵編輯器")));
+    v.push(step("快速鍵：指定已被使用的按鍵（從原本的命令移除）", |_| palette_key_mods("c", letter('c')), move |_, a| {
+        expect("Ctrl+C", a.config.command_for(kc("Ctrl+C")), Some("nav.refresh"))?;
+        expect("警告", a.keys_footer().map(|f| f.1), Some(true))?;
+        expect("篩選文字", a.palette.as_ref().map(|p| p.query.as_str()), Some("重新整理"))
+    }));
+    v.push(step("快速鍵：Ctrl+R 還原預設", |_| palette_key_mods("c", letter('r')), move |_, a| {
+        expect("F5", a.config.command_for(kc("F5")), Some("nav.refresh"))?;
+        expect("Ctrl+C 回到沒有命令", a.config.command_for(kc("Ctrl+C")), None)
+    }));
+    v.push(step("快速鍵：還原被搶走的命令、Ctrl+Delete 移除", |_| {
+        palette_set("file.copy");
+        palette_key_mods("c", letter('r'));
+        palette_key_mods("c", VIRTUAL_KEY(0x2E));
+    }, move |_, a| {
+        expect("選取", selected_cmd(a).as_deref(), Some("file.copy"))?;
+        expect("Ctrl+C", a.config.command_for(kc("Ctrl+C")), None)
+    }));
+    v.push(step("快速鍵：再還原、Esc 關閉（全部回到預設）", |_| {
+        palette_key_mods("c", letter('r'));
+        palette_key(VK_ESCAPE);
+    }, |_, a| {
+        palette_closed(a)?;
+        let sorted = |v: &[(zing_core::keymap::KeyChord, String)]| {
+            let mut v: Vec<(String, String)> = v.iter().map(|(k, c)| (k.to_string(), c.clone())).collect();
+            v.sort();
+            v
+        };
+        if sorted(&a.config.keys) == sorted(&a.config.config_keys) { Ok(()) } else { Err("按鍵沒有全部還原".into()) }
+    }));
+
+    // ------------------------------------------------ 介面語言（隔離模式預設繁體中文；切換後檢查幾處文字並截圖）
+    let lang_step = |lang: zing_core::i18n::Lang, refresh: &'static str, fav: &'static str, shot: &'static str| {
+        step(
+            match lang {
+                zing_core::i18n::Lang::En => "語言：切換成英文",
+                _ => "語言：切換成日文",
+            },
+            move |c| {
+                with_app(|a| a.set_language(lang));
+                key(c, "cs", letter('p'));
+            },
+            move |c, a| {
+                palette_open(a)?;
+                let p = a.palette.as_ref().ok_or("面板已關閉")?;
+                let title = p.entries.iter().find(|e| e.cmd == "nav.refresh").map(|e| e.title.as_str());
+                expect("命令面板的標題", title, Some(refresh))?;
+                expect("樹狀列", a.tree.nodes.first().map(|n| n.name.as_str()), Some(fav))?;
+                screenshot(c, shot)
+            },
+        )
+    };
+    v.push(lang_step(zing_core::i18n::Lang::En, "Refresh", "Favorites", "14-英文介面"));
+    v.push(step("語言：關閉命令面板", |_| palette_key(VK_ESCAPE), |_, a| palette_closed(a)));
+    v.push(lang_step(zing_core::i18n::Lang::Ja, "最新の情報に更新", "お気に入り", "15-日文介面"));
+    v.push(step(
+        "語言：回到繁體中文",
+        |_| {
+            palette_key(VK_ESCAPE);
+            with_app(|a| a.set_language(zing_core::i18n::Lang::ZhTw));
+        },
+        |_, a| {
+            palette_closed(a)?;
+            expect("樹狀列", a.tree.nodes.first().map(|n| n.name.as_str()), Some("我的最愛"))
+        },
+    ));
+
+    // ------------------------------------------------ 設定頁（隔離模式只改記憶體中的設定，不寫 config.toml）
+    v.push(step("設定：Ctrl+, 開啟設定頁", |c| key(c, "c", VIRTUAL_KEY(0xBC)), |_, a| {
+        expect("設定頁", a.settings_page.is_some(), true)?;
+        expect("面板位置", a.layout.settings_panel.is_some(), true)
+    }));
+    v.push(step("設定：點開關顯示隱藏檔案", |c| click(c, "", settings_row_pos("show_hidden", None, true)), |_, a| {
+        expect("顯示隱藏檔案", a.show_hidden, true)?;
+        expect("設定", a.config.show_hidden, true)
+    }));
+    v.push(step("設定：展開樹狀列位置", |c| click(c, "", settings_row_pos("layout.tree", None, false)), |_, a| {
+        let i = zing_core::prefs::PREFS.iter().position(|p| p.key == "layout.tree");
+        expect("展開", a.settings_page.as_ref().and_then(|p| p.expanded), i)
+    }));
+    v.push(step("截圖：設定頁", |_| {}, |c, _| screenshot(c, "16-設定頁")));
+    v.push(step("設定：選右側", |c| click(c, "", settings_row_pos("layout.tree", Some(1), true)), |_, a| {
+        expect("樹狀列", a.tree_side, zing_core::config::TreeSide::Right)?;
+        expect("收起", a.settings_page.as_ref().and_then(|p| p.expanded), None)?;
+        expect("版面", a.layout.tree.zip(a.layout.panes.first()).is_some_and(|(t, p)| t.l > p.list.l), true)
+    }));
+    v.push(step(
+        "設定：輸入啟動時開啟的資料夾",
+        |c| {
+            click(c, "", settings_row_pos("start_path", None, true));
+            edit_commit("C:\\Windows");
+        },
+        |_, a| expect("start_path", a.config.start_path.as_str(), "C:\\Windows"),
+    ));
+    v.push(step(
+        "設定：還原後 Esc 關閉",
+        |c| {
+            with_app(|a| {
+                for (key, value) in [("show_hidden", "false"), ("layout.tree", "left"), ("start_path", "")] {
+                    let i = zing_core::prefs::PREFS.iter().position(|p| p.key == key).unwrap();
+                    a.set_pref(i, value.into());
+                }
+            });
+            key(c, "", VK_ESCAPE);
+        },
+        |_, a| {
+            expect("設定頁", a.settings_page.is_none(), true)?;
+            expect("樹狀列", a.tree_side, zing_core::config::TreeSide::Left)?;
+            expect("顯示隱藏檔案", a.show_hidden, false)?;
+            expect("start_path", a.config.start_path.as_str(), "")
+        },
+    ));
+
     // position = middle：整個面板永遠置中，輸入框（子視窗）跟著移動
     let centered = |a: &App| -> Result<f32, String> {
         let lay = a.palette_layout().ok_or("沒有版面")?;

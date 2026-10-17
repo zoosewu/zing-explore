@@ -108,14 +108,14 @@ impl App {
             Ok(Response::Scanning { percent }) => {
                 // 索引建立完成前先逐資料夾計算，之後輪詢時改用索引
                 self.sizes.index_touched.insert(parent_key, 0);
-                self.set_status(format!("索引服務正在建立索引（{percent}%），暫時逐資料夾計算大小"), false);
+                self.set_status(tr!("索引服務正在建立索引（{percent}%），暫時逐資料夾計算大小", percent), false);
                 self.fallback_sizes(&parent);
             }
             Ok(_) | Err(_) => {
                 if matches!(result, Err(QueryError::NotRunning)) && !self.sizes.hinted {
                     self.sizes.hinted = true;
                     self.set_status(
-                        "提示：啟用 NTFS 索引服務可立即顯示所有資料夾大小（命令面板：啟用 NTFS 索引服務）",
+                        tr!("提示：啟用 NTFS 索引服務可立即顯示所有資料夾大小（命令面板：啟用 NTFS 索引服務）"),
                         false,
                     );
                 }
@@ -186,16 +186,16 @@ impl App {
                     let parts: Vec<String> = vols
                         .iter()
                         .map(|v| match v.state.as_str() {
-                            "ready" => format!("{} 就緒（{} 個資料夾）", v.volume, v.dirs),
-                            "scanning" => format!("{} 建立中 {}%", v.volume, v.detail),
-                            _ => format!("{} 錯誤：{}", v.volume, v.detail),
+                            "ready" => tr!("{volume} 就緒（{dirs} 個資料夾）", volume = v.volume, dirs = v.dirs),
+                            "scanning" => tr!("{volume} 建立中 {percent}%", volume = v.volume, percent = v.detail),
+                            _ => tr!("{volume} 錯誤：{detail}", volume = v.volume, detail = v.detail),
                         })
                         .collect();
-                    (format!("索引服務：{}", parts.join("、")), false)
+                    (tr!("索引服務：{parts}", parts = parts.join(tr!("、"))), false)
                 }
-                Err(QueryError::NotRunning) => ("索引服務沒有執行（命令面板：啟用 NTFS 索引服務）".into(), false),
-                Ok(_) => ("索引服務回應異常".into(), true),
-                Err(QueryError::Failed(e)) => (format!("無法查詢索引服務：{e}"), true),
+                Err(QueryError::NotRunning) => (tr!("索引服務沒有執行（命令面板：啟用 NTFS 索引服務）").into(), false),
+                Ok(_) => (tr!("索引服務回應異常").into(), true),
+                Err(QueryError::Failed(e)) => (tr!("無法查詢索引服務：{e}", e), true),
             };
             n.send(Msg::IndexAction { text, error, changed: false });
         });
@@ -207,17 +207,17 @@ impl App {
         let latest = indexproto::SERVICE_VERSION;
         if !exe.is_file() {
             let text = match tool {
-                Tool::Update(v) => format!("索引服務是舊版（版號 {v}，最新 {latest}），但找不到 {} 無法更新", exe.display()),
-                _ => format!("找不到 {}", exe.display()),
+                Tool::Update(v) => tr!("索引服務是舊版（版號 {v}，最新 {latest}），但找不到 {exe} 無法更新", v, latest, exe = exe.display()),
+                _ => tr!("找不到 {exe}", exe = exe.display()),
             };
             self.set_status(text, true);
             return;
         }
         self.set_status(
             match tool {
-                Tool::Install => "正在啟用索引服務（需要系統管理員權限）…".to_string(),
-                Tool::Update(v) => format!("索引服務是舊版（版號 {v}，最新 {latest}），正在更新：請在 UAC 視窗確認"),
-                Tool::Uninstall => "正在移除索引服務…".to_string(),
+                Tool::Install => tr!("正在啟用索引服務（需要系統管理員權限）…").to_string(),
+                Tool::Update(v) => tr!("索引服務是舊版（版號 {v}，最新 {latest}），正在更新：請在 UAC 視窗確認", v, latest),
+                Tool::Uninstall => tr!("正在移除索引服務…").to_string(),
             },
             false,
         );
@@ -229,28 +229,29 @@ impl App {
             let (text, error) = match run_elevated(&exe.to_string_lossy(), arg) {
                 Ok(0) => (
                     match tool {
-                        Tool::Install => "已啟用索引服務，正在建立索引".to_string(),
-                        Tool::Update(_) => format!("已更新索引服務（版號 {latest}）"),
-                        Tool::Uninstall => "已移除索引服務".to_string(),
+                        Tool::Install => tr!("已啟用索引服務，正在建立索引").to_string(),
+                        Tool::Update(_) => tr!("已更新索引服務（版號 {latest}）", latest),
+                        Tool::Uninstall => tr!("已移除索引服務").to_string(),
                     },
                     false,
                 ),
                 Ok(code) => (
-                    format!(
-                        "索引服務操作失敗（結束代碼 {code}），詳見 {}",
-                        r"C:\Windows\System32\config\systemprofile\AppData\Local\zing-explore\index.log"
+                    tr!(
+                        "索引服務操作失敗（結束代碼 {code}），詳見 {log}",
+                        code,
+                        log = r"C:\Windows\System32\config\systemprofile\AppData\Local\zing-explore\index.log"
                     ),
                     true,
                 ),
                 Err(None) => (
                     if let Tool::Update(_) = tool {
-                        "已取消更新索引服務（下次啟動 zing 時會再詢問）".to_string()
+                        tr!("已取消更新索引服務（下次啟動 zing 時會再詢問）").to_string()
                     } else {
-                        "已取消".to_string()
+                        tr!("已取消").to_string()
                     },
                     false,
                 ),
-                Err(Some(e)) => (format!("無法執行 zing-index：{e}"), true),
+                Err(Some(e)) => (tr!("無法執行 zing-index：{e}", e), true),
             };
             n.send(Msg::IndexAction { text, error, changed: !error });
         });

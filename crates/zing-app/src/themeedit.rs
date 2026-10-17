@@ -25,7 +25,7 @@ use crate::window;
 /// 面板寬度
 pub const PANEL_W: f32 = 380.0;
 /// 底部按鈕：另存新主題、儲存、取消、以文字編輯器開啟
-pub const BUTTONS: [&str; 4] = ["另存新主題", "儲存", "取消", "文字編輯器"];
+pub const BUTTONS: [&str; 4] = [tr_key!("另存新主題"), tr_key!("儲存"), tr_key!("取消"), tr_key!("文字編輯器")];
 /// 主題檔的大小上限（匯入時）
 const MAX_THEME_BYTES: u64 = 1 << 20;
 
@@ -49,7 +49,7 @@ pub fn rows() -> Vec<Row> {
     for (i, f) in FIELDS.iter().enumerate() {
         if f.group != group {
             group = f.group;
-            out.push(Row::Header(group));
+            out.push(Row::Header(zing_core::i18n::tr(group)));
         }
         out.push(Row::Field(i));
     }
@@ -72,6 +72,9 @@ impl App {
     }
 
     pub fn open_theme_editor(&mut self) {
+        if self.settings_page.is_some() {
+            self.close_settings();
+        }
         if self.theme_editor.is_none() {
             self.theme_editor =
                 Some(ThemeEditor { original: self.theme.clone(), original_name: self.theme_name.clone(), scroll: 0.0 });
@@ -202,7 +205,7 @@ impl App {
         let pl = self.theme_panel_layout(panel);
         let b = pl.buttons[0];
         let r = Rect::new(pl.list.l, b.t - 8.0 - self.row_h(), pl.list.r, b.t - 8.0);
-        let suggest = if self.is_user_theme() { format!("{} 複本", self.theme_name) } else { "我的主題".to_string() };
+        let suggest = if self.is_user_theme() { tr!("{name} 複本", name = self.theme_name) } else { tr!("我的主題").to_string() };
         let len = suggest.encode_utf16().count();
         window::begin_edit(self, r, &suggest, len, EditKind::ThemeSaveAs);
     }
@@ -236,7 +239,7 @@ impl App {
     /// 儲存：覆蓋目前的使用者主題（內建主題要另存）
     pub fn save_theme_overwrite(&mut self) {
         if !self.is_user_theme() {
-            self.set_status("內建主題不能覆蓋，請用「另存新主題」", true);
+            self.set_status(tr!("內建主題不能覆蓋，請用「另存新主題」"), true);
             return;
         }
         let mut t = self.theme.clone();
@@ -253,10 +256,10 @@ impl App {
             zing_core::guard::io("寫入主題檔");
             let path = theme_file(&name);
             let result = if !overwrite && path.exists() {
-                Err(format!("已有名為「{name}」的主題"))
+                Err(tr!("已有名為「{name}」的主題", name))
             } else {
                 let _ = std::fs::create_dir_all(settings::themes_dir());
-                std::fs::write(&path, text).map_err(|e| format!("無法寫入 {}：{e}", path.display()))
+                std::fs::write(&path, text).map_err(|e| tr!("無法寫入 {path}：{e}", path = path.display(), e))
             };
             n.send(Msg::ThemeSaved { name, result });
         });
@@ -265,7 +268,7 @@ impl App {
     pub fn on_theme_saved(&mut self, name: String, result: Result<(), String>) {
         match result {
             Ok(()) => {
-                self.set_status(format!("已儲存主題「{name}」"), false);
+                self.set_status(tr!("已儲存主題「{name}」", name), false);
                 self.load_theme_by_name(name);
             }
             Err(e) => self.set_status(e, true),
@@ -303,7 +306,7 @@ impl App {
     /// 以文字編輯器開啟目前的主題檔，並在檔案變更時自動重新載入
     pub fn open_theme_file(&mut self) {
         if !self.is_user_theme() {
-            self.set_status("內建主題沒有主題檔：請先「另存新主題」再用文字編輯器修改", true);
+            self.set_status(tr!("內建主題沒有主題檔：請先「另存新主題」再用文字編輯器修改"), true);
             return;
         }
         let path = theme_file(&self.theme_name);
@@ -364,14 +367,14 @@ impl App {
             let result = (|| -> Result<(String, String, bool), String> {
                 let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
                 if meta.len() > MAX_THEME_BYTES {
-                    return Err("檔案太大，不是主題檔".into());
+                    return Err(tr!("檔案太大，不是主題檔").into());
                 }
-                let text = std::fs::read_to_string(&path).map_err(|e| format!("無法讀取：{e}"))?;
+                let text = std::fs::read_to_string(&path).map_err(|e| tr!("無法讀取：{e}", e))?;
                 let theme = Theme::from_toml(&text)?;
                 let stem = zing_core::path::file_name(&path).rsplit_once('.').map_or("", |x| x.0).to_string();
                 let mut name = if valid_theme_name(&theme.name).is_ok() { theme.name.clone() } else { stem };
                 if valid_theme_name(&name).is_err() {
-                    name = format!("{} 匯入", name.trim());
+                    name = tr!("{name} 匯入", name = name.trim());
                 }
                 valid_theme_name(&name)?;
                 let exists = theme_file(&name).exists();
@@ -385,7 +388,7 @@ impl App {
         match result {
             Ok((name, text, true)) => self.modal = Some(Modal::ConfirmThemeOverwrite { name, text }),
             Ok((name, text, false)) => self.write_theme(name, text, false),
-            Err(e) => self.set_status(format!("無法匯入主題：{e}"), true),
+            Err(e) => self.set_status(tr!("無法匯入主題：{e}", e), true),
         }
     }
 
@@ -402,8 +405,8 @@ impl App {
         self.pool.spawn(move || {
             zing_core::guard::io("匯出主題");
             match std::fs::write(&path, text) {
-                Ok(()) => n.status(format!("已匯出主題到 {path}"), false),
-                Err(e) => n.status(format!("無法匯出主題：{e}"), true),
+                Ok(()) => n.status(tr!("已匯出主題到 {path}", path), false),
+                Err(e) => n.status(tr!("無法匯出主題：{e}", e), true),
             }
         });
     }
@@ -414,8 +417,8 @@ impl App {
         let g = &self.gfx;
         g.fill(r, c.surface);
         let pl = self.theme_panel_layout(r);
-        let kind = if self.is_user_theme() { "" } else { "（內建，需另存）" };
-        g.text(&format!("編輯主題：{}{kind}", self.theme_name), Font::Bold, pl.title, c.text);
+        let kind = if self.is_user_theme() { "" } else { tr!("（內建，需另存）") };
+        g.text(&tr!("編輯主題：{name}{kind}", name = self.theme_name, kind), Font::Bold, pl.title, c.text);
         g.push_clip(pl.list);
         let rh = self.row_h();
         for (k, row) in rows().iter().enumerate() {
@@ -432,7 +435,7 @@ impl App {
                     if self.hover == Hit::ThemeRow(i) || self.hover == Hit::ThemeSwatch(i) {
                         g.fill_round(rr, self.theme.metrics.radius, c.hover);
                     }
-                    g.text(f.label, Font::Text, Rect::new(rr.l + 8.0, rr.t, value.l - 6.0, rr.b), c.text);
+                    g.text(zing_core::i18n::tr(f.label), Font::Text, Rect::new(rr.l + 8.0, rr.t, value.l - 6.0, rr.b), c.text);
                     let v = self.theme.field_value(f);
                     match f.kind {
                         FieldKind::Color => {
@@ -459,9 +462,10 @@ impl App {
             g.fill_round(*b, self.theme.metrics.radius, fill);
             g.stroke_round(*b, self.theme.metrics.radius, if k == 0 { c.accent } else { c.border }, 1.0);
             let col = if enabled { c.text } else { c.text_secondary.with_alpha(120) };
-            let w = g.measure(BUTTONS[k], Font::Text);
+            let label = zing_core::i18n::tr(BUTTONS[k]);
+            let w = g.measure(label, Font::Text);
             let l = b.l + ((b.w() - w) / 2.0).max(4.0);
-            g.text(BUTTONS[k], Font::Text, Rect::new(l, b.t, b.r - 4.0, b.b), col);
+            g.text(label, Font::Text, Rect::new(l, b.t, b.r - 4.0, b.b), col);
         }
     }
 }
@@ -504,9 +508,10 @@ pub fn theme_file_dialog(owner: windows::Win32::Foundation::HWND, save: bool, na
         } else {
             CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?.cast().ok()?
         };
+        let (themes, all) = (zing_core::text::wide_z(tr!("zing-explore 主題")), zing_core::text::wide_z(tr!("所有檔案")));
         let filters = [
-            COMDLG_FILTERSPEC { pszName: w!("zing-explore 主題"), pszSpec: w!("*.zingtheme;*.toml") },
-            COMDLG_FILTERSPEC { pszName: w!("所有檔案"), pszSpec: w!("*.*") },
+            COMDLG_FILTERSPEC { pszName: PCWSTR(themes.as_ptr()), pszSpec: w!("*.zingtheme;*.toml") },
+            COMDLG_FILTERSPEC { pszName: PCWSTR(all.as_ptr()), pszSpec: w!("*.*") },
         ];
         let _ = dialog.SetFileTypes(&filters);
         if save {

@@ -66,7 +66,7 @@ impl App {
             "medium" => (ViewMode::Thumbnails, Some(128)),
             "large" => (ViewMode::Thumbnails, Some(192)),
             "thumbnails" => (ViewMode::Thumbnails, None),
-            other => return Err(format!("未知的檢視：{other}（list、small、medium、large、thumbnails）")),
+            other => return Err(tr!("未知的檢視：{other}（list、small、medium、large、thumbnails）", other)),
         };
         let t = self.panes[p].active;
         let tab = &mut self.panes[p].tabs[t];

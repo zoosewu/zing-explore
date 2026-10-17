@@ -210,7 +210,7 @@ impl App {
                 if self.sizes.pending == 0 {
                     let n = self.sizes.batch_done;
                     if n > 0 {
-                        self.set_status(format!("已計算 {n} 個資料夾的大小"), false);
+                        self.set_status(tr!("已計算 {n} 個資料夾的大小", n), false);
                     }
                     self.save_size_cache();
                 }

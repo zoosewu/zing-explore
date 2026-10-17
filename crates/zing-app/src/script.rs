@@ -280,7 +280,7 @@ fn worker(rx: Receiver<Job>, n: Notifier) {
             }
             Job::Eval { expr, ctx } => {
                 let Some(l) = &lua else {
-                    n.status("Lua 腳本尚未載入", true);
+                    n.status(tr!("Lua 腳本尚未載入"), true);
                     continue;
                 };
                 deadline.set(call_limit());
@@ -309,7 +309,7 @@ fn has_fn(l: &Lua, name: &str) -> bool {
 fn call_named(l: &Lua, name: &str, arg: Value) -> Result<(), String> {
     let f: Value = l.globals().raw_get(name).map_err(|e| e.to_string())?;
     if !matches!(f, Value::Function(_)) {
-        return Err(format!("找不到 Lua 函式「{name}」"));
+        return Err(tr!("找不到 Lua 函式「{name}」", name));
     }
     let call: mlua::Function = l.globals().raw_get("__call").map_err(|e| e.to_string())?;
     let (ok, err): (bool, Value) = call.call((f, arg)).map_err(|e| e.to_string())?;
@@ -321,7 +321,7 @@ fn err_text(v: Value) -> String {
     match v {
         Value::Error(e) => e.to_string(),
         Value::String(_) | Value::Integer(_) | Value::Number(_) => text(&v),
-        _ => "（非字串的錯誤值）".into(),
+        _ => tr!("（非字串的錯誤值）").into(),
     }
 }
 
@@ -371,7 +371,7 @@ fn set_ctx(l: &Lua, ctx: &Ctx) {
 /// 錯誤：狀態列顯示第一行，scripts\error.log 記錄全文（含呼叫堆疊）
 fn report(n: &Notifier, e: &str) {
     let first = e.lines().next().unwrap_or(e);
-    n.status(format!("Lua：{first}"), true);
+    n.status(tr!("Lua：{first}", first), true);
     append(&scripts_dir().join("error.log"), e);
 }
 
@@ -498,6 +498,8 @@ fn add_system_fns(lua: &Lua) -> mlua::Result<()> {
     g.raw_set("__is_dir", lua_fn(lua, |_, v: Value| Path::new(&text(&v)).is_dir())?)?;
     g.raw_set("__stat", lua_fn(lua, |l, v: Value| stat(l, &text(&v)))?)?;
     g.raw_set("__clipboard_get", lua_fn(lua, |_, ()| crate::window::clipboard_text().map(|s| s.replace("\r\n", "\n")))?)?;
+    // prelude.lua、debugger.lua 的訊息翻譯（zing_core::i18n）
+    g.raw_set("__tr", lua_fn(lua, |_, v: Value| zing_core::i18n::tr_str(&text(&v)).into_owned())?)?;
     Ok(())
 }
 
@@ -644,13 +646,13 @@ fn add_process_fns(lua: &Lua) -> mlua::Result<()> {
         lua_fn(lua, |_, (pos, console, dir): (Value, Value, Value)| {
             let args = seq_texts(&pos);
             let Some((program, rest)) = args.split_first() else {
-                return (None, Some("run 需要程式名稱".to_string()));
+                return (None, Some(tr!("run 需要程式名稱").to_string()));
             };
             let params = rest.iter().map(|a| quote_arg(a)).collect::<Vec<_>>().join(" ");
             let how = if matches!(console, Value::Boolean(true)) { Show::Normal } else { Show::HideConsole };
             match services::start(program, Some(&params), Some(&text(&dir)), None, how, Default::default()) {
                 Ok(s) => (s.wait().map(i64::from), None),
-                Err(e) => (None, Some(format!("無法執行 {program}：{e}"))),
+                Err(e) => (None, Some(tr!("無法執行 {program}：{e}", program, e))),
             }
         })?,
     )?;
@@ -733,7 +735,7 @@ fn add_process_fns(lua: &Lua) -> mlua::Result<()> {
 fn load(dir: &Path, n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -> (Option<Lua>, Loaded) {
     let mut loaded = Loaded { commands: Vec::new(), on_navigate: false, errors: Vec::new() };
     let _ = std::fs::create_dir_all(dir.join(".zing"));
-    write_if_changed(&dir.join(".zing").join("zing.d.lua"), &scriptapi::luals_meta());
+    write_if_changed(&dir.join(".zing").join("zing.d.lua"), &scriptapi::luals_meta(zing_core::i18n::lang()));
     // 沒有或仍是舊版 zing 寫的（使用者沒改過）時寫入新版
     let luarc = dir.join(".luarc.json");
     let current = std::fs::read_to_string(&luarc).ok().map(|s| s.replace("\r\n", "\n"));
@@ -748,7 +750,7 @@ fn load(dir: &Path, n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -
     let lua = match new_lua(n, deadline, q) {
         Ok(l) => l,
         Err(e) => {
-            loaded.errors.push(format!("內建函式庫載入失敗：{e}"));
+            loaded.errors.push(tr!("內建函式庫載入失敗：{e}", e));
             return (None, loaded);
         }
     };
@@ -764,7 +766,7 @@ fn load(dir: &Path, n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -
         let src = match std::fs::read_to_string(f) {
             Ok(s) => s,
             Err(e) => {
-                loaded.errors.push(format!("{name}：{e}"));
+                loaded.errors.push(tr!("{name}：{e}", name, e));
                 continue;
             }
         };
@@ -817,8 +819,8 @@ impl crate::app::App {
         let first = l.errors.first().cloned();
         self.scripts.on_loaded(l);
         match first {
-            Some(e) => self.set_status(format!("Lua 腳本有 {errors} 個錯誤：{}", e.lines().next().unwrap_or("")), true),
-            None if n > 0 => self.set_status(format!("已載入 {n} 個 Lua 命令"), false),
+            Some(e) => self.set_status(tr!("Lua 腳本有 {errors} 個錯誤：{first}", errors, first = e.lines().next().unwrap_or("")), true),
+            None if n > 0 => self.set_status(tr!("已載入 {n} 個 Lua 命令", n), false),
             None => {}
         }
     }
@@ -867,7 +869,7 @@ impl crate::app::App {
                     answers.push((prompt, t));
                     self.exec_with(&script, answers);
                 }
-                _ => self.set_status("已取消命令", false),
+                _ => self.set_status(tr!("已取消命令"), false),
             },
             None => {}
         }

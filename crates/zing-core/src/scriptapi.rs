@@ -1,8 +1,11 @@
 //! Lua 腳本 API 的單一說明來源：內建命令、全域函式、函數式函式庫、事件。
 //!
-//! `docs/lua.md`（使用者文件）與 `zing.d.lua`（Lua Language Server 的自動補全定義）都由這裡產生；
-//! 測試會確認 `docs/lua.md` 與這裡一致、zing-app 的命令分派與 `COMMANDS` 一致、內建函式庫的每個全域函式都有說明。
-//! 修改 API 時改這裡，再以 `ZING_UPDATE_DOCS=1 cargo test -p zing-core` 更新文件。
+//! `docs/lua.md`（使用者文件，另有 `lua.en.md`、`lua.ja.md`）與 `zing.d.lua`（Lua Language Server 的自動補全定義）
+//! 都由這裡產生；說明文字以 `tr_key!` 標記，翻譯在 `i18n/*.toml`。
+//! 測試會確認文件與這裡一致、zing-app 的命令分派與 `COMMANDS` 一致、內建函式庫的每個全域函式都有說明。
+//! 修改 API 時改這裡（並補上翻譯），再以 `ZING_UPDATE_DOCS=1 cargo test -p zing-core` 更新文件。
+
+use crate::i18n::{Lang, tr_in};
 
 /// 一個說明項目
 pub struct Spec {
@@ -20,164 +23,166 @@ const fn spec(name: &'static str, sig: &'static [&'static str], summary: &'stati
 /// 內建命令。在 Lua 中以函式呼叫：`nav.up()`、`view.mode("list")`、`copy{ to = "D:\\", move = true }`。
 /// 字串、數字參數是位置參數；表格中的整數鍵是位置參數（清單會展開），字串鍵是 `--鍵=值`（`true` 為 `--鍵`）。
 pub const COMMANDS: &[Spec] = &[
-    spec("nav.back", &[], "上一頁", "nav.back()"),
-    spec("nav.forward", &[], "下一頁", "nav.forward()"),
-    spec("nav.up", &[], "上一層", "nav.up()"),
-    spec("nav.open", &[], "開啟焦點項目（資料夾進入、檔案以預設程式開啟）", "nav.open()"),
-    spec("nav.refresh", &[], "重新整理", "nav.refresh()"),
-    spec("nav.home", &[], "回到使用者資料夾", "nav.home()"),
-    spec("nav.goto", &["path string 路徑"], "切換到資料夾（同 `go`）", "nav[\"goto\"](\"C:\\\\Windows\") -- goto 是 Lua 的保留字，要這樣寫；也可以用 go()"),
-    spec("address.edit", &[], "編輯網址列", "address.edit()"),
-    spec("palette.open", &[], "開啟命令面板", "palette.open()"),
-    spec("search.open", &[], "全磁碟搜尋：以名稱、路徑搜尋所有 NTFS 磁碟，可篩選與排序（語法見 README；需要 NTFS 索引服務）", "search.open()"),
-    spec("jobs.toggle", &[], "顯示／隱藏檔案作業面板", "jobs.toggle()"),
-    spec("jobs.clear", &[], "清除已完成的檔案作業", "jobs.clear()"),
-    spec("file.copy", &[], "複製選取項目到剪貼簿", "file.copy()"),
-    spec("file.cut", &[], "剪下選取項目到剪貼簿", "file.cut()"),
-    spec("file.paste", &[], "貼上剪貼簿的檔案到目前資料夾", "file.paste()"),
-    spec("file.delete", &["opts? {permanent?: boolean} permanent 為 true 時不經資源回收筒"], "刪除選取項目", "file.delete{ permanent = true }"),
-    spec("file.rename", &[], "重新命名（選取多個項目時為批次重新命名）", "file.rename()"),
-    spec("file.batchrename", &[], "批次重新命名選取的項目", "file.batchrename()"),
-    spec("file.newfolder", &[], "在目前資料夾建立新資料夾", "file.newfolder()"),
-    spec("file.properties", &[], "顯示選取項目的內容對話框", "file.properties()"),
-    spec("menu.context", &[], "顯示焦點項目的右鍵選單", "menu.context()"),
-    spec("file.copypath", &[], "複製選取項目的完整路徑", "file.copypath()"),
+    spec("nav.back", &[], tr_key!("上一頁"), "nav.back()"),
+    spec("nav.forward", &[], tr_key!("下一頁"), "nav.forward()"),
+    spec("nav.up", &[], tr_key!("上一層"), "nav.up()"),
+    spec("nav.open", &[], tr_key!("開啟焦點項目（資料夾進入、檔案以預設程式開啟）"), "nav.open()"),
+    spec("nav.refresh", &[], tr_key!("重新整理"), "nav.refresh()"),
+    spec("nav.home", &[], tr_key!("回到使用者資料夾"), "nav.home()"),
+    spec("nav.goto", &[tr_key!("path string 路徑")], tr_key!("切換到資料夾（同 `go`）"), tr_key!("nav[\"goto\"](\"C:\\\\Windows\") -- goto 是 Lua 的保留字，要這樣寫；也可以用 go()")),
+    spec("address.edit", &[], tr_key!("編輯網址列"), "address.edit()"),
+    spec("palette.open", &[], tr_key!("開啟命令面板"), "palette.open()"),
+    spec("search.open", &[], tr_key!("全磁碟搜尋：以名稱、路徑搜尋所有 NTFS 磁碟，可篩選與排序（語法見 README；需要 NTFS 索引服務）"), "search.open()"),
+    spec("jobs.toggle", &[], tr_key!("顯示／隱藏檔案作業面板"), "jobs.toggle()"),
+    spec("jobs.clear", &[], tr_key!("清除已完成的檔案作業"), "jobs.clear()"),
+    spec("file.copy", &[], tr_key!("複製選取項目到剪貼簿"), "file.copy()"),
+    spec("file.cut", &[], tr_key!("剪下選取項目到剪貼簿"), "file.cut()"),
+    spec("file.paste", &[], tr_key!("貼上剪貼簿的檔案到目前資料夾"), "file.paste()"),
+    spec("file.delete", &[tr_key!("opts? {permanent?: boolean} permanent 為 true 時不經資源回收筒")], tr_key!("刪除選取項目"), "file.delete{ permanent = true }"),
+    spec("file.rename", &[], tr_key!("重新命名（選取多個項目時為批次重新命名）"), "file.rename()"),
+    spec("file.batchrename", &[], tr_key!("批次重新命名選取的項目"), "file.batchrename()"),
+    spec("file.newfolder", &[], tr_key!("在目前資料夾建立新資料夾"), "file.newfolder()"),
+    spec("file.properties", &[], tr_key!("顯示選取項目的內容對話框"), "file.properties()"),
+    spec("menu.context", &[], tr_key!("顯示焦點項目的右鍵選單"), "menu.context()"),
+    spec("file.copypath", &[], tr_key!("複製選取項目的完整路徑"), "file.copypath()"),
     spec(
         "copy",
         &[
-            "args {to: string, move?: boolean, [integer]: string} to 為目的資料夾；位置參數為來源（省略時為選取項目）",
+            tr_key!("args {to: string, move?: boolean, [integer]: string} to 為目的資料夾；位置參數為來源（省略時為選取項目）"),
             "overload fun(sources: string[]|string, opts: {to: string, move?: boolean})",
         ],
-        "複製或移動到指定資料夾（經檔案作業佇列）",
-        "copy{ to = \"D:\\\\備份\", move = true }",
+        tr_key!("複製或移動到指定資料夾（經檔案作業佇列）"),
+        tr_key!("copy{ to = \"D:\\\\備份\", move = true }"),
     ),
     spec(
         "run",
         &[
-            "program string 程式",
-            "... string|{wait?: boolean, console?: boolean} 參數；表格的 wait = true 等程式結束並回傳結束代碼（只在腳本中，等待不計入時間上限），console = true 顯示主控台視窗（互動式終端機）",
-            "return integer?, string? 結束代碼（wait 時）；無法啟動時為 nil 與錯誤訊息",
+            tr_key!("program string 程式"),
+            tr_key!("... string|{wait?: boolean, console?: boolean} 參數；表格的 wait = true 等程式結束並回傳結束代碼（只在腳本中，等待不計入時間上限），console = true 顯示主控台視窗（互動式終端機）"),
+            tr_key!("return integer?, string? 結束代碼（wait 時）；無法啟動時為 nil 與錯誤訊息"),
             "overload fun(args: {[integer]: string, wait?: boolean, console?: boolean}): integer?, string?",
         ],
-        "執行程式（在目前資料夾）。主控台程式（含 .bat、.cmd）不顯示主控台視窗，視窗程式照常顯示；設定檔中以 `run --console 程式` 顯示主控台",
+        tr_key!("執行程式（在目前資料夾）。主控台程式（含 .bat、.cmd）不顯示主控台視窗，視窗程式照常顯示；設定檔中以 `run --console 程式` 顯示主控台"),
         "run(\"code\", cwd())\nlocal code = run{ \"tar\", \"-xf\", \"a.zip\", \"-C\", \"D:\\\\out\", wait = true }\nrun{ \"pwsh\", console = true }",
     ),
-    spec("open", &["... string 檔案"], "以預設程式開啟檔案", "open(\"C:\\\\a.pdf\")"),
-    spec("sel.all", &[], "全選", "sel.all()"),
-    spec("sel.none", &[], "取消選取", "sel.none()"),
-    spec("sel.invert", &[], "反向選取", "sel.invert()"),
-    spec("tab.new", &["opts? {path?: string}"], "開新分頁（預設為目前資料夾）", "tab.new{ path = \"C:\\\\\" }"),
-    spec("tab.close", &[], "關閉分頁", "tab.close()"),
-    spec("tab.next", &[], "下一個分頁", "tab.next()"),
-    spec("tab.prev", &[], "上一個分頁", "tab.prev()"),
-    spec("pane.split", &[], "分割出新窗格", "pane.split()"),
-    spec("pane.close", &[], "關閉窗格", "pane.close()"),
-    spec("pane.focusnext", &[], "切換到下一個窗格", "pane.focusnext()"),
-    spec("tree.toggle", &[], "顯示／隱藏樹狀列", "tree.toggle()"),
-    spec("view.sort", &["opts {by: \"name\"|\"modified\"|\"type\"|\"size\", asc?: boolean, desc?: boolean}"], "排序", "view.sort{ by = \"size\", desc = true }"),
-    spec("view.foldersizes", &[], "計算資料夾大小", "view.foldersizes()"),
+    spec("open", &[tr_key!("... string 檔案")], tr_key!("以預設程式開啟檔案"), "open(\"C:\\\\a.pdf\")"),
+    spec("sel.all", &[], tr_key!("全選"), "sel.all()"),
+    spec("sel.none", &[], tr_key!("取消選取"), "sel.none()"),
+    spec("sel.invert", &[], tr_key!("反向選取"), "sel.invert()"),
+    spec("tab.new", &["opts? {path?: string}"], tr_key!("開新分頁（預設為目前資料夾）"), "tab.new{ path = \"C:\\\\\" }"),
+    spec("tab.close", &[], tr_key!("關閉分頁"), "tab.close()"),
+    spec("tab.next", &[], tr_key!("下一個分頁"), "tab.next()"),
+    spec("tab.prev", &[], tr_key!("上一個分頁"), "tab.prev()"),
+    spec("pane.split", &[], tr_key!("分割出新窗格"), "pane.split()"),
+    spec("pane.close", &[], tr_key!("關閉窗格"), "pane.close()"),
+    spec("pane.focusnext", &[], tr_key!("切換到下一個窗格"), "pane.focusnext()"),
+    spec("tree.toggle", &[], tr_key!("顯示／隱藏樹狀列"), "tree.toggle()"),
+    spec("view.sort", &["opts {by: \"name\"|\"modified\"|\"type\"|\"size\", asc?: boolean, desc?: boolean}"], tr_key!("排序"), "view.sort{ by = \"size\", desc = true }"),
+    spec("view.foldersizes", &[], tr_key!("計算資料夾大小"), "view.foldersizes()"),
     spec(
         "thumb.set",
-        &["opts? {path?: string, image?: string} path 預設為目前的項目；沒有 image 時開啟選擇圖片的對話框"],
-        "手動指定縮圖（圖片複製到 %LOCALAPPDATA%，以 NTFS 檔案 ID 為鍵，改名或移動後仍有效）",
-        "thumb.set{ image = \"D:\\\\封面.jpg\" }",
+        &[tr_key!("opts? {path?: string, image?: string} path 預設為目前的項目；沒有 image 時開啟選擇圖片的對話框")],
+        tr_key!("手動指定縮圖（圖片複製到 %LOCALAPPDATA%，以 NTFS 檔案 ID 為鍵，改名或移動後仍有效）"),
+        tr_key!("thumb.set{ image = \"D:\\\\封面.jpg\" }"),
     ),
-    spec("thumb.clear", &["opts? {path?: string}"], "移除手動指定的縮圖", "thumb.clear()"),
-    spec("view.preview", &[], "顯示／隱藏預覽窗格", "view.preview()"),
-    spec("view.mode", &["mode \"list\"|\"small\"|\"medium\"|\"large\"|\"thumbnails\""], "切換清單／縮圖檢視", "view.mode(\"medium\")"),
-    spec("view.thumbsize", &["opts {delta: integer} 加減的像素"], "調整縮圖大小", "view.thumbsize{ delta = 16 }"),
-    spec("view.togglehidden", &[], "顯示／隱藏隱藏檔案", "view.togglehidden()"),
-    spec("index.install", &[], "啟用 NTFS 索引服務（需要系統管理員權限）", "index.install()"),
-    spec("index.uninstall", &[], "移除 NTFS 索引服務", "index.uninstall()"),
-    spec("index.status", &[], "顯示 NTFS 索引服務狀態", "index.status()"),
-    spec("filter.clear", &[], "清除篩選", "filter.clear()"),
-    spec("filter.set", &["opts {text: string} 篩選文字（可用 * ? 萬用字元）"], "設定篩選", "filter.set{ text = \"*.jpg\" }"),
-    spec("favorites.add", &["opts? {path?: string}"], "加入我的最愛（預設為目前資料夾）", "favorites.add()"),
-    spec("favorites.remove", &["opts? {path?: string}"], "從我的最愛移除", "favorites.remove{ path = cwd() }"),
+    spec("thumb.clear", &["opts? {path?: string}"], tr_key!("移除手動指定的縮圖"), "thumb.clear()"),
+    spec("settings.open", &[], tr_key!("開啟設定頁（修改會寫回 config.toml 的對應行，保留註解）"), "settings.open()"),
+    spec("keys.edit", &[], tr_key!("開啟快速鍵編輯器（結果存在程式旁的 keys.toml）"), "keys.edit()"),
+    spec("view.preview", &[], tr_key!("顯示／隱藏預覽窗格"), "view.preview()"),
+    spec("view.mode", &["mode \"list\"|\"small\"|\"medium\"|\"large\"|\"thumbnails\""], tr_key!("切換清單／縮圖檢視"), "view.mode(\"medium\")"),
+    spec("view.thumbsize", &[tr_key!("opts {delta: integer} 加減的像素")], tr_key!("調整縮圖大小"), "view.thumbsize{ delta = 16 }"),
+    spec("view.togglehidden", &[], tr_key!("顯示／隱藏隱藏檔案"), "view.togglehidden()"),
+    spec("index.install", &[], tr_key!("啟用 NTFS 索引服務（需要系統管理員權限）"), "index.install()"),
+    spec("index.uninstall", &[], tr_key!("移除 NTFS 索引服務"), "index.uninstall()"),
+    spec("index.status", &[], tr_key!("顯示 NTFS 索引服務狀態"), "index.status()"),
+    spec("filter.clear", &[], tr_key!("清除篩選"), "filter.clear()"),
+    spec("filter.set", &[tr_key!("opts {text: string} 篩選文字（可用 * ? 萬用字元）")], tr_key!("設定篩選"), "filter.set{ text = \"*.jpg\" }"),
+    spec("favorites.add", &["opts? {path?: string}"], tr_key!("加入我的最愛（預設為目前資料夾）"), "favorites.add()"),
+    spec("favorites.remove", &["opts? {path?: string}"], tr_key!("從我的最愛移除"), "favorites.remove{ path = cwd() }"),
     spec(
         "favorites.move",
-        &["opts {by: integer, path?: string} by 為移動的位置數（負數往上）；path 預設為樹狀列焦點所在的我的最愛，否則目前資料夾"],
-        "調整我的最愛的順序（記在 session.toml，設定檔中的也能調整）",
+        &[tr_key!("opts {by: integer, path?: string} by 為移動的位置數（負數往上）；path 預設為樹狀列焦點所在的我的最愛，否則目前資料夾")],
+        tr_key!("調整我的最愛的順序（記在 session.toml，設定檔中的也能調整）"),
         "favorites.move{ by = -1 }",
     ),
-    spec("theme.set", &["name string 主題名稱"], "切換主題", "theme.set(\"fluent\")"),
-    spec("theme.toggle", &[], "切換深色／淺色（保留風格）", "theme.toggle()"),
-    spec("theme.edit", &[], "開啟主題編輯器", "theme.edit()"),
-    spec("theme.editfile", &[], "以文字編輯器開啟目前的主題檔", "theme.editfile()"),
-    spec("theme.import", &[], "匯入主題", "theme.import()"),
-    spec("theme.export", &[], "匯出目前的主題", "theme.export()"),
-    spec("config.edit", &[], "以文字編輯器開啟設定檔", "config.edit()"),
-    spec("config.reload", &[], "重新載入設定", "config.reload()"),
-    spec("script.reload", &[], "重新載入 Lua 腳本", "script.reload()"),
-    spec("app.exit", &[], "結束程式", "app.exit()"),
+    spec("theme.set", &[tr_key!("name string 主題名稱")], tr_key!("切換主題"), "theme.set(\"fluent\")"),
+    spec("theme.toggle", &[], tr_key!("切換深色／淺色（保留風格）"), "theme.toggle()"),
+    spec("theme.edit", &[], tr_key!("開啟主題編輯器"), "theme.edit()"),
+    spec("theme.editfile", &[], tr_key!("以文字編輯器開啟目前的主題檔"), "theme.editfile()"),
+    spec("theme.import", &[], tr_key!("匯入主題"), "theme.import()"),
+    spec("theme.export", &[], tr_key!("匯出目前的主題"), "theme.export()"),
+    spec("config.edit", &[], tr_key!("以文字編輯器開啟設定檔"), "config.edit()"),
+    spec("config.reload", &[], tr_key!("重新載入設定"), "config.reload()"),
+    spec("script.reload", &[], tr_key!("重新載入 Lua 腳本"), "script.reload()"),
+    spec("app.exit", &[], tr_key!("結束程式"), "app.exit()"),
 ];
 
 /// 與目前狀態、使用者互動的全域函式
 pub const GLOBALS: &[Spec] = &[
-    spec("sel", &["return string[] 選取項目的完整路徑（不可變清單）"], "選取的項目。命令開始時的快照，執行中的命令不會改變它", "for _, p in ipairs(sel()) do msg(p) end"),
-    spec("cwd", &["return string 目前資料夾（「此電腦」為空字串）"], "目前的資料夾（快照）", "msg(cwd())"),
-    spec("focus", &["return string? 焦點項目的完整路徑"], "焦點所在的項目（快照）", "local f = focus()"),
-    spec("go", &["path string 資料夾"], "切換到資料夾", "go(\"D:\\\\Photos\")"),
-    spec("msg", &["text string"], "在狀態列顯示訊息", "msg(\"完成\")"),
-    spec("ask", &["prompt string 提示", "default? string 預設值", "return string? 輸入的文字；取消時為 nil"], "詢問使用者輸入（等待到使用者回答）", "local name = ask(\"新資料夾名稱\", \"新增資料夾\")"),
+    spec("sel", &[tr_key!("return string[] 選取項目的完整路徑（不可變清單）")], tr_key!("選取的項目。命令開始時的快照，執行中的命令不會改變它"), "for _, p in ipairs(sel()) do msg(p) end"),
+    spec("cwd", &[tr_key!("return string 目前資料夾（「此電腦」為空字串）")], tr_key!("目前的資料夾（快照）"), "msg(cwd())"),
+    spec("focus", &[tr_key!("return string? 焦點項目的完整路徑")], tr_key!("焦點所在的項目（快照）"), "local f = focus()"),
+    spec("go", &[tr_key!("path string 資料夾")], tr_key!("切換到資料夾"), "go(\"D:\\\\Photos\")"),
+    spec("msg", &["text string"], tr_key!("在狀態列顯示訊息"), tr_key!("msg(\"完成\")")),
+    spec("ask", &[tr_key!("prompt string 提示"), tr_key!("default? string 預設值"), tr_key!("return string? 輸入的文字；取消時為 nil")], tr_key!("詢問使用者輸入（等待到使用者回答）"), tr_key!("local name = ask(\"新資料夾名稱\", \"新增資料夾\")")),
     spec(
         "pick_folder",
-        &["title? string 對話方塊的標題", "default? string 一開始顯示的資料夾", "return string? 選取的資料夾；取消時為 nil"],
-        "顯示選擇資料夾的對話方塊（等待到使用者選擇）",
-        "local dest = pick_folder(\"解壓縮到\", cwd())",
+        &[tr_key!("title? string 對話方塊的標題"), tr_key!("default? string 一開始顯示的資料夾"), tr_key!("return string? 選取的資料夾；取消時為 nil")],
+        tr_key!("顯示選擇資料夾的對話方塊（等待到使用者選擇）"),
+        tr_key!("local dest = pick_folder(\"解壓縮到\", cwd())"),
     ),
     spec(
         "clipboard",
         &[
-            "text? string 要放到剪貼簿的文字；省略時讀取",
-            "return string|boolean|nil 讀取時為剪貼簿的文字（沒有文字時為 nil）；寫入時為是否成功",
+            tr_key!("text? string 要放到剪貼簿的文字；省略時讀取"),
+            tr_key!("return string|boolean|nil 讀取時為剪貼簿的文字（沒有文字時為 nil）；寫入時為是否成功"),
         ],
-        "讀取或寫入剪貼簿的文字（換行一律是 \\n，寫入時轉成 Windows 的 \\r\\n）",
+        tr_key!("讀取或寫入剪貼簿的文字（換行一律是 \\n，寫入時轉成 Windows 的 \\r\\n）"),
         "clipboard(table.concat(sel() | map(path.name) | list, \"\\n\"))\nlocal text = clipboard()",
     ),
-    spec("exec", &["script string 命令腳本（同設定檔的 cmd，可用 {sel}、{ask:提示} 等變數）"], "執行命令腳本", "exec(\"copy {sel} --to={dest}\")"),
-    spec("log", &["... any"], "寫入 scripts\\zing.log（除錯用）", "log(\"選取\", #sel())"),
+    spec("exec", &[tr_key!("script string 命令腳本（同設定檔的 cmd，可用 {sel}、{ask:提示} 等變數）")], tr_key!("執行命令腳本"), "exec(\"copy {sel} --to={dest}\")"),
+    spec("log", &["... any"], tr_key!("寫入 scripts\\zing.log（除錯用）"), tr_key!("log(\"選取\", #sel())")),
 ];
 
 /// 函數式函式庫：惰性串流、不可變、純函式、組合
 pub const PRELUDE: &[Spec] = &[
-    spec("seq", &["source table|function 清單或迭代函式", "return Seq"], "建立惰性串流：串接的步驟在取值時才逐項計算，不產生中間清單", "local jpgs = seq(sel()):filter(function(p) return path.ext(p) == \"jpg\" end):take(10):list()"),
-    spec("map", &["f fun(x: any): any", "return Stage"], "管線步驟：轉換每一項", "local names = sel() | map(path.name) | list"),
-    spec("filter", &["pred fun(x: any): boolean", "return Stage"], "管線步驟：只留下符合的項目", "local jpgs = sel() | filter(function(p) return path.ext(p) == \"jpg\" end) | list"),
-    spec("take", &["n integer", "return Stage"], "管線步驟：取前 n 項", "local first3 = sel() | take(3) | list"),
-    spec("skip", &["n integer", "return Stage"], "管線步驟：略過前 n 項", "local rest = sel() | skip(1) | list"),
-    spec("take_while", &["pred fun(x: any): boolean", "return Stage"], "管線步驟：取到第一個不符合的為止", "local small = seq({1, 2, 5, 1}) | take_while(function(x) return x < 3 end) | list"),
-    spec("sort_by", &["key fun(x: any): any 排序鍵", "return Stage"], "管線步驟：依鍵排序（需要讀完整個串流）", "local sorted = sel() | sort_by(path.name) | list"),
-    spec("each", &["f fun(x: any)", "return Stage"], "管線終點：對每一項執行（有副作用的動作放這裡）", "seq(sel()):each(msg) -- 只為了副作用時用方法呼叫：Lua 不允許單獨一行 a | b"),
-    spec("reduce", &["f fun(acc: any, x: any): any", "init any", "return Stage"], "管線終點：累積成一個值", "local sum = seq({1, 2, 3}) | reduce(function(a, x) return a + x end, 0)"),
-    spec("list", &["s Seq|table", "return table 不可變清單"], "管線終點：取出所有項目成為不可變清單", "local names = sel() | map(path.name) | list"),
-    spec("count", &["s Seq|table", "return integer"], "管線終點：項目數", "local dirs = sel() | filter(is_dir) | count"),
-    spec("first", &["s Seq|table", "return any"], "管線終點：第一項（沒有時為 nil）", "local f = sel() | first"),
-    spec("compose", &["... function", "return function"], "組合函式（由右到左）：compose(f, g)(x) == f(g(x))", "local stem = compose(string.lower, path.stem)"),
-    spec("pipe", &["x any", "... function", "return any"], "把值依序傳過函式（由左到右）：pipe(x, f, g) == g(f(x))", "pipe(focus(), path.name, string.upper)"),
-    spec("partial", &["f function", "... any 先套用的參數", "return function"], "固定前幾個參數", "local to_backup = partial(path.join, \"D:\\\\備份\")"),
-    spec("freeze", &["t table", "return table"], "回傳不可變的唯讀版本（修改時產生錯誤）", "local cfg = freeze({ dest = \"D:\\\\\" })"),
-    spec("is_dir", &["p string", "return boolean"], "是否為資料夾（讀取檔案系統）", "local dirs = sel() | filter(is_dir) | list"),
+    spec("seq", &[tr_key!("source table|function 清單或迭代函式"), "return Seq"], tr_key!("建立惰性串流：串接的步驟在取值時才逐項計算，不產生中間清單"), "local jpgs = seq(sel()):filter(function(p) return path.ext(p) == \"jpg\" end):take(10):list()"),
+    spec("map", &["f fun(x: any): any", "return Stage"], tr_key!("管線步驟：轉換每一項"), "local names = sel() | map(path.name) | list"),
+    spec("filter", &["pred fun(x: any): boolean", "return Stage"], tr_key!("管線步驟：只留下符合的項目"), "local jpgs = sel() | filter(function(p) return path.ext(p) == \"jpg\" end) | list"),
+    spec("take", &["n integer", "return Stage"], tr_key!("管線步驟：取前 n 項"), "local first3 = sel() | take(3) | list"),
+    spec("skip", &["n integer", "return Stage"], tr_key!("管線步驟：略過前 n 項"), "local rest = sel() | skip(1) | list"),
+    spec("take_while", &["pred fun(x: any): boolean", "return Stage"], tr_key!("管線步驟：取到第一個不符合的為止"), "local small = seq({1, 2, 5, 1}) | take_while(function(x) return x < 3 end) | list"),
+    spec("sort_by", &[tr_key!("key fun(x: any): any 排序鍵"), "return Stage"], tr_key!("管線步驟：依鍵排序（需要讀完整個串流）"), "local sorted = sel() | sort_by(path.name) | list"),
+    spec("each", &["f fun(x: any)", "return Stage"], tr_key!("管線終點：對每一項執行（有副作用的動作放這裡）"), tr_key!("seq(sel()):each(msg) -- 只為了副作用時用方法呼叫：Lua 不允許單獨一行 a | b")),
+    spec("reduce", &["f fun(acc: any, x: any): any", "init any", "return Stage"], tr_key!("管線終點：累積成一個值"), "local sum = seq({1, 2, 3}) | reduce(function(a, x) return a + x end, 0)"),
+    spec("list", &["s Seq|table", tr_key!("return table 不可變清單")], tr_key!("管線終點：取出所有項目成為不可變清單"), "local names = sel() | map(path.name) | list"),
+    spec("count", &["s Seq|table", "return integer"], tr_key!("管線終點：項目數"), "local dirs = sel() | filter(is_dir) | count"),
+    spec("first", &["s Seq|table", "return any"], tr_key!("管線終點：第一項（沒有時為 nil）"), "local f = sel() | first"),
+    spec("compose", &["... function", "return function"], tr_key!("組合函式（由右到左）：compose(f, g)(x) == f(g(x))"), "local stem = compose(string.lower, path.stem)"),
+    spec("pipe", &["x any", "... function", "return any"], tr_key!("把值依序傳過函式（由左到右）：pipe(x, f, g) == g(f(x))"), "pipe(focus(), path.name, string.upper)"),
+    spec("partial", &["f function", tr_key!("... any 先套用的參數"), "return function"], tr_key!("固定前幾個參數"), tr_key!("local to_backup = partial(path.join, \"D:\\\\備份\")")),
+    spec("freeze", &["t table", "return table"], tr_key!("回傳不可變的唯讀版本（修改時產生錯誤）"), "local cfg = freeze({ dest = \"D:\\\\\" })"),
+    spec("is_dir", &["p string", "return boolean"], tr_key!("是否為資料夾（讀取檔案系統）"), "local dirs = sel() | filter(is_dir) | list"),
     spec(
         "stat",
         &[
-            "p string 檔案或資料夾",
-            "return {size: integer, modified: integer?, created: integer?, accessed: integer?, is_dir: boolean, readonly: boolean, hidden: boolean, system: boolean}?, string? 時間為 Unix 秒數（可給 os.date）；資料夾的 size 為 0；失敗時為 nil 與錯誤訊息",
+            tr_key!("p string 檔案或資料夾"),
+            tr_key!("return {size: integer, modified: integer?, created: integer?, accessed: integer?, is_dir: boolean, readonly: boolean, hidden: boolean, system: boolean}?, string? 時間為 Unix 秒數（可給 os.date）；資料夾的 size 為 0；失敗時為 nil 與錯誤訊息"),
         ],
-        "檔案資訊：大小、修改／建立／存取時間、屬性（讀取檔案系統）",
+        tr_key!("檔案資訊：大小、修改／建立／存取時間、屬性（讀取檔案系統）"),
         "local month = os.date(\"%Y-%m\", stat(sel()[1]).modified)\nlocal big = sel() | filter(function(p) return stat(p).size > 100 * 1024 * 1024 end) | list",
     ),
-    spec("path.name", &["p string", "return string"], "檔名（含副檔名）", "path.name(\"C:\\\\a\\\\b.txt\") --> \"b.txt\""),
-    spec("path.stem", &["p string", "return string"], "主檔名（不含副檔名）", "path.stem(\"b.tar.gz\") --> \"b.tar\""),
-    spec("path.ext", &["p string", "return string"], "副檔名（小寫、不含點；沒有時為空字串）", "path.ext(\"A.JPG\") --> \"jpg\""),
-    spec("path.dir", &["p string", "return string"], "上層資料夾", "path.dir(\"C:\\\\a\\\\b.txt\") --> \"C:\\\\a\""),
-    spec("path.join", &["... string", "return string"], "以 \\ 連接路徑", "path.join(cwd(), \"新資料夾\")"),
+    spec("path.name", &["p string", "return string"], tr_key!("檔名（含副檔名）"), "path.name(\"C:\\\\a\\\\b.txt\") --> \"b.txt\""),
+    spec("path.stem", &["p string", "return string"], tr_key!("主檔名（不含副檔名）"), "path.stem(\"b.tar.gz\") --> \"b.tar\""),
+    spec("path.ext", &["p string", "return string"], tr_key!("副檔名（小寫、不含點；沒有時為空字串）"), "path.ext(\"A.JPG\") --> \"jpg\""),
+    spec("path.dir", &["p string", "return string"], tr_key!("上層資料夾"), "path.dir(\"C:\\\\a\\\\b.txt\") --> \"C:\\\\a\""),
+    spec("path.join", &["... string", "return string"], tr_key!("以 \\ 連接路徑"), tr_key!("path.join(cwd(), \"新資料夾\")")),
 ];
 
 /// 事件：在腳本中定義這些名稱的全域函式即生效
 pub const HOOKS: &[Spec] = &[
-    spec("on_navigate", &["path string 進入的資料夾"], "進入資料夾時呼叫（不等待結果）", "function on_navigate(p)\n  if p:find(\"\\\\Photos\") then view.mode(\"large\") end\nend"),
-    spec("thumbnail", &["path string 檔案或資料夾", "return string? 要當作縮圖的圖片路徑；nil 表示使用預設"], "決定縮圖來源（每個縮圖呼叫一次，CPU 時間上限 0.3 秒）", "function thumbnail(p)\n  if path.ext(p) == \"mp4\" then\n    local jpg = path.join(path.dir(p), path.stem(p) .. \".jpg\")\n    if io.open(jpg) then return jpg end\n  end\nend"),
+    spec("on_navigate", &[tr_key!("path string 進入的資料夾")], tr_key!("進入資料夾時呼叫（不等待結果）"), "function on_navigate(p)\n  if p:find(\"\\\\Photos\") then view.mode(\"large\") end\nend"),
+    spec("thumbnail", &[tr_key!("path string 檔案或資料夾"), tr_key!("return string? 要當作縮圖的圖片路徑；nil 表示使用預設")], tr_key!("決定縮圖來源（每個縮圖呼叫一次，CPU 時間上限 0.3 秒）"), "function thumbnail(p)\n  if path.ext(p) == \"mp4\" then\n    local jpg = path.join(path.dir(p), path.stem(p) .. \".jpg\")\n    if io.open(jpg) then return jpg end\n  end\nend"),
 ];
 
 fn lua_type(sig: &str) -> (&str, &str) {
@@ -228,10 +233,21 @@ fn lua_field(name: &str) -> String {
     }
 }
 
-/// docs/lua.md 的內容
-pub fn markdown() -> String {
+/// 文件檔名：docs/lua.md、docs/lua.en.md、docs/lua.ja.md
+pub fn doc_file(lang: Lang) -> String {
+    format!("lua{}.md", lang.suffix())
+}
+
+/// docs/lua*.md 的內容
+pub fn markdown(lang: Lang) -> String {
+    let t = |s: &'static str| tr_in(lang, s);
     let mut s = String::new();
-    s.push_str(MD_HEAD);
+    s.push_str(match lang {
+        Lang::ZhTw => MD_HEAD,
+        Lang::En => MD_HEAD_EN,
+        Lang::Ja => MD_HEAD_JA,
+    });
+    let (ret_label, overload_label, colon) = (t(tr_key!("回傳：")), t(tr_key!("另一種寫法：")), t(tr_key!("：")));
     let section = |s: &mut String, title: &str, intro: &str, items: &[Spec]| {
         s.push_str(&format!("\n## {title}\n\n{intro}\n"));
         for it in items {
@@ -241,39 +257,38 @@ pub fn markdown() -> String {
                 .filter(|x| !x.starts_with("return ") && !x.starts_with("overload "))
                 .map(|x| lua_type(x).0.to_string())
                 .collect();
-            s.push_str(&format!("\n### `{}({})`\n\n{}\n", it.name, args.join(", "), it.summary));
+            s.push_str(&format!("\n### `{}({})`\n\n{}\n", it.name, args.join(", "), t(it.summary)));
             for x in it.sig {
-                let (n, rest) = lua_type(x);
+                let (n, rest) = lua_type(t(x));
                 match n {
-                    "return" => s.push_str(&format!("\n- 回傳：{rest}")),
-                    "overload" => s.push_str(&format!("\n- 另一種寫法：`{rest}`")),
-                    _ => s.push_str(&format!("\n- `{n}`：{rest}")),
+                    "return" => s.push_str(&format!("\n- {ret_label}{rest}")),
+                    "overload" => s.push_str(&format!("\n- {overload_label}`{rest}`")),
+                    _ => s.push_str(&format!("\n- `{n}`{colon}{rest}")),
                 }
             }
             if !it.sig.is_empty() {
                 s.push('\n');
             }
-            s.push_str(&format!("\n```lua\n{}\n```\n", it.example));
+            s.push_str(&format!("\n```lua\n{}\n```\n", t(it.example)));
         }
     };
-    section(&mut s, "全域函式", "與目前狀態、使用者互動。`sel`、`cwd`、`focus` 回傳命令開始時的快照。", GLOBALS);
     section(
         &mut s,
-        "函數式函式庫",
-        "惰性求值、不可變、純函式、組合。管線以 `|` 串接：`來源 | 步驟 | 步驟 | 終點`；來源可以是清單（如 `sel()`）或 `seq(...)`。\
-         步驟（`map`、`filter`…）只描述要做什麼，到終點（`list`、`each`、`reduce`…）才逐項計算。\
-         除了 `each` 與 `is_dir`，這些函式都是純函式；回傳的清單不可修改。\
-         管線是運算式，Lua 不允許單獨寫成一行（`sel() | each(f)` 是語法錯誤）：把結果指定給變數，\
-         或只為副作用時用方法呼叫 `seq(sel()):each(f)`。",
+        t(tr_key!("全域函式")),
+        t(tr_key!("與目前狀態、使用者互動。`sel`、`cwd`、`focus` 回傳命令開始時的快照。")),
+        GLOBALS,
+    );
+    section(
+        &mut s,
+        t(tr_key!("函數式函式庫")),
+        t(tr_key!("惰性求值、不可變、純函式、組合。管線以 `|` 串接：`來源 | 步驟 | 步驟 | 終點`；來源可以是清單（如 `sel()`）或 `seq(...)`。步驟（`map`、`filter`…）只描述要做什麼，到終點（`list`、`each`、`reduce`…）才逐項計算。除了 `each` 與 `is_dir`，這些函式都是純函式；回傳的清單不可修改。管線是運算式，Lua 不允許單獨寫成一行（`sel() | each(f)` 是語法錯誤）：把結果指定給變數，或只為副作用時用方法呼叫 `seq(sel()):each(f)`。")),
         PRELUDE,
     );
-    section(&mut s, "事件", "在腳本中定義這些名稱的全域函式即生效。", HOOKS);
+    section(&mut s, t(tr_key!("事件")), t(tr_key!("在腳本中定義這些名稱的全域函式即生效。")), HOOKS);
     section(
         &mut s,
-        "內建命令",
-        "與設定檔、命令面板相同的命令，以函式呼叫。字串、數字參數為位置參數；表格的整數鍵為位置參數（清單會展開），\
-         字串鍵為 `--鍵=值`（`true` 為 `--鍵`、`false` 省略）。參數不經變數展開，路徑中的 `{` `}` 不會被誤解。\
-         命令送給畫面執行後腳本就繼續，不等命令完成。",
+        t(tr_key!("內建命令")),
+        t(tr_key!("與設定檔、命令面板相同的命令，以函式呼叫。字串、數字參數為位置參數；表格的整數鍵為位置參數（清單會展開），字串鍵為 `--鍵=值`（`true` 為 `--鍵`、`false` 省略）。參數不經變數展開，路徑中的 `{` `}` 不會被誤解。命令送給畫面執行後腳本就繼續，不等命令完成。")),
         COMMANDS,
     );
     s
@@ -326,9 +341,104 @@ zing 內建 Lua 除錯器（Debug Adapter Protocol），以 VS Code 連線：
 - 只有目前的 Windows 使用者能連線（具名管道 `\\.\pipe\zing-lua-debug-使用者名稱`，拒絕遠端連線）；同時只能有一個 zing 接受除錯連線。
 "#;
 
-/// Lua Language Server 的定義檔（scripts\.zing\zing.d.lua）
-pub fn luals_meta() -> String {
-    let mut s = String::from("---@meta\n-- zing-explore Lua API（由 zing 自動產生，請勿修改）\n\n");
+const MD_HEAD_EN: &str = r#"# Lua scripts
+
+> This document is generated from `crates/zing-core/src/scriptapi.rs`; do not edit it directly.
+> After changing the API, run `ZING_UPDATE_DOCS=1 cargo test -p zing-core` to update it.
+
+Scripts live in `scripts\*.lua` next to `zing.exe` and are loaded in the background at startup (in file name order); "Reload Lua scripts" (`script.reload`) reloads them.
+Scripts run on a dedicated thread and never freeze the UI; a single run that uses more than 30 seconds of CPU time is stopped (waiting for `ask()`, external programs and file I/O does not count, so only runaway loops are caught). Errors are shown in the status bar and logged to `scripts\error.log` (with file name, line number and call stack).
+Scripts can use the complete Lua 5.4 standard library (including `io` and `os`). `os.execute` and `io.popen` run in the current folder without showing a console window
+(in read mode `io.popen` can read the output while the command runs; in write mode it writes to the command's standard input; `close()` waits for the command to finish and returns its exit status).
+
+## Custom commands
+
+Global functions are commands: they appear in the command palette (the title comes from the `---` comment above the function) and can be bound to keys or buttons in the config file (`cmd = "function_name"`).
+`local` functions are helpers only and do not become commands. Function names must be ASCII; titles can be in any language.
+
+```lua
+--- Move the selected photos to "Photos\year-month"
+function sort_photos()
+  local dest = ask("Destination folder", path.join(cwd(), "Photos"))
+  if not dest then return end
+  local photos = sel() | filter(function(p) return path.ext(p) == "jpg" end) | list
+  copy(photos, { to = dest, move = true })
+end
+```
+
+## Completion and debugging
+
+- When scripts are loaded, type definitions for the whole API are written to `scripts\.zing\zing.d.lua`, and `scripts\.luarc.json` is set up.
+  Open the `scripts` folder in VS Code and install the Lua extension (Lua Language Server) to get completion, documentation and type checking.
+- In the command palette, a Lua expression starting with `=` runs immediately and shows the result in the status bar, for example `= #sel()` or `= sel() | map(path.ext) | list`.
+- `log(...)` writes to `scripts\zing.log`; while a debugger is attached it also appears in VS Code's Debug Console.
+
+### Breakpoint debugging
+
+zing has a built-in Lua debugger (Debug Adapter Protocol); connect with VS Code:
+
+1. Install the extension: in the zing source folder run `pwsh tools/install-vscode-ext.ps1` (it also installs the Lua Language Server), then reload VS Code.
+2. Open the `scripts` folder in VS Code (zing already wrote `.vscode\launch.json`) and, with zing running, press F5 to attach.
+3. Set breakpoints in a script, then run the command in zing: when stopped you can inspect the call stack, locals, upvalues and globals,
+   evaluate in the current frame in the Debug Console or watches, step (over, into, out), continue or pause.
+
+- Conditional breakpoints and logpoints (`{expression}` is replaced by its value) are supported; "Pause on script errors" is on by default and stops right where the error happens, with the stack intact.
+- While paused, zing's UI stays usable; other script commands are queued until you continue. Time spent paused does not count toward the CPU time limit.
+- Breakpoints are kept when scripts are reloaded.
+- Only the current Windows user can connect (named pipe `\\.\pipe\zing-lua-debug-username`, remote connections refused); only one zing at a time accepts debugger connections.
+"#;
+
+const MD_HEAD_JA: &str = r#"# Lua スクリプト
+
+> この文書は `crates/zing-core/src/scriptapi.rs` から生成されます。直接編集しないでください。
+> API を変更したら `ZING_UPDATE_DOCS=1 cargo test -p zing-core` を実行して更新します。
+
+スクリプトは `zing.exe` の隣の `scripts\*.lua` に置き、起動後にバックグラウンドで読み込まれます（ファイル名の順）。「Lua スクリプトを再読み込み」（`script.reload`）で読み込み直せます。
+スクリプトは専用のスレッドで実行され、画面が固まることはありません。1 回の実行で CPU 時間を 30 秒以上使うと中止されます（`ask()`、外部プログラム、ファイル I/O の待ち時間は含まれないので、暴走したループだけが止まります）。エラーはステータスバーに表示され、`scripts\error.log` に記録されます（ファイル名、行番号、呼び出し履歴つき）。
+スクリプトでは Lua 5.4 の標準ライブラリをすべて使えます（`io`、`os` を含む）。`os.execute`、`io.popen` は現在のフォルダーで、コンソールウィンドウを表示せずに実行されます
+（`io.popen` の読み取りモードでは実行中に出力を読め、書き込みモードではコマンドの標準入力に書き込みます。`close()` はコマンドの終了を待って終了状態を返します）。
+
+## カスタムコマンド
+
+グローバル関数がそのままコマンドになります：コマンドパレットに表示され（タイトルは関数の上の `---` コメント）、設定ファイルでショートカットキーやボタンに割り当てられます（`cmd = "関数名"`）。
+`local` 関数は補助用で、コマンドにはなりません。関数名には英字だけを使えます。タイトルは日本語でもかまいません。
+
+```lua
+--- 選択した写真を「写真\年-月」に移動
+function sort_photos()
+  local dest = ask("移動先のフォルダー", path.join(cwd(), "写真"))
+  if not dest then return end
+  local photos = sel() | filter(function(p) return path.ext(p) == "jpg" end) | list
+  copy(photos, { to = dest, move = true })
+end
+```
+
+## 補完とデバッグ
+
+- スクリプトを読み込むと `scripts\.zing\zing.d.lua` にすべての API の型定義が書き込まれ、`scripts\.luarc.json` も設定されます。
+  VS Code で `scripts` フォルダーを開き、Lua 拡張機能（Lua Language Server）を入れると、補完、説明、型チェックが使えます。
+- コマンドパレットで `=` から始まる Lua の式を入力するとすぐに実行され、結果がステータスバーに表示されます。例：`= #sel()`、`= sel() | map(path.ext) | list`。
+- `log(...)` は `scripts\zing.log` に書き込みます。デバッガーの接続中は VS Code の「デバッグ コンソール」にも表示されます。
+
+### ブレークポイントによるデバッグ
+
+zing には Lua デバッガー（Debug Adapter Protocol）が組み込まれており、VS Code から接続します：
+
+1. 拡張機能をインストール：zing のソースフォルダーで `pwsh tools/install-vscode-ext.ps1` を実行し（Lua Language Server も一緒に入ります）、VS Code を再読み込みします。
+2. VS Code で `scripts` フォルダーを開き（zing が `.vscode\launch.json` を用意しています）、zing を開いたまま F5 でアタッチします。
+3. スクリプトにブレークポイントを設定し、zing でコマンドを実行します：停止中は呼び出し履歴、ローカル変数、上位値、グローバル変数を確認でき、
+   「デバッグ コンソール」やウォッチで現在のフレームの式を評価したり、ステップ実行（ステップオーバー、ステップイン、ステップアウト）、続行、一時停止ができます。
+
+- 条件付きブレークポイントとログポイント（`{式}` が値に置き換わる）に対応しています。「スクリプトのエラーで一時停止」は既定でオンで、エラーが起きたその場で止まり、スタックも残っています。
+- 一時停止中も zing の画面は通常どおり操作でき、ほかのスクリプトのコマンドは続行するまで待機します。一時停止の時間は CPU 時間の上限に含まれません。
+- スクリプトを再読み込みしてもブレークポイントは保持されます。
+- 接続できるのは現在の Windows ユーザーだけです（名前付きパイプ `\\.\pipe\zing-lua-debug-ユーザー名`、リモート接続は拒否）。デバッガーの接続を受け付ける zing は同時に 1 つだけです。
+"#;
+
+/// Lua Language Server 的定義檔（scripts\.zing\zing.d.lua），說明文字用 `lang`
+pub fn luals_meta(lang: Lang) -> String {
+    let t = |s: &'static str| tr_in(lang, s);
+    let mut s = format!("---@meta\n-- zing-explore Lua API{}\n\n", t(tr_key!("（由 zing 自動產生，請勿修改）")));
     s.push_str("---@class Seq 惰性串流\n---@operator bor(fun(s: Seq): any): any\nlocal Seq = {}\n");
     for m in ["map", "filter", "take", "skip", "take_while", "sort_by"] {
         s.push_str(&format!("---@return Seq\nfunction Seq:{m}(...) end\n"));
@@ -349,8 +459,8 @@ pub fn luals_meta() -> String {
     }
     let all = || [GLOBALS, PRELUDE, HOOKS, COMMANDS].into_iter().flatten();
     let doc = |s: &mut String, it: &Spec| {
-        s.push_str(&format!("--- {}\n", it.summary));
-        for line in it.example.lines() {
+        s.push_str(&format!("--- {}\n", t(it.summary)));
+        for line in t(it.example).lines() {
             s.push_str(&format!("--- `{line}`\n"));
         }
     };
@@ -372,7 +482,7 @@ pub fn luals_meta() -> String {
         doc(&mut s, it);
         let mut params = Vec::new();
         for x in it.sig {
-            let (n, rest) = lua_type(x);
+            let (n, rest) = lua_type(t(x));
             match n {
                 "return" => s.push_str(&format!("---@return {rest}\n")),
                 "overload" => s.push_str(&format!("---@overload {rest}\n")),
@@ -424,26 +534,30 @@ mod tests {
 
     #[test]
     fn docs_are_up_to_date() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/lua.md");
-        let want = markdown();
-        if std::env::var_os("ZING_UPDATE_DOCS").is_some() {
-            std::fs::write(path, &want).unwrap();
+        for lang in Lang::ALL {
+            let path = format!("{}/../../docs/{}", env!("CARGO_MANIFEST_DIR"), doc_file(lang));
+            let want = markdown(lang);
+            if std::env::var_os("ZING_UPDATE_DOCS").is_some() {
+                std::fs::write(&path, &want).unwrap();
+            }
+            let have = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+            assert!(have == want, "{path} 與 scriptapi.rs 不一致：執行 ZING_UPDATE_DOCS=1 cargo test -p zing-core 更新");
         }
-        // tools/check-lua-api.ps1：匯出定義檔給 Lua Language Server 檢查
+        // tools/check-lua-api.ps1：匯出定義檔給 Lua Language Server 檢查（每種語言一個資料夾）
         if let Some(dir) = std::env::var_os("ZING_EXPORT_LUA_META") {
-            let dir = std::path::Path::new(&dir);
-            std::fs::create_dir_all(dir.join(".zing")).unwrap();
-            std::fs::write(dir.join(".zing").join("zing.d.lua"), luals_meta()).unwrap();
-            std::fs::write(dir.join(".luarc.json"), LUARC).unwrap();
+            for lang in Lang::ALL {
+                let dir = std::path::Path::new(&dir).join(lang.code());
+                std::fs::create_dir_all(dir.join(".zing")).unwrap();
+                std::fs::write(dir.join(".zing").join("zing.d.lua"), luals_meta(lang)).unwrap();
+                std::fs::write(dir.join(".luarc.json"), LUARC).unwrap();
+            }
         }
-        let have = std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n");
-        assert!(have == want, "docs/lua.md 與 scriptapi.rs 不一致：執行 ZING_UPDATE_DOCS=1 cargo test -p zing-core 更新");
     }
 
     #[test]
     fn names_are_unique_and_meta_mentions_all() {
         let mut names = std::collections::HashSet::new();
-        let meta = luals_meta();
+        let meta = luals_meta(Lang::ZhTw);
         for group in [GLOBALS, PRELUDE, HOOKS, COMMANDS] {
             for it in group {
                 assert!(names.insert(it.name), "重複：{}", it.name);

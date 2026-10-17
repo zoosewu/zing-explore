@@ -67,6 +67,8 @@ pub enum Msg {
     ThemeFileTime { name: String, mtime: Option<std::time::SystemTime> },
     /// 匯入：(名稱, 內容, 是否已有同名主題)
     ThemeImport(Result<(String, String, bool), String>),
+    /// themes 資料夾中的使用者主題名稱（設定頁）
+    UserThemes(Vec<String>),
     /// 網址列輸入已在背景確認是否為資料夾
     AddressResolved { pane: usize, target: String, normalized: String, is_dir: bool, cwd: String },
     /// 作業佇列中某個工作的狀態或進度
@@ -459,7 +461,7 @@ pub fn launch(n: &Notifier, file: String, params: Option<String>, dir: Option<St
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         let hwnd = HWND(n.hwnd() as _);
         if let Err(e) = start(&file, params.as_deref(), dir.as_deref(), verb, how, hwnd) {
-            n.status(format!("無法開啟 {file}：{e}"), true);
+            n.status(tr!("無法開啟 {file}：{e}", file, e), true);
         }
         CoUninitialize();
     });

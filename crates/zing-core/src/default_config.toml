@@ -1,6 +1,8 @@
 # zing-explore 預設設定。使用者設定檔（zing.exe 旁的 config.toml）會覆蓋這裡的值；
 # 快速鍵以後定義者為準，cmd = "" 可停用某個預設快速鍵。
 
+# 介面語言：auto（跟隨 Windows 的顯示語言）| zh-TW | en | ja
+language = "auto"
 # 內建：system（緊湊，跟隨系統深淺色）| dark | light
 #       fluent | balanced（跟隨系統深淺色）| fluent-dark | fluent-light | balanced-dark | balanced-light
 # 或使用者主題名稱（zing.exe 旁的 themes\<名稱>.toml，可用 style = "fluent" 以某個風格為基礎）
@@ -190,7 +192,7 @@ key = "Ctrl+Shift+T"
 cmd = "theme.toggle"
 [[key]]
 key = "Ctrl+Comma"
-cmd = "config.edit"
+cmd = "settings.open"
 [[key]]
 key = "Ctrl+Shift+P"
 cmd = "palette.open"

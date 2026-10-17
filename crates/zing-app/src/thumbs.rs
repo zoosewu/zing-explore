@@ -446,7 +446,7 @@ fn custom_image(shared: &Shared, p: &str) -> Option<PathBuf> {
 /// 複製圖片成為 `p` 的手動縮圖（`image` 為 None 時移除）
 fn write_custom(shared: &Shared, p: &str, image: Option<&str>) -> Result<(), String> {
     zing_core::guard::io("設定縮圖");
-    let key = file_key(p).ok_or("無法取得檔案 ID（只支援 NTFS 等有檔案 ID 的磁碟）")?;
+    let key = file_key(p).ok_or(tr!("無法取得檔案 ID（只支援 NTFS 等有檔案 ID 的磁碟）"))?;
     let mut map = custom_map(shared);
     let map = map.get_or_insert_with(HashMap::new);
     if let Some(old) = map.remove(&key) {
@@ -456,7 +456,7 @@ fn write_custom(shared: &Shared, p: &str, image: Option<&str>) -> Result<(), Str
     let ext = std::path::Path::new(image).extension().map_or("img".into(), |e| e.to_string_lossy().to_lowercase());
     std::fs::create_dir_all(&shared.custom_dir).map_err(|e| e.to_string())?;
     let dest = shared.custom_dir.join(format!("{key}.{ext}"));
-    std::fs::copy(path::long_form(image), &dest).map_err(|e| format!("無法複製圖片：{e}"))?;
+    std::fs::copy(path::long_form(image), &dest).map_err(|e| tr!("無法複製圖片：{e}", e))?;
     map.insert(key, dest);
     Ok(())
 }
@@ -469,12 +469,13 @@ pub fn image_dialog(owner: windows::Win32::Foundation::HWND) -> Option<String> {
     use windows::core::w;
     unsafe {
         let d: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let (images, all, title) = (wide_z(tr!("圖片")), wide_z(tr!("所有檔案")), wide_z(tr!("選擇縮圖圖片")));
         let filters = [
-            COMDLG_FILTERSPEC { pszName: w!("圖片"), pszSpec: w!("*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.ico;*.tif;*.tiff;*.heic") },
-            COMDLG_FILTERSPEC { pszName: w!("所有檔案"), pszSpec: w!("*.*") },
+            COMDLG_FILTERSPEC { pszName: PCWSTR(images.as_ptr()), pszSpec: w!("*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.ico;*.tif;*.tiff;*.heic") },
+            COMDLG_FILTERSPEC { pszName: PCWSTR(all.as_ptr()), pszSpec: w!("*.*") },
         ];
         let _ = d.SetFileTypes(&filters);
-        let _ = d.SetTitle(w!("選擇縮圖圖片"));
+        let _ = d.SetTitle(PCWSTR(title.as_ptr()));
         d.Show(Some(owner)).ok()?;
         let p = d.GetResult().ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
         let s = p.to_string().ok();

@@ -110,7 +110,7 @@ fn tokenize(line: &str) -> Result<Vec<String>, String> {
         }
     }
     if in_quotes {
-        return Err(format!("引號未關閉：{line}"));
+        return Err(tr!("引號未關閉：{line}", line));
     }
     if has_token {
         tokens.push(cur);
@@ -133,7 +133,7 @@ fn expand(tok: &str, vars: &mut dyn Resolver) -> Result<Vec<String>, String> {
             continue;
         }
         out.push_str(&rest[..start]);
-        let end = rest[start..].find('}').ok_or_else(|| format!("大括號未關閉：{tok}"))? + start;
+        let end = rest[start..].find('}').ok_or_else(|| tr!("大括號未關閉：{tok}", tok))? + start;
         out.push_str(&lookup(&rest[start + 1..end], vars)?.join(" "));
         rest = &rest[end + 1..];
     }
@@ -146,7 +146,7 @@ fn lookup(inner: &str, vars: &mut dyn Resolver) -> Result<Vec<String>, String> {
         Some((n, p)) => (n, Some(p)),
         None => (inner, None),
     };
-    vars.resolve(name, param)?.ok_or_else(|| format!("未知變數：{{{name}}}"))
+    vars.resolve(name, param)?.ok_or_else(|| tr!("未知變數：{{{name}}}", name))
 }
 
 /// 為外部程式組命令列時的參數加引號（Windows 規則）。

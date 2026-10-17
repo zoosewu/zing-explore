@@ -153,19 +153,19 @@ const KEEP_DONE: Duration = Duration::from_secs(3);
 
 fn describe(op: &FileOp) -> (String, &'static str) {
     let what = |paths: &[String]| match paths {
-        [one] => format!("「{}」", path::file_name(one)),
-        many => format!(" {} 個項目", many.len()),
+        [one] => tr!("「{name}」", name = path::file_name(one)),
+        many => tr!(" {n} 個項目", n = many.len()),
     };
     let folder = |p: &str| {
         let n = path::file_name(p);
         if n.is_empty() { p.to_string() } else { n.to_string() }
     };
     match op {
-        FileOp::Transfer { sources, dest, mov: false } => (format!("複製{}到「{}」", what(sources), folder(dest)), "\u{E8C8}"),
-        FileOp::Transfer { sources, dest, mov: true } => (format!("移動{}到「{}」", what(sources), folder(dest)), "\u{E8C6}"),
-        FileOp::Delete { paths, permanent: false } => (format!("刪除{}", what(paths)), "\u{E74D}"),
-        FileOp::Delete { paths, permanent: true } => (format!("永久刪除{}", what(paths)), "\u{E74D}"),
-        FileOp::BatchRename { pairs, .. } => (format!("重新命名 {} 個項目", pairs.len()), "\u{E8AC}"),
+        FileOp::Transfer { sources, dest, mov: false } => (tr!("複製{what}到「{dest}」", what = what(sources), dest = folder(dest)), "\u{E8C8}"),
+        FileOp::Transfer { sources, dest, mov: true } => (tr!("移動{what}到「{dest}」", what = what(sources), dest = folder(dest)), "\u{E8C6}"),
+        FileOp::Delete { paths, permanent: false } => (tr!("刪除{what}", what = what(paths)), "\u{E74D}"),
+        FileOp::Delete { paths, permanent: true } => (tr!("永久刪除{what}", what = what(paths)), "\u{E74D}"),
+        FileOp::BatchRename { pairs, .. } => (tr!("重新命名 {n} 個項目", n = pairs.len()), "\u{E8AC}"),
         _ => (String::new(), glyph::FILE),
     }
 }
@@ -173,9 +173,9 @@ fn describe(op: &FileOp) -> (String, &'static str) {
 fn format_duration(d: Duration) -> String {
     let s = d.as_secs();
     match s {
-        0..60 => format!("{s} 秒"),
-        60..3600 => format!("{} 分 {} 秒", s / 60, s % 60),
-        _ => format!("{} 小時 {} 分", s / 3600, s % 3600 / 60),
+        0..60 => tr!("{s} 秒", s),
+        60..3600 => tr!("{m} 分 {sec} 秒", m = s / 60, sec = s % 60),
+        _ => tr!("{h} 小時 {m} 分", h = s / 3600, m = s % 3600 / 60),
     }
 }
 
@@ -366,7 +366,7 @@ impl App {
         let cy = panel.t + HEADER_H / 2.0;
         let close = Rect::new(panel.r - 8.0 - BTN, cy - 12.0, panel.r - 8.0, cy + 12.0);
         let clear = self.jobs.list.iter().any(Job::is_finished).then(|| {
-            let w = self.gfx.measure("清除已完成", Font::Small) + 16.0;
+            let w = self.gfx.measure(tr!("清除已完成"), Font::Small) + 16.0;
             Rect::new(close.l - 6.0 - w, cy - 12.0, close.l - 6.0, cy + 12.0)
         });
         (clear, close)
@@ -379,7 +379,7 @@ impl App {
             return None;
         }
         let pct = (active.iter().map(|j| j.fraction).sum::<f32>() / active.len() as f32 * 100.0).round();
-        Some(format!("檔案作業：{} 個進行中 {pct}%", active.len()))
+        Some(tr!("檔案作業：{n} 個進行中 {pct}%", n = active.len(), pct))
     }
 
     pub fn jobs_hit(&self, lay: &Layout, x: f32, y: f32) -> Option<Hit> {
@@ -427,14 +427,14 @@ impl App {
 
         let head = Rect::new(panel.l + 14.0, panel.t, panel.r, panel.t + HEADER_H);
         let active = self.jobs.active();
-        let summary = if active > 0 { format!("檔案作業　{active} 個進行中") } else { "檔案作業".to_string() };
+        let summary = if active > 0 { tr!("檔案作業　{active} 個進行中", active) } else { tr!("檔案作業").to_string() };
         g.text(&summary, Font::Bold, head, c.text);
         let (clear, close) = self.jobs_header_buttons(panel);
         if let Some(r) = clear {
             if self.hover == Hit::JobsClear {
                 g.fill_round(r, radius, c.hover);
             }
-            g.text("清除已完成", Font::Small, Rect::new(r.l + 8.0, r.t, r.r, r.b), c.text);
+            g.text(tr!("清除已完成"), Font::Small, Rect::new(r.l + 8.0, r.t, r.r, r.b), c.text);
         }
         if self.hover == Hit::JobsClose {
             g.fill_round(close, radius, c.hover);
@@ -443,7 +443,7 @@ impl App {
 
         if self.jobs.list.is_empty() {
             let r = Rect::new(panel.l + 14.0, panel.t + HEADER_H, panel.r, panel.t + HEADER_H + ROW_H);
-            g.text("沒有檔案作業", Font::Text, r, c.text_secondary);
+            g.text(tr!("沒有檔案作業"), Font::Text, r, c.text_secondary);
             return;
         }
         let shown = self.shown_jobs();
@@ -453,18 +453,18 @@ impl App {
             let paused = job.paused();
             // 狀態文字
             let (status, status_color) = match &job.status {
-                JobStatus::Done => ("完成".to_string(), c.text_secondary),
-                JobStatus::Cancelled => ("已取消".to_string(), c.text_secondary),
-                JobStatus::Failed(e) => (format!("失敗：{e}"), c.error),
-                _ if paused => (format!("已暫停　{:.0}%", job.fraction * 100.0), c.text_secondary),
-                JobStatus::Queued => ("排隊中".to_string(), c.text_secondary),
+                JobStatus::Done => (tr!("完成").to_string(), c.text_secondary),
+                JobStatus::Cancelled => (tr!("已取消").to_string(), c.text_secondary),
+                JobStatus::Failed(e) => (tr!("失敗：{e}", e), c.error),
+                _ if paused => (tr!("已暫停　{pct}%", pct = format!("{:.0}", job.fraction * 100.0)), c.text_secondary),
+                JobStatus::Queued => (tr!("排隊中").to_string(), c.text_secondary),
                 _ => {
                     let mut s = format!("{:.0}%", job.fraction * 100.0);
                     if let Some(v) = job.speed() {
                         s.push_str(&format!("　{}/s", format::size_short(v as u64)));
                     }
                     if let Some(eta) = job.eta() {
-                        s.push_str(&format!("　剩餘 {}", format_duration(eta)));
+                        s.push_str(&tr!("　剩餘 {time}", time = format_duration(eta)));
                     }
                     (s, c.text)
                 }
@@ -478,7 +478,7 @@ impl App {
             g.text(job.glyph, Font::Glyph, Rect::new(row.l, row.t + 4.0, row.l + 26.0, row.t + 32.0), c.text_secondary);
             g.text(&job.title, Font::Text, Rect::new(text_l, row.t + 4.0, text_r, row.t + 32.0), c.text);
             if !finished && (!job.current.is_empty() || job.done > 0) {
-                let sub = if job.done > 0 { format!("{}（已處理 {} 項）", job.current, job.done) } else { job.current.clone() };
+                let sub = if job.done > 0 { tr!("{current}（已處理 {done} 項）", current = job.current, done = job.done) } else { job.current.clone() };
                 g.text(&sub, Font::Small, Rect::new(text_l, row.t + 26.0, right, row.t + 42.0), c.text_secondary);
             }
             // 進度條

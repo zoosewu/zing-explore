@@ -49,12 +49,12 @@ pub fn filetime_local(ft: u64) -> String {
 /// 類型欄文字：資料夾 →「資料夾」，其餘為大寫副檔名 +「 檔案」。
 pub fn type_label(is_dir: bool, ext: &[u16]) -> String {
     if is_dir {
-        return "資料夾".into();
+        return tr!("資料夾").into();
     }
     if ext.is_empty() {
-        return "檔案".into();
+        return tr!("檔案").into();
     }
-    format!("{} 檔案", String::from_utf16_lossy(ext).to_uppercase())
+    tr!("{ext} 檔案", ext = String::from_utf16_lossy(ext).to_uppercase())
 }
 
 #[cfg(test)]

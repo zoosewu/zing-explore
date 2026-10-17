@@ -64,17 +64,17 @@ impl KeyChord {
                 "ctrl" | "control" => chord.ctrl = true,
                 "shift" => chord.shift = true,
                 "alt" => chord.alt = true,
-                "" => return Err(format!("快速鍵格式錯誤：{s}")),
+                "" => return Err(tr!("快速鍵格式錯誤：{s}", s)),
                 _ => {
                     if chord.vk != 0 {
-                        return Err(format!("快速鍵只能有一個主鍵：{s}"));
+                        return Err(tr!("快速鍵只能有一個主鍵：{s}", s));
                     }
-                    chord.vk = key_code(&lower).ok_or_else(|| format!("未知按鍵「{part}」：{s}"))?;
+                    chord.vk = key_code(&lower).ok_or_else(|| tr!("未知按鍵「{part}」：{s}", part, s))?;
                 }
             }
         }
         if chord.vk == 0 {
-            return Err(format!("快速鍵缺少主鍵：{s}"));
+            return Err(tr!("快速鍵缺少主鍵：{s}", s));
         }
         Ok(chord)
     }

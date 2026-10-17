@@ -82,18 +82,18 @@ fn ink_on(bg: Color) -> Color {
 
 fn scope_name(s: Scope) -> &'static str {
     match s {
-        Scope::Stem => "範圍：主檔名",
-        Scope::Ext => "範圍：副檔名",
-        Scope::Full => "範圍：整個名稱",
+        Scope::Stem => tr!("範圍：主檔名"),
+        Scope::Ext => tr!("範圍：副檔名"),
+        Scope::Full => tr!("範圍：整個名稱"),
     }
 }
 
 fn case_name(c: CaseMode) -> &'static str {
     match c {
-        CaseMode::Keep => "大小寫：不變",
-        CaseMode::Lower => "大小寫：全小寫",
-        CaseMode::Upper => "大小寫：全大寫",
-        CaseMode::Title => "大小寫：字首大寫",
+        CaseMode::Keep => tr!("大小寫：不變"),
+        CaseMode::Lower => tr!("大小寫：全小寫"),
+        CaseMode::Upper => tr!("大小寫：全大寫"),
+        CaseMode::Title => tr!("大小寫：字首大寫"),
     }
 }
 
@@ -178,7 +178,7 @@ impl App {
         let mut chips = [Rect::default(); 4];
         let mut x = inner_l + label_w;
         let p = self.batch.as_ref().unwrap();
-        let texts = ["規則運算式", "區分大小寫", scope_name(p.rule.scope), case_name(p.rule.case)];
+        let texts = [tr!("規則運算式"), tr!("區分大小寫"), scope_name(p.rule.scope), case_name(p.rule.case)];
         for (k, text) in texts.iter().enumerate() {
             let cw = self.gfx.measure(text, Font::Small) + 24.0;
             chips[k] = Rect::new(x, y, x + cw, y + rh);
@@ -339,15 +339,15 @@ impl App {
         g.fill_round(card, radius, c.surface);
         g.stroke_round(card, radius, c.border, 1.0);
         let n = b.items.len();
-        g.text(&format!("批次重新命名 {n} 個項目"), Font::Bold, lay.title, c.text);
-        for (k, label) in ["搜尋", "取代為"].iter().enumerate() {
+        g.text(&tr!("批次重新命名 {n} 個項目", n), Font::Bold, lay.title, c.text);
+        for (k, label) in [tr!("搜尋"), tr!("取代為")].iter().enumerate() {
             g.text(label, Font::Text, lay.labels[k], c.text_secondary);
             let r = lay.inputs[k];
             g.fill_round(r, self.theme.metrics.radius, c.background);
             g.stroke_round(r, self.theme.metrics.radius, if b.field == k { c.accent } else { c.border }, 1.0);
         }
         let on = [b.rule.regex, b.rule.case_sensitive, b.rule.scope != Scope::Stem, b.rule.case != CaseMode::Keep];
-        let texts = ["規則運算式", "區分大小寫", scope_name(b.rule.scope), case_name(b.rule.case)];
+        let texts = [tr!("規則運算式"), tr!("區分大小寫"), scope_name(b.rule.scope), case_name(b.rule.case)];
         for k in 0..4 {
             let r = lay.chips[k];
             let fill = if on[k] { c.selection } else if self.hover == Hit::BatchChip(k) { c.hover } else { c.background };
@@ -357,9 +357,9 @@ impl App {
             g.text(texts[k], Font::Small, Rect::new(r.l + 12.0, r.t, r.r - 6.0, r.b), col);
         }
         let help = if b.rule.regex {
-            "{n} 編號、{n:3} 補零、{n:3:10} 從 10 開始；$1、${名稱} 引用群組；Alt+R/C/E/U 切換選項"
+            tr!("{n} 編號、{n:3} 補零、{n:3:10} 從 10 開始；$1、${名稱} 引用群組；Alt+R/C/E/U 切換選項")
         } else {
-            "搜尋空白時以「取代為」當作新名稱；{n} 編號、{n:3} 補零、{n:3:10} 從 10 開始；Alt+R/C/E/U 切換選項"
+            tr!("搜尋空白時以「取代為」當作新名稱；{n} 編號、{n:3} 補零、{n:3:10} 從 10 開始；Alt+R/C/E/U 切換選項")
         };
         g.text(help, Font::Small, lay.help, c.text_secondary);
 
@@ -377,9 +377,9 @@ impl App {
                     g.text(&x.old, Font::Text, Rect::new(r.l + 6.0, r.t, mid - 20.0, r.b), old_col);
                     g.text("→", Font::Text, Rect::new(mid - 16.0, r.t, mid, r.b), c.text_secondary);
                     let (text, col) = match &x.problem {
-                        Some(pr) => (format!("{}（{}）", x.new, pr.describe()), c.error),
+                        Some(pr) => (tr!("{name}（{problem}）", name = x.new, problem = pr.describe()), c.error),
                         None if x.changed() => (x.new.clone(), c.text),
-                        None => ("（不變）".to_string(), c.text_secondary.with_alpha(140)),
+                        None => (tr!("（不變）").to_string(), c.text_secondary.with_alpha(140)),
                     };
                     g.text(&text, Font::Text, Rect::new(mid + 4.0, r.t, r.r - 6.0, r.b), col);
                 }
@@ -388,21 +388,21 @@ impl App {
 
         let (changed, problems) = b.counts();
         let (msg, col) = if b.plan.is_err() {
-            ("規則運算式有誤".to_string(), c.error)
+            (tr!("規則運算式有誤").to_string(), c.error)
         } else if problems > 0 {
-            (format!("{problems} 個名稱有問題，修正後才能執行"), if b.blocked { c.error } else { c.text_secondary })
+            (tr!("{problems} 個名稱有問題，修正後才能執行", problems), if b.blocked { c.error } else { c.text_secondary })
         } else {
-            (format!("{changed} 個項目會改名　Enter 執行　Esc 取消　Tab 切換欄位"), c.text_secondary)
+            (tr!("{changed} 個項目會改名　Enter 執行　Esc 取消　Tab 切換欄位", changed), c.text_secondary)
         };
         g.text(&msg, Font::Small, Rect::new(lay.footer.l, lay.footer.t, lay.run.l - 8.0, lay.footer.b), col);
         let can_run = b.plan.is_ok() && problems == 0 && changed > 0;
         let run_fill = if can_run { c.accent } else { c.border };
         g.fill_round(lay.run, self.theme.metrics.radius, run_fill);
         let run_text = if can_run { ink_on(c.accent) } else { c.text_secondary };
-        g.text("重新命名", Font::Text, lay.run.inset(14.0, 0.0), run_text);
+        g.text(tr!("重新命名"), Font::Text, lay.run.inset(14.0, 0.0), run_text);
         let cancel_fill = if self.hover == Hit::BatchCancel { c.hover } else { c.background };
         g.fill_round(lay.cancel, self.theme.metrics.radius, cancel_fill);
         g.stroke_round(lay.cancel, self.theme.metrics.radius, c.border, 1.0);
-        g.text("取消", Font::Text, lay.cancel.inset(20.0, 0.0), c.text);
+        g.text(tr!("取消"), Font::Text, lay.cancel.inset(20.0, 0.0), c.text);
     }
 }

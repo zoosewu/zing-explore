@@ -353,7 +353,7 @@ impl App {
         if self.preview.host_state == HostState::Waiting {
             self.preview.host.abandon();
             self.preview.host_state = HostState::Failed;
-            self.set_status("預覽處理常式沒有回應，改顯示縮圖", false);
+            self.set_status(tr!("預覽處理常式沒有回應，改顯示縮圖"), false);
             self.invalidate();
         }
     }
