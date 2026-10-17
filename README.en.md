@@ -41,11 +41,16 @@ cargo build --release
 - Folder contents update automatically when they change
 - Three built-in styles, each with dark / light variants that can follow the system: Compact (default; dense, square corners, full path), Fluent (roomy, rounded) and
   Balanced (Fluent look, medium density); switch with "Theme: …" in the command palette; `Ctrl+Shift+T` toggles dark/light while keeping the style; custom theme files can be loaded
-- Settings page (`Ctrl+,`): UI language, theme, tree and command palette position, hidden files, startup folder, folder sizes and other common settings;
+- Settings page (`Ctrl+,` or the gear at the top right of the toolbar): UI language, theme, tree and command palette position, hidden files, startup folder, folder sizes and other common settings;
   changes apply immediately and are written back to the matching line of `config.toml` (the file's comments and layout are kept). The shortcut editor, theme editor and config file can also be opened from here
-- Shortcuts and toolbar buttons are all defined in the config file, and commands can use variables (`{sel}`, `{dest}`, `{path}`…; `{ask:prompt}` asks when run)
-- Keyboard shortcut editor ("Edit keyboard shortcuts" in the command palette): filter the commands, press `Enter` and then the new key combination to assign it (a key already in use is removed from its old command),
-  `Ctrl+Delete` removes, `Ctrl+R` restores the default; the result is saved in `keys.toml` next to `zing.exe` (it takes precedence over `config.toml`, which is never rewritten)
+- Everything can be done with the mouse, no commands to remember: the command bar below the toolbar (Windows 11 File Explorer style) has New▾, Cut, Copy, Paste, Rename, Delete,
+  Sort▾ and View▾, and everything else is under "⋯" (grouped submenus, including Lua script commands). Unavailable buttons are grayed out; hovering a button shows its name,
+  shortcut and why it is unavailable; menus show shortcuts on the right. When the window gets narrow, labels collapse first, then buttons move into "⋯". The command palette (`Ctrl+Shift+P`) is for people who know the commands
+- Customize the command bar ("⋯ → Customize command bar…" or right-click the command bar): drag to reorder, add any built-in or script command, rename, pick a Fluent icon or use your own image file;
+  right-click an item under "⋯" to "Add to command bar". Saved in `toolbar.toml` next to `zing.exe`. The settings page can hide the command bar or show icons only
+- Keyboard shortcut editor ("⋯ → Edit keyboard shortcuts…"): commands are grouped; click "＋" and press a key combination to add it; if another command uses it you are asked to "Replace" or "Cancel";
+  hover a key to remove it, ↺ to restore, "Restore all"; search by name or "Search by key". Saved in `keys.toml` next to `zing.exe` (it takes precedence over `config.toml`, which is never rewritten)
+- Advanced: shortcuts and commands can be written in the config file, and commands can use variables (`{sel}`, `{dest}`, `{path}`…; `{ask:prompt}` asks when run)
 - UI language: Traditional Chinese, English and Japanese; follows the Windows display language by default, or set `language = "en"` in the config file (`auto` / `zh-TW` / `en` / `ja`)
 - Folder sizes: entering a folder shows the size of every subfolder, and you can sort by size (see "Folder sizes" below)
 - Tree: visible nodes load their subfolders in the background, so it is known before clicking whether a node can expand (no arrow when there are no subfolders),
@@ -68,7 +73,7 @@ theme = "system"        # system | dark | light (compact), fluent | balanced (fo
 key = "F6"
 cmd = "copy --move --to={dest}"
 
-[[button]]
+[[button]]               # added before "⋯" on the command bar (while there is no toolbar.toml; adjust later with "Customize command bar")
 label = "Open in VS Code"
 cmd = "run code {sel}"
 ```
@@ -121,8 +126,10 @@ Examples (copy them to `scripts\` next to `zing.exe` and run "Reload Lua scripts
 See [docs/lua.en.md](docs/lua.en.md) for the full function reference (generated from the code, so it always matches the program).
 
 Themes (command palette):
-- "Edit the current theme": a panel on the right lists colors, font, sizes and appearance, and changes apply immediately; click a color swatch to pick a color or type `#rrggbb`,
-  and use the wheel to fine-tune numbers. "Save as new theme" saves only the fields that differ from the built-in base; built-in themes cannot be overwritten; "Cancel" reverts
+- "Edit the current theme" (or "Customize theme…" on the settings page): a panel on the right; every change applies to the whole window right away. No color codes needed:
+  pick the style and light/dark from a menu (your changes are kept); click a color to open swatches, or use "More colors…" or type a code; numbers have a slider, −/+ and the wheel;
+  pick a font from those installed; add "File colors" by category (images, videos, music…); changed fields have a ↺ to reset them.
+  "Save" on a built-in theme asks for a name and saves it as your own theme (only the fields that differ from the built-in base); "Cancel" reverts
 - "Open the current theme file in a text editor": applied automatically when saved
 - "Import theme…" / "Export current theme…": `.zingtheme` files; you can also drag a `.zingtheme` file into the window to import it
 - The last chosen theme is remembered; when you change `theme` in the config file and reload, the config file wins

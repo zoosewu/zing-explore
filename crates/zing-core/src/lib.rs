@@ -5,6 +5,7 @@
 pub mod i18n;
 
 pub mod batchrename;
+pub mod cmdbar;
 pub mod command;
 pub mod config;
 pub mod dirsize;

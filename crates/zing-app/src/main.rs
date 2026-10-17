@@ -3,14 +3,17 @@
 
 mod app;
 mod batch;
+mod cmdbar;
+mod cmdbaredit;
 mod gfx;
 mod icons;
 mod index;
 mod views;
 mod input;
 mod jobs;
-mod keys;
+mod keyspanel;
 mod luadebug;
+mod menu;
 mod model;
 mod palette;
 mod perf;
@@ -25,7 +28,9 @@ mod script;
 mod search;
 mod sizes;
 mod themeedit;
+mod themepanel;
 mod thumbs;
+mod tooltip;
 #[cfg(feature = "smoke")]
 mod smoke;
 /// 一般建置不含冒煙測試（tools/smoke.ps1 以 `--features smoke` 建置），不增加執行檔大小

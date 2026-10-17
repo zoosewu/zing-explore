@@ -761,7 +761,7 @@ tree.toggle()
 
 排序
 
-- `opts`：{by: "name"|"modified"|"type"|"size", asc?: boolean, desc?: boolean}
+- `opts`：{by?: "name"|"modified"|"type"|"size", asc?: boolean, desc?: boolean} 只給 asc／desc 時維持目前的欄位
 
 ```lua
 view.sort{ by = "size", desc = true }
@@ -793,6 +793,30 @@ thumb.set{ image = "D:\\封面.jpg" }
 
 ```lua
 thumb.clear()
+```
+
+### `cmdbar.edit()`
+
+開啟自訂命令列的面板（結果存在程式旁的 toolbar.toml）
+
+```lua
+cmdbar.edit()
+```
+
+### `cmdbar.hide()`
+
+隱藏命令列（寫回 config.toml 的 command_bar.visible）
+
+```lua
+cmdbar.hide()
+```
+
+### `file.newfile()`
+
+在目前的資料夾新增文字文件並進入重新命名
+
+```lua
+file.newfile()
 ```
 
 ### `settings.open()`

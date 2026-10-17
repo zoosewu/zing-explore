@@ -42,8 +42,6 @@ thread_local! {
     pub static APP: RefCell<Option<App>> = const { RefCell::new(None) };
     static EDIT_STYLE: RefCell<EditStyle> = RefCell::new(EditStyle::default());
     static DROP_TARGET: RefCell<Option<IDropTarget>> = const { RefCell::new(None) };
-    /// 快速鍵編輯器剛錄到（或處理掉）的鍵：放開之前它產生的字元與放開訊息不交給輸入框
-    static KEYS_SWALLOW: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
 }
 
 #[derive(Default)]
@@ -552,39 +550,6 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             }
             return DefSubclassProc(hwnd, msg, wparam, lparam);
         }
-        // 快速鍵編輯器：錄製中的按鍵（含 Alt 組合）全部攔下；錄到的鍵在放開前產生的字元也不送進輸入框
-        if data == EDIT_PALETTE {
-            let vk = wparam.0 as u16;
-            match msg {
-                WM_KEYDOWN | WM_SYSKEYDOWN if with_app(|a| a.keys_recording()) == Some(true) => {
-                    const MODIFIERS: [u16; 11] = [0x10, 0x11, 0x12, 0x14, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4];
-                    if vk == 0x1B {
-                        with_app(|a| a.keys_cancel_record());
-                        KEYS_SWALLOW.set(vk);
-                    } else if !MODIFIERS.contains(&vk) && vk != 0xA5 {
-                        let m = Mods::current();
-                        let chord = zing_core::keymap::KeyChord { ctrl: m.ctrl, shift: m.shift, alt: m.alt, vk };
-                        with_app(|a| a.keys_record(chord));
-                        KEYS_SWALLOW.set(vk);
-                    }
-                    return LRESULT(0);
-                }
-                // Ctrl+Delete 移除、Ctrl+R 還原預設
-                WM_KEYDOWN if (vk == 0x2E || vk == b'R' as u16) && Mods::current().ctrl && with_app(|a| a.keys_mode()) == Some(true) => {
-                    with_app(|a| if vk == 0x2E { a.keys_clear() } else { a.keys_reset() });
-                    KEYS_SWALLOW.set(vk);
-                    return LRESULT(0);
-                }
-                WM_CHAR | WM_SYSCHAR if KEYS_SWALLOW.get() != 0 => return LRESULT(0),
-                WM_KEYUP | WM_SYSKEYUP if KEYS_SWALLOW.get() != 0 => {
-                    if KEYS_SWALLOW.get() == vk {
-                        KEYS_SWALLOW.set(0);
-                    }
-                    return LRESULT(0);
-                }
-                _ => {}
-            }
-        }
         match msg {
             WM_GETDLGCODE => return LRESULT(DLGC_WANTALLKEYS as isize),
             WM_KEYDOWN if wparam.0 == 0x0D || wparam.0 == 0x1B => {
@@ -680,9 +645,9 @@ fn run_modal(hwnd: HWND, modal: Modal) {
                 a.invalidate();
             });
         }
-        Modal::PickColor { field, initial } => {
+        Modal::PickColor { target, initial } => {
             if let Some(hex) = crate::themeedit::pick_color(hwnd, &initial) {
-                with_app(|a| a.theme_pick_color(field, hex));
+                with_app(|a| a.theme_pick_color(target, hex));
             }
         }
         Modal::ImportTheme => {
@@ -701,6 +666,11 @@ fn run_modal(hwnd: HWND, modal: Modal) {
         Modal::PickThumb { path } => {
             if let Some(img) = crate::thumbs::image_dialog(hwnd) {
                 with_app(|a| a.thumbs.set_custom(path, Some(img)));
+            }
+        }
+        Modal::PickBarIcon { item } => {
+            if let Some(img) = crate::thumbs::image_dialog(hwnd) {
+                with_app(|a| a.set_bar_image(item, img));
             }
         }
         Modal::ConfirmThemeOverwrite { name, text } => {
@@ -1016,6 +986,11 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 a.edit.as_ref().filter(|e| e.hwnd == edit).map(|e| (matches!(e.kind, EditKind::Palette), matches!(e.kind, EditKind::Rename { .. })))
             })
             .flatten();
+            if with_app(|a| a.edit.as_ref().is_some_and(|e| e.hwnd == edit && matches!(e.kind, EditKind::KeysSearch))) == Some(true) {
+                let text = edit_text(edit);
+                with_app(|a| a.keys_query(text));
+                return Some(LRESULT(0));
+            }
             match kind {
                 Some((true, _)) => {
                     let text = edit_text(edit);
@@ -1083,6 +1058,9 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 }
                 crate::app::TIMER_SEARCH => {
                     with_app(|a| a.on_search_timer());
+                }
+                crate::app::TIMER_TIP => {
+                    with_app(|a| a.on_tip_timer());
                 }
                 crate::app::TIMER_PREVIEW => {
                     with_app(|a| a.on_preview_timer());

@@ -84,10 +84,8 @@ impl SettingsPage {
 
 impl App {
     pub fn open_settings(&mut self) {
-        if self.theme_editor.is_some() {
-            self.close_theme_editor(false);
-        }
         if self.settings_page.is_none() {
+            self.close_side_panels();
             self.settings_page = Some(SettingsPage::default());
             let n = self.notifier.clone();
             self.pool.spawn(move || n.send(Msg::UserThemes(settings::user_themes())));

@@ -45,6 +45,8 @@ pub struct Layout {
     pub toolbar: Rect,
     pub status: Rect,
     pub nav: [Rect; 4],
+    /// 工具列最右側的設定按鈕（固定，不受設定檔的按鈕影響）
+    pub settings_btn: Rect,
     pub address: Rect,
     pub crumbs: Vec<(Rect, String)>,
     pub crumb_overflow: bool,
@@ -58,6 +60,11 @@ pub struct Layout {
     pub theme_panel: Option<Rect>,
     /// 設定頁（與主題編輯面板同一個位置）
     pub settings_panel: Option<Rect>,
+    /// 自訂命令列、快速鍵編輯面板（同一個位置）
+    pub cmdbar_panel: Option<Rect>,
+    pub keys_panel: Option<Rect>,
+    /// 命令列（工具列下方）
+    pub cmdbar: Option<crate::cmdbar::BarLayout>,
     /// 預覽窗格（窗格區域右側）
     pub preview: Option<Rect>,
     pub preview_splitter: Option<Rect>,
@@ -88,13 +95,38 @@ pub enum Hit {
     Batch,
     Preview,
     PreviewSplitter,
-    /// 主題編輯面板：欄位列、色塊、底部按鈕、面板其他位置
+    /// 主題編輯面板（索引是 `ThemeEditor::rows` 的列）：整列、色碼或樣式文字、色票（列, 第幾個）、還原、
+    /// 數字的 −／＋、滑桿、刪除檔案顏色、底部按鈕、進階連結、面板其他位置
     ThemeRow(usize),
-    ThemeSwatch(usize),
+    ThemeText(usize),
+    ThemeCell(usize, usize),
+    ThemeReset(usize),
+    ThemeStep(usize, bool),
+    ThemeSlider(usize),
+    ThemeDelete(usize),
     ThemeButton(usize),
+    ThemeLink(usize),
     ThemePanel,
     /// 設定頁：列（`SettingsPage::rows` 的索引）、底部按鈕、面板其他位置
     SettingsRow(usize),
+    /// 工具列的設定按鈕
+    SettingsGear,
+    /// 命令列：第幾個顯示中的按鈕（`BarLayout::buttons` 的索引）、命令列的空白處
+    CmdButton(usize),
+    CmdBar,
+    /// 下拉選單：（第幾層, 第幾項）、選單內的其他位置
+    MenuItem(usize, usize),
+    Menu,
+    /// 自訂命令列面板（cmdbaredit.rs）：列、列中的按鈕（列, 第幾個）、底部按鈕、面板其他位置
+    BarEditRow(usize),
+    BarEditPart(usize, usize),
+    BarEditButton(usize),
+    BarEditPanel,
+    /// 快速鍵編輯面板（keyspanel.rs）：列、列中的按鍵或按鈕（列, 第幾個）、底部按鈕、面板其他位置
+    KeysRow(usize),
+    KeysPart(usize, usize),
+    KeysButton(usize),
+    KeysPanel,
     SettingsButton(usize),
     SettingsPanel,
     Tab(usize, usize),
@@ -172,12 +204,9 @@ impl App {
             lay.nav[i] = Rect::new(x, cy - hh, x + NAV_BTN, cy + hh);
             x += NAV_BTN + 2.0;
         }
-        let mut right = w - 8.0;
-        for b in self.config.buttons.iter().rev() {
-            let bw = self.gfx.measure(&zing_core::i18n::tr_str(&b.label), Font::Small) + 20.0;
-            lay.buttons.insert(0, Rect::new(right - bw, cy - hh + 2.0, right, cy + hh - 2.0));
-            right -= bw + 4.0;
-        }
+        let mut right = w - 6.0;
+        lay.settings_btn = Rect::new(right - NAV_BTN, cy - hh, right, cy + hh);
+        right -= NAV_BTN + 4.0;
         let tab = self.tab();
         lay.filter_slot = Rect::new(right, cy - hh + 2.0, right, cy + hh - 2.0);
         if !tab.filter.is_empty() {
@@ -202,7 +231,12 @@ impl App {
         }
 
         // 主體：樹狀列 + 窗格
-        let body = Rect::new(0.0, tb.b, w, lay.status.t - jobs_h);
+        // 命令列（工具列下方）
+        let bar_h = self.cmdbar_height();
+        if bar_h > 0.0 {
+            lay.cmdbar = Some(self.layout_cmdbar(Rect::new(0.0, tb.b, w, tb.b + bar_h)));
+        }
+        let body = Rect::new(0.0, tb.b + bar_h, w, lay.status.t - jobs_h);
         let mut panes_area = body;
         let tree_visible = self.tree_visible && self.tree_side != TreeSide::Hidden;
         if tree_visible {
@@ -218,12 +252,20 @@ impl App {
             }
         }
         if self.theme_editor.is_some() {
-            let l = panes_area.r - crate::themeedit::PANEL_W.min(panes_area.w() * 0.5);
+            let l = panes_area.r - crate::themepanel::PANEL_W.min(panes_area.w() * 0.5);
             lay.theme_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
             panes_area.r = l - 1.0;
         } else if self.settings_page.is_some() {
             let l = panes_area.r - crate::prefspage::PANEL_W.min(panes_area.w() * 0.6);
             lay.settings_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
+            panes_area.r = l - 1.0;
+        } else if self.cmdbar_editor.is_some() {
+            let l = panes_area.r - crate::cmdbaredit::PANEL_W.min(panes_area.w() * 0.6);
+            lay.cmdbar_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
+            panes_area.r = l - 1.0;
+        } else if self.keys_panel.is_some() {
+            let l = panes_area.r - crate::keyspanel::PANEL_W.min(panes_area.w() * 0.6);
+            lay.keys_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
             panes_area.r = l - 1.0;
         }
         if self.preview.visible {
@@ -318,6 +360,9 @@ impl App {
     // ------------------------------------------------------------ 點擊判定
 
     pub fn hit_test(&self, lay: &Layout, x: f32, y: f32) -> Hit {
+        if self.menu.is_some() {
+            return self.menu_hit(x, y).unwrap_or(Hit::None);
+        }
         if let Some(h) = self.batch_hit(x, y) {
             return h;
         }
@@ -333,6 +378,9 @@ impl App {
             }
             if let Some(i) = lay.buttons.iter().position(|r| r.contains(x, y)) {
                 return Hit::Button(i);
+            }
+            if lay.settings_btn.contains(x, y) {
+                return Hit::SettingsGear;
             }
             if lay.filter_chip.is_some_and(|r| r.contains(x, y)) {
                 return Hit::FilterChip;
@@ -353,6 +401,19 @@ impl App {
         }
         if let Some(sp) = lay.settings_panel.filter(|r| r.contains(x, y)) {
             return self.settings_hit(sp, x, y);
+        }
+        if let Some(cp) = lay.cmdbar_panel.filter(|r| r.contains(x, y)) {
+            return self.cmdbar_edit_hit(cp, x, y);
+        }
+        if let Some(kp) = lay.keys_panel.filter(|r| r.contains(x, y)) {
+            return self.keys_hit(kp, x, y);
+        }
+        if let Some(bl) = lay.cmdbar.as_ref().filter(|b| b.bar.contains(x, y)) {
+            return bl
+                .buttons
+                .iter()
+                .position(|(i, r, _)| r.contains(x, y) && self.config.cmdbar.get(*i).is_some_and(|it| !it.is_separator()))
+                .map_or(Hit::CmdBar, Hit::CmdButton);
         }
         if lay.preview_splitter.is_some_and(|r| r.contains(x, y)) {
             return Hit::PreviewSplitter;
@@ -446,6 +507,7 @@ impl App {
         }
         crate::perf::mark("begin_draw");
         self.paint_toolbar(&lay);
+        self.paint_cmdbar(&lay);
         if let Some(tr) = lay.tree {
             self.paint_tree(tr);
         }
@@ -468,6 +530,14 @@ impl App {
             self.paint_settings(sp);
             self.gfx.vline(sp.l - 1.0, sp.t, sp.b, c.border);
         }
+        if let Some(cp) = lay.cmdbar_panel {
+            self.paint_cmdbar_editor(cp);
+            self.gfx.vline(cp.l - 1.0, cp.t, cp.b, c.border);
+        }
+        if let Some(kp) = lay.keys_panel {
+            self.paint_keys_panel(kp);
+            self.gfx.vline(kp.l - 1.0, kp.t, kp.b, c.border);
+        }
         if let Some(pr) = lay.preview {
             self.paint_preview(pr);
             self.gfx.vline(pr.l - 1.0, pr.t, pr.b, c.border);
@@ -484,6 +554,8 @@ impl App {
         self.paint_palette();
         self.paint_batch();
         self.paint_ask();
+        self.paint_menu();
+        self.paint_tip();
         self.gfx.end();
         self.layout = lay;
         self.update_title();
@@ -542,6 +614,12 @@ impl App {
             g.text(&tr!("篩選：{filter}", filter = tab.filter), Font::Small, Rect::new(chip.l + 26.0, chip.t, chip.r - 22.0, chip.b), c.text);
             g.text(glyph::CLOSE, Font::GlyphSmall, Rect::new(chip.r - 22.0, chip.t, chip.r - 4.0, chip.b), c.text_secondary);
         }
+        // 設定按鈕：設定頁開著時以強調色顯示
+        if self.hover == Hit::SettingsGear {
+            g.fill_round(lay.settings_btn, self.theme.metrics.radius, c.hover);
+        }
+        let gear = if self.settings_page.is_some() { c.accent } else { c.text };
+        g.text(glyph::SETTINGS, Font::Glyph, lay.settings_btn, gear);
         for (i, r) in lay.buttons.iter().enumerate() {
             g.fill_round(*r, self.theme.metrics.radius, if self.hover == Hit::Button(i) { c.hover } else { c.surface });
             g.stroke_round(*r, self.theme.metrics.radius, c.border, 1.0);

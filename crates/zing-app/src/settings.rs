@@ -31,6 +31,11 @@ pub fn keys_path() -> PathBuf {
     app_dir().join("keys.toml")
 }
 
+/// 命令列的按鈕（「自訂命令列」寫的檔案）
+pub fn toolbar_path() -> PathBuf {
+    app_dir().join("toolbar.toml")
+}
+
 fn session_path() -> PathBuf {
     app_dir().join("session.toml")
 }
@@ -40,7 +45,8 @@ pub fn load_config() -> (Config, Vec<String>) {
     zing_core::guard::io("讀取設定檔");
     let user = std::fs::read_to_string(config_path()).ok();
     let keys = std::fs::read_to_string(keys_path()).ok();
-    Config::load_with_keys(user.as_deref(), keys.as_deref())
+    let toolbar = std::fs::read_to_string(toolbar_path()).ok();
+    Config::load_files(user.as_deref(), keys.as_deref(), toolbar.as_deref())
 }
 
 /// 系統是否使用淺色應用程式主題

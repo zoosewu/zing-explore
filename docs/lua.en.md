@@ -761,7 +761,7 @@ tree.toggle()
 
 Sort
 
-- `opts`: {by: "name"|"modified"|"type"|"size", asc?: boolean, desc?: boolean}
+- `opts`: {by?: "name"|"modified"|"type"|"size", asc?: boolean, desc?: boolean} with only asc/desc, the current column is kept
 
 ```lua
 view.sort{ by = "size", desc = true }
@@ -793,6 +793,30 @@ Remove the custom thumbnail
 
 ```lua
 thumb.clear()
+```
+
+### `cmdbar.edit()`
+
+Open the command bar customization panel (saved in toolbar.toml next to the program)
+
+```lua
+cmdbar.edit()
+```
+
+### `cmdbar.hide()`
+
+Hide the command bar (written back to command_bar.visible in config.toml)
+
+```lua
+cmdbar.hide()
+```
+
+### `file.newfile()`
+
+Create a text document in the current folder and start renaming it
+
+```lua
+file.newfile()
 ```
 
 ### `settings.open()`

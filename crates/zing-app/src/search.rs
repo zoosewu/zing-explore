@@ -103,7 +103,6 @@ impl App {
             sel: 0,
             top: 0,
             search: Some(Results::default()),
-            keys: None,
         });
         if let Some(r) = self.palette_edit_rect() {
             window::begin_palette_edit(self, r);

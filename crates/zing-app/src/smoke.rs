@@ -189,7 +189,7 @@ use windows::Win32::System::DataExchange::{
 };
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
-use windows::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON, MODIFIERKEYS_FLAGS};
+use windows::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON, MK_RBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardState, SetKeyboardState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F2, VK_HOME,
@@ -197,7 +197,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect, ICON_BIG, KillTimer, SendMessageW, SetTimer, WM_CHAR, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_SETTEXT, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONUP,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTEXT, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONUP,
 };
 
 use crate::app::{App, EditKind, Focus, TIMER_SMOKE};
@@ -635,6 +635,136 @@ fn click(ctx: &Ctx, mods: &str, at: Option<(f32, f32)>) {
     });
 }
 
+/// 按住左鍵從 `from` 拖到 `to` 再放開
+fn drag(ctx: &Ctx, from: Option<(f32, f32)>, to: Option<(f32, f32)>) {
+    let (Some(from), Some(to)) = (from, to) else { return };
+    let h = ctx.hwnd;
+    send(h, WM_MOUSEMOVE, 0, mouse_lparam(h, from));
+    send(h, WM_LBUTTONDOWN, MK_LBUTTON.0 as usize, mouse_lparam(h, from));
+    send(h, WM_MOUSEMOVE, MK_LBUTTON.0 as usize, mouse_lparam(h, to));
+    send(h, WM_LBUTTONUP, 0, mouse_lparam(h, to));
+}
+
+fn right_click(ctx: &Ctx, at: Option<(f32, f32)>) {
+    let Some(at) = at else { return };
+    let (h, l) = (ctx.hwnd, mouse_lparam(ctx.hwnd, at));
+    send(h, WM_MOUSEMOVE, 0, l);
+    send(h, WM_RBUTTONDOWN, MK_RBUTTON.0 as usize, l);
+    send(h, WM_RBUTTONUP, 0, l);
+}
+
+fn hover_at(ctx: &Ctx, at: Option<(f32, f32)>) {
+    let Some(at) = at else { return };
+    send(ctx.hwnd, WM_MOUSEMOVE, 0, mouse_lparam(ctx.hwnd, at));
+}
+
+/// 命令列上某個命令的按鈕中心
+fn bar_button_pos(cmd: &str) -> Option<(f32, f32)> {
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let bl = a.layout.cmdbar.as_ref()?;
+        let (_, r, _) = bl.buttons.iter().find(|(i, _, _)| a.config.cmdbar[*i].cmd == cmd)?;
+        Some(((r.l + r.r) / 2.0, (r.t + r.b) / 2.0))
+    })
+    .flatten()
+}
+
+/// 開啟中的選單第 `level` 層、名稱為 `label` 的項目中心
+fn menu_item_pos(level: usize, label: &str) -> Option<(f32, f32)> {
+    with_app(|a| {
+        let m = a.menu.as_ref()?;
+        let lv = m.levels.get(level)?;
+        let i = lv.items.iter().position(|it| it.label == label)?;
+        let mut y = lv.rect.t + 4.0;
+        for it in &lv.items[..i] {
+            y += if it.separator { 9.0 } else { (a.row_h() + 4.0).max(26.0) };
+        }
+        Some(((lv.rect.l + lv.rect.r) / 2.0, y + (a.row_h() + 4.0).max(26.0) / 2.0))
+    })
+    .flatten()
+}
+
+/// 快速鍵面板中某個命令的列，`part` 從該列的各部分中選一個點
+fn keys_pos(cmd: &str, part: usize) -> Option<(f32, f32)> {
+    use crate::keyspanel::Row;
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let panel = a.layout.keys_panel?;
+        let rows = a.keys_rows();
+        let k = rows.iter().position(|r| matches!(r, Row::Cmd(c, _) if c == cmd))?;
+        let (_, list, _, _) = a.keys_layout(panel);
+        let rh = a.row_h() + 6.0;
+        let kp = a.keys_panel.as_mut()?;
+        let top = k as f32 * rh;
+        if top < kp.scroll + rh || top + rh > kp.scroll + list.h() {
+            kp.scroll = (top - list.h() / 2.0).max(0.0);
+        }
+        let scroll = kp.scroll;
+        let r = a.keys_row_rect(list, k, scroll);
+        let (_, p) = a.key_parts(cmd, r).into_iter().find(|(i, _)| *i == part)?;
+        Some(((p.l + p.r) / 2.0, (p.t + p.b) / 2.0))
+    })
+    .flatten()
+}
+
+/// 快速鍵面板：衝突列或搜尋列的部分
+fn keys_special_pos(conflict: bool, part: usize) -> Option<(f32, f32)> {
+    use crate::keyspanel::Row;
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let panel = a.layout.keys_panel?;
+        let (_, list, _, _) = a.keys_layout(panel);
+        let scroll = a.keys_panel.as_ref()?.scroll;
+        let r = if conflict {
+            let k = a.keys_rows().iter().position(|r| *r == Row::Conflict)?;
+            a.conflict_parts(a.keys_row_rect(list, k, scroll))[part]
+        } else {
+            a.search_parts(a.keys_row_rect(list, 0, scroll))[part]
+        };
+        Some(((r.l + r.r) / 2.0, (r.t + r.b) / 2.0))
+    })
+    .flatten()
+}
+
+fn keys_button_pos(k: usize) -> Option<(f32, f32)> {
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let (_, _, _, b) = a.keys_layout(a.layout.keys_panel?);
+        Some(((b[k].l + b[k].r) / 2.0, (b[k].t + b[k].b) / 2.0))
+    })
+    .flatten()
+}
+
+/// 自訂命令列面板中可加入的命令（`avail`）或命令列上的按鈕的列，`part` 為 None 時是整列
+fn bar_edit_pos(cmd: &str, avail: bool, part: Option<usize>) -> Option<(f32, f32)> {
+    use crate::cmdbaredit::Row;
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let panel = a.layout.cmdbar_panel?;
+        let rows = a.cmdbar_edit_rows();
+        let k = rows.iter().position(|r| match r {
+            Row::Avail(c, _) => avail && c == cmd,
+            Row::Item(i) => !avail && a.config.cmdbar[*i].cmd == cmd,
+            _ => false,
+        })?;
+        let (_, list, _) = a.cmdbar_edit_layout(panel);
+        let rh = a.row_h() + 4.0;
+        let ed = a.cmdbar_editor.as_mut()?;
+        let top = k as f32 * rh;
+        if top < ed.scroll || top + rh > ed.scroll + list.h() {
+            ed.scroll = (top - list.h() / 2.0).max(0.0);
+        }
+        let scroll = ed.scroll;
+        let r = a.bar_row_rect(list, k, scroll);
+        let p = match part {
+            Some(p) => a.bar_parts(&rows[k], r)[p],
+            None => crate::gfx::Rect::new(r.l + 60.0, r.t, r.l + 80.0, r.b),
+        };
+        Some(((p.l + p.r) / 2.0, (p.t + p.b) / 2.0))
+    })
+    .flatten()
+}
+
 fn double_click(ctx: &Ctx, at: Option<(f32, f32)>) {
     let Some(at) = at else { return };
     let (h, l) = (ctx.hwnd, mouse_lparam(ctx.hwnd, at));
@@ -728,15 +858,13 @@ fn host_visible(a: &App, want: bool) -> Result<(), String> {
     expect("主機視窗顯示", visible, want)
 }
 
-/// 主題編輯面板中某欄位的位置：`value` 為 true 時是數值處（點選項、輸入），否則是名稱處
-fn theme_row_pos(label: &str, value: bool) -> Option<(f32, f32)> {
+/// 主題編輯面板中某一列的位置（先捲進可見範圍）；`pick` 從這一列的各個位置中選一個點
+fn theme_pos(want: crate::themepanel::Row, pick: impl Fn(&crate::themepanel::RowRects) -> (f32, f32)) -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
         let panel = a.layout.theme_panel?;
-        let i = zing_core::theme::FIELDS.iter().position(|f| f.label == label)?;
-        let k = crate::themeedit::rows().iter().position(|r| *r == crate::themeedit::Row::Field(i))?;
+        let k = a.theme_rows().iter().position(|r| *r == want)?;
         let pl = a.theme_panel_layout(panel);
-        // 先把這一列捲進可見範圍
         let rh = a.row_h();
         let ed = a.theme_editor.as_mut()?;
         let top = k as f32 * rh;
@@ -745,11 +873,31 @@ fn theme_row_pos(label: &str, value: bool) -> Option<(f32, f32)> {
         }
         let scroll = ed.scroll;
         a.invalidate();
-        let (row, swatch, v) = a.theme_row_rects(pl.list, k, scroll);
-        let y = (row.t + row.b) / 2.0;
-        Some(if value { (if swatch.r < v.r { swatch.r + 30.0 } else { v.l + 20.0 }, y) } else { (row.l + 20.0, y) })
+        Some(pick(&a.theme_row_rects(pl.list, k, scroll)))
     })
     .flatten()
+}
+
+fn theme_field(label: &str) -> usize {
+    zing_core::theme::FIELDS.iter().position(|f| f.label == label).expect("沒有這個欄位")
+}
+
+fn mid(r: crate::gfx::Rect) -> (f32, f32) {
+    ((r.l + r.r) / 2.0, (r.t + r.b) / 2.0)
+}
+
+/// 主題編輯面板中某欄位的位置：`value` 為 true 時是數值處（色碼、選單、數字），否則是名稱處
+fn theme_row_pos(label: &str, value: bool) -> Option<(f32, f32)> {
+    let i = theme_field(label);
+    theme_pos(crate::themepanel::Row::Field(i), move |r| {
+        let y = (r.row.t + r.row.b) / 2.0;
+        match (value, zing_core::theme::FIELDS[i].kind) {
+            (false, _) => (r.row.l + 20.0, y),
+            (true, zing_core::theme::FieldKind::Color) => mid(r.text),
+            (true, zing_core::theme::FieldKind::Number { .. }) => (r.plus.r + 12.0, y),
+            (true, _) => (r.value.l + 20.0, y),
+        }
+    })
 }
 
 /// 設定頁中某個設定的列（`option` 為 Some 時是展開的第幾個選項）；`value` 為 true 時是數值處
@@ -778,6 +926,11 @@ fn settings_row_pos(key: &str, option: Option<usize>, value: bool) -> Option<(f3
         Some(if value { (v.l + 20.0, y) } else { (row.l + 20.0, y) })
     })
     .flatten()
+}
+
+/// 展開的選單中第 o 個選項
+fn theme_option_pos(t: crate::themepanel::Target, o: usize) -> Option<(f32, f32)> {
+    theme_pos(crate::themepanel::Row::Option(t, o), |r| (r.value.l + 20.0, (r.row.t + r.row.b) / 2.0))
 }
 
 fn theme_button_pos(k: usize) -> Option<(f32, f32)> {
@@ -1796,58 +1949,198 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
         |_, a| palette_closed(a),
     ));
-    // ------------------------------------------------ 快速鍵編輯器（隔離模式不寫 keys.toml）
+    // ------------------------------------------------ 快速鍵編輯面板（隔離模式不寫 keys.toml）
     let kc = |s: &str| zing_core::keymap::KeyChord::parse(s).unwrap();
-    let selected_cmd = |a: &App| -> Option<String> {
-        let p = a.palette.as_ref()?;
-        p.matches.get(p.sel).map(|&k| p.entries[k].cmd.clone())
-    };
-    v.push(step("快速鍵：開啟編輯器並篩選", |_| {
-        exec("keys.edit");
-        palette_type("重新整理");
-    }, move |_, a| {
-        expect("編輯器", a.keys_mode(), true)?;
-        expect("選取", selected_cmd(a).as_deref(), Some("nav.refresh"))
+    v.push(step("快速鍵：開啟編輯面板", |_| exec("keys.edit"), |_, a| {
+        expect("面板", a.keys_panel.is_some(), true)?;
+        expect("位置", a.layout.keys_panel.is_some(), true)
     }));
-    // Enter 經由 post 的訊息開始錄製：下一步才按組合鍵
-    v.push(step("快速鍵：Enter 開始錄製", |_| palette_key(VK_RETURN), |_, a| expect("錄製中", a.keys_recording(), true)));
-    v.push(step("快速鍵：按下新的組合鍵", |_| palette_key_mods("cs", VIRTUAL_KEY(0x78)), move |_, a| {
-        expect("錄製結束", a.keys_recording(), false)?;
+    v.push(step("快速鍵：搜尋「重新整理」", |_| with_app(|a| a.keys_query("重新整理".into())).unwrap_or(()), |_, a| {
+        let rows = a.keys_rows();
+        let found = rows.iter().any(|r| matches!(r, crate::keyspanel::Row::Cmd(c, _) if c == "nav.refresh"));
+        expect("找到", found, true)?;
+        expect("沒有不相關的", rows.iter().any(|r| matches!(r, crate::keyspanel::Row::Cmd(c, _) if c == "file.copy")), false)
+    }));
+    v.push(step("快速鍵：點 ＋ 開始錄製", |c| click(c, "", keys_pos("nav.refresh", crate::keyspanel::PART_ADD)), |_, a| {
+        expect("錄製中", a.keys_panel.as_ref().and_then(|k| k.recording.clone()).as_deref(), Some("nav.refresh"))
+    }));
+    v.push(step("截圖：快速鍵編輯面板（錄製中）", |_| {}, |c, _| screenshot(c, "13-快速鍵編輯器")));
+    v.push(step("快速鍵：按下新的組合鍵（保留原本的 F5）", |c| key(c, "cs", VIRTUAL_KEY(0x78)), move |_, a| {
+        expect("錄製結束", a.keys_capturing(), false)?;
         expect("新按鍵", a.config.command_for(kc("Ctrl+Shift+F9")), Some("nav.refresh"))?;
-        expect("原本的 F5", a.config.command_for(kc("F5")), None)?;
-        // 錄到的鍵不會變成篩選文字
-        expect("篩選文字", a.palette.as_ref().map(|p| p.query.as_str()), Some("重新整理"))
+        expect("原本的 F5", a.config.command_for(kc("F5")), Some("nav.refresh"))
     }));
-    v.push(step("快速鍵：再按 Enter", |_| palette_key(VK_RETURN), |_, a| expect("錄製中", a.keys_recording(), true)));
-    v.push(step("截圖：快速鍵編輯器（錄製中）", |_| {}, |c, _| screenshot(c, "13-快速鍵編輯器")));
-    v.push(step("快速鍵：指定已被使用的按鍵（從原本的命令移除）", |_| palette_key_mods("c", letter('c')), move |_, a| {
-        expect("Ctrl+C", a.config.command_for(kc("Ctrl+C")), Some("nav.refresh"))?;
-        expect("警告", a.keys_footer().map(|f| f.1), Some(true))?;
-        expect("篩選文字", a.palette.as_ref().map(|p| p.query.as_str()), Some("重新整理"))
-    }));
-    v.push(step("快速鍵：Ctrl+R 還原預設", |_| palette_key_mods("c", letter('r')), move |_, a| {
-        expect("F5", a.config.command_for(kc("F5")), Some("nav.refresh"))?;
-        expect("Ctrl+C 回到沒有命令", a.config.command_for(kc("Ctrl+C")), None)
-    }));
-    v.push(step("快速鍵：還原被搶走的命令、Ctrl+Delete 移除", |_| {
-        palette_set("file.copy");
-        palette_key_mods("c", letter('r'));
-        palette_key_mods("c", VIRTUAL_KEY(0x2E));
+    v.push(step("快速鍵：已被使用的按鍵先詢問", |c| {
+        click(c, "", keys_pos("nav.refresh", crate::keyspanel::PART_ADD));
+        key(c, "c", letter('c'));
     }, move |_, a| {
-        expect("選取", selected_cmd(a).as_deref(), Some("file.copy"))?;
-        expect("Ctrl+C", a.config.command_for(kc("Ctrl+C")), None)
+        expect("衝突", a.keys_panel.as_ref().and_then(|k| k.conflict.as_ref()).map(|x| x.2.clone()).as_deref(), Some("file.copy"))?;
+        expect("還沒搶走", a.config.command_for(kc("Ctrl+C")), Some("file.copy"))
     }));
-    v.push(step("快速鍵：再還原、Esc 關閉（全部回到預設）", |_| {
-        palette_key_mods("c", letter('r'));
-        palette_key(VK_ESCAPE);
+    v.push(step("快速鍵：取代", |c| click(c, "", keys_special_pos(true, crate::keyspanel::PART_REPLACE)), move |_, a| {
+        expect("Ctrl+C", a.config.command_for(kc("Ctrl+C")), Some("nav.refresh"))?;
+        expect("衝突列消失", a.keys_panel.as_ref().is_some_and(|k| k.conflict.is_none()), true)
+    }));
+    v.push(step("快速鍵：點按鍵方塊移除 Ctrl+Shift+F9", |c| click(c, "", keys_pos("nav.refresh", 1)), move |_, a| {
+        expect("Ctrl+Shift+F9", a.config.command_for(kc("Ctrl+Shift+F9")), None)?;
+        expect("F5", a.config.command_for(kc("F5")), Some("nav.refresh"))
+    }));
+    v.push(step("快速鍵：↺ 還原這個命令", |c| click(c, "", keys_pos("nav.refresh", crate::keyspanel::PART_RESET)), move |_, a| {
+        expect("Ctrl+C 不再是重新整理", a.config.command_for(kc("Ctrl+C")), None)?;
+        expect("F5", a.config.command_for(kc("F5")), Some("nav.refresh"))
+    }));
+    v.push(step("快速鍵：依按鍵搜尋 Ctrl+A", |c| {
+        with_app(|a| a.keys_query(String::new()));
+        click(c, "", keys_special_pos(false, crate::keyspanel::PART_BY_KEY));
+        key(c, "c", letter('a'));
     }, |_, a| {
-        palette_closed(a)?;
+        let cmds: Vec<String> = a.keys_rows().into_iter().filter_map(|r| match r {
+            crate::keyspanel::Row::Cmd(c, _) => Some(c),
+            _ => None,
+        }).collect();
+        expect("結果", cmds, vec!["sel.all".to_string()])
+    }));
+    v.push(step("快速鍵：全部還原後 Esc 關閉", |c| {
+        click(c, "", keys_button_pos(0));
+        key(c, "", VK_ESCAPE);
+    }, |_, a| {
+        expect("面板關閉", a.keys_panel.is_none(), true)?;
         let sorted = |v: &[(zing_core::keymap::KeyChord, String)]| {
             let mut v: Vec<(String, String)> = v.iter().map(|(k, c)| (k.to_string(), c.clone())).collect();
             v.sort();
             v
         };
         if sorted(&a.config.keys) == sorted(&a.config.config_keys) { Ok(()) } else { Err("按鍵沒有全部還原".into()) }
+    }));
+
+    // ------------------------------------------------ 命令列（工具列下方）、下拉選單、提示
+    v.push(step("命令列：預設顯示，沒有選取時剪下是灰色", |_| exec("sel.none"), |_, a| {
+        expect("命令列", a.layout.cmdbar.as_ref().is_some_and(|b| !b.buttons.is_empty()), true)?;
+        expect("剪下", a.cmd_disabled("file.cut").is_some(), true)?;
+        expect("新增", a.cmd_disabled("file.newfolder").is_none(), true)
+    }));
+    v.push(step("命令列：點「檢視▾」開啟選單", |c| click(c, "", bar_button_pos(zing_core::cmdbar::MENU_VIEW)), |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒有開啟")?;
+        let labels: Vec<&str> = m.levels[0].items.iter().map(|i| i.label.as_str()).collect();
+        expect("有中縮圖", labels.contains(&"中縮圖"), true)?;
+        // 目前的檢視打勾
+        expect("清單打勾", m.levels[0].items.iter().any(|i| i.label == "清單" && i.checked), true)
+    }));
+    v.push(step("截圖：命令列與選單", |_| {}, |c, _| screenshot(c, "18-命令列選單")));
+    v.push(step("命令列：選「中縮圖」", |c| click(c, "", menu_item_pos(0, "中縮圖")), |_, a| {
+        expect("選單關閉", a.menu.is_none(), true)?;
+        expect("縮圖", (a.tab().mode, a.tab().thumb), (zing_core::folderview::ViewMode::Thumbnails, 128))
+    }));
+    v.push(step("命令列：「⋯」的子選單", |c| {
+        // 回到預設的檢視（不留下這個資料夾的檢視記錄）
+        with_app(|a| {
+            let (p, t) = (a.active_pane, a.panes[a.active_pane].active);
+            let d = zing_core::folderview::FolderView::default();
+            let tab = a.tab_mut();
+            tab.mode = d.mode;
+            tab.thumb = d.thumb;
+            a.remember_view(p, t);
+            a.after_view_change(p, t);
+        });
+        click(c, "", bar_button_pos(zing_core::cmdbar::MENU_MORE));
+        hover_at(c, menu_item_pos(0, "選取"));
+    }, |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒有開啟")?;
+        expect("子選單", m.levels.len(), 2)?;
+        expect("反向選取", m.levels[1].items.iter().any(|i| i.label == "反向選取"), true)
+    }));
+    v.push(step("命令列：子選單項目右鍵「加到命令列」", |c| {
+        right_click(c, menu_item_pos(1, "反向選取"));
+        click(c, "", menu_item_pos(0, "加到命令列"));
+    }, |_, a| {
+        expect("選單關閉", a.menu.is_none(), true)?;
+        expect("加在「⋯」前面", a.config.cmdbar.iter().rev().nth(1).map(|i| i.cmd.as_str()), Some("sel.invert"))
+    }));
+    v.push(step("命令列：右鍵「從命令列移除」", |c| {
+        right_click(c, bar_button_pos("sel.invert"));
+        click(c, "", menu_item_pos(0, "從命令列移除"));
+    }, |_, a| expect("已移除", a.config.cmdbar.iter().any(|i| i.cmd == "sel.invert"), false)));
+    // 真的游標不在視窗上，系統隨後會送 WM_MOUSELEAVE 收起提示：在動作中記下當時的提示
+    v.push(step("提示：停在複製按鈕上顯示名稱與快速鍵，移到貼上立即切換", |c| {
+        let shown = || with_app(|a| a.tip.as_ref().filter(|t| t.shown).map(|t| t.text.joined())).flatten().unwrap_or_default();
+        hover_at(c, bar_button_pos("file.copy"));
+        let before = shown();
+        with_app(|a| a.on_tip_timer());
+        let copy = shown();
+        hover_at(c, bar_button_pos("file.paste"));
+        let paste = shown();
+        c.notes.push(("tip_before_timer", before));
+        c.notes.push(("tip_copy", copy));
+        c.notes.push(("tip_paste", paste));
+    }, |c, _| {
+        expect("計時前不顯示", c.note("tip_before_timer"), Some(""))?;
+        let copy = c.note("tip_copy").unwrap_or_default();
+        if !(copy.contains("複製") && copy.contains("Ctrl+C") && copy.contains("請先選取項目")) {
+            return Err(format!("複製的提示：{copy}"));
+        }
+        expect("貼上", c.note("tip_paste").is_some_and(|t| t.starts_with("貼上")), true)
+    }));
+    // 截圖：不送滑鼠訊息（不會收到 WM_MOUSELEAVE），直接設定游標所在的按鈕
+    v.push(step("截圖：提示（不能用的原因在第二行）", |_| {
+        with_app(|a| {
+            a.layout = a.compute_layout();
+            let k = a.layout.cmdbar.as_ref().and_then(|b| b.buttons.iter().position(|(i, _, _)| a.config.cmdbar[*i].cmd == "file.delete"));
+            if let Some(k) = k {
+                let hit = crate::view::Hit::CmdButton(k);
+                a.update_tip(&hit);
+                a.hover = hit;
+                a.on_tip_timer();
+            }
+        });
+    }, |c, a| {
+        expect("提示", a.tip.as_ref().is_some_and(|t| t.shown && t.text.detail.is_some()), true)?;
+        screenshot(c, "19-提示")
+    }));
+    v.push(step("命令列：視窗太窄時移進「⋯」", |c| hover_at(c, Some((5.0, 400.0))), |_, a| {
+        let narrow = a.layout_cmdbar(crate::gfx::Rect::new(0.0, 0.0, 180.0, 30.0));
+        expect("有移出的按鈕", narrow.overflow.is_empty(), false)?;
+        expect("「⋯」還在", narrow.buttons.iter().any(|(i, _, _)| a.config.cmdbar[*i].cmd == zing_core::cmdbar::MENU_MORE), true)?;
+        expect("提示消失", a.tip.is_none(), true)
+    }));
+    v.push(step("自訂命令列：開啟面板，加入「反向選取」", |c| {
+        exec("cmdbar.edit");
+        click(c, "", bar_edit_pos("sel.invert", true, None));
+    }, |_, a| {
+        expect("面板", a.cmdbar_editor.is_some(), true)?;
+        expect("已加入", a.config.cmdbar.iter().any(|i| i.cmd == "sel.invert"), true)
+    }));
+    v.push(step("自訂命令列：↑ 往前移", |c| click(c, "", bar_edit_pos("sel.invert", false, Some(crate::cmdbaredit::PART_UP))), |_, a| {
+        let n = a.config.cmdbar.len();
+        expect("位置", a.config.cmdbar.iter().position(|i| i.cmd == "sel.invert"), Some(n - 3))
+    }));
+    v.push(step("自訂命令列：展開後選圖示", |c| {
+        click(c, "", bar_edit_pos("sel.invert", false, None));
+        let at = with_app(|a| {
+            a.layout = a.compute_layout();
+            let panel = a.layout.cmdbar_panel?;
+            let rows = a.cmdbar_edit_rows();
+            let k = rows.iter().position(|r| matches!(r, crate::cmdbaredit::Row::Icons(_, 0)))?;
+            let (_, list, _) = a.cmdbar_edit_layout(panel);
+            let r = a.bar_row_rect(list, k, a.cmdbar_editor.as_ref()?.scroll);
+            let cell = a.bar_parts(&rows[k], r)[2];
+            Some(((cell.l + cell.r) / 2.0, (cell.t + cell.b) / 2.0))
+        })
+        .flatten();
+        click(c, "", at);
+    }, |_, a| {
+        let it = a.config.cmdbar.iter().find(|i| i.cmd == "sel.invert").ok_or("沒有按鈕")?;
+        expect("圖示", it.icon.as_str(), &format!("glyph:{}", zing_core::cmdbar::GLYPHS[2].0))
+    }));
+    v.push(step("截圖：自訂命令列", |_| {}, |c, _| screenshot(c, "20-自訂命令列")));
+    v.push(step("自訂命令列：還原預設後 Esc 關閉", |c| {
+        with_app(|a| {
+            a.config.cmdbar = zing_core::cmdbar::defaults();
+            a.cmdbar_changed();
+        });
+        key(c, "", VK_ESCAPE);
+    }, |_, a| {
+        expect("面板關閉", a.cmdbar_editor.is_none(), true)?;
+        expect("預設", a.config.cmdbar == zing_core::cmdbar::defaults(), true)
     }));
 
     // ------------------------------------------------ 介面語言（隔離模式預設繁體中文；切換後檢查幾處文字並截圖）
@@ -1931,6 +2224,13 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             expect("start_path", a.config.start_path.as_str(), "")
         },
     ));
+    let gear = || with_app(|a| {
+        a.layout = a.compute_layout();
+        let r = a.layout.settings_btn;
+        ((r.l + r.r) / 2.0, (r.t + r.b) / 2.0)
+    });
+    v.push(step("設定：點工具列的齒輪開啟", move |c| click(c, "", gear()), |_, a| expect("設定頁", a.settings_page.is_some(), true)));
+    v.push(step("設定：再點一次關閉", move |c| click(c, "", gear()), |_, a| expect("設定頁", a.settings_page.is_none(), true)));
 
     // position = middle：整個面板永遠置中，輸入框（子視窗）跟著移動
     let centered = |a: &App| -> Result<f32, String> {
@@ -2761,9 +3061,68 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("主題：滾輪調整列高（即時套用）", |c| wheel(c, theme_row_pos("列高", false), 120), |_, a| {
         expect("列高", a.theme.metrics.row_height, 23.0)
     }));
-    v.push(step("主題：點選項切換網址列樣式", |c| click(c, "", theme_row_pos("網址列", true)), |_, a| {
-        expect("網址列", a.theme.chrome.address, zing_core::theme::AddressStyle::Breadcrumb)
+    v.push(step("主題：展開網址列的選單", |c| click(c, "", theme_row_pos("網址列", true)), |_, a| {
+        let t = crate::themepanel::Target::Field(theme_field("網址列"));
+        expect("展開", a.theme_editor.as_ref().and_then(|e| e.expanded), Some(t))
     }));
+    v.push(step(
+        "主題：選麵包屑",
+        |c| click(c, "", theme_option_pos(crate::themepanel::Target::Field(theme_field("網址列")), 1)),
+        |_, a| {
+            expect("網址列", a.theme.chrome.address, zing_core::theme::AddressStyle::Breadcrumb)?;
+            expect("收起", a.theme_editor.as_ref().and_then(|e| e.expanded), None)
+        },
+    ));
+    v.push(step("主題：按 ＋ 加大圓角", |c| click(c, "", theme_pos(crate::themepanel::Row::Field(theme_field("圓角")), |r| mid(r.plus))), |_, a| {
+        expect("圓角", a.theme.metrics.radius, 1.0)
+    }));
+    v.push(step("主題：拖曳滑桿到最右", |c| {
+        let row = crate::themepanel::Row::Field(theme_field("圓角"));
+        let at = theme_pos(row, |r| mid(r.track));
+        let end = theme_pos(row, |r| (r.track.r + 30.0, (r.row.t + r.row.b) / 2.0));
+        drag(c, at, end);
+    }, |_, a| expect("圓角", a.theme.metrics.radius, 16.0)));
+    v.push(step("主題：↺ 還原圓角", |c| click(c, "", theme_pos(crate::themepanel::Row::Field(theme_field("圓角")), |r| mid(r.tail))), |_, a| {
+        expect("圓角", a.theme.metrics.radius, 0.0)
+    }));
+    v.push(step(
+        "主題：點色票改資料夾顏色",
+        |c| {
+            click(c, "", theme_row_pos("資料夾", false));
+            let t = crate::themepanel::Target::Field(theme_field("資料夾"));
+            click(c, "", theme_pos(crate::themepanel::Row::Swatches(t, 0), |r| (r.row.l + 8.0 + 5.0 * r.row.h() + (r.row.h() - 6.0) / 2.0, (r.row.t + r.row.b) / 2.0)));
+        },
+        |_, a| expect("資料夾", a.theme.color.folder, zing_core::theme::Color::rgb(zing_core::theme::SWATCHES[5])),
+    ));
+    v.push(step("截圖：主題編輯器的色票", |_| {}, |c, _| screenshot(c, "17-主題色票")));
+    v.push(step(
+        "主題：新增「圖片」的檔案顏色",
+        |c| {
+            let _ = with_app(|a| a.theme_escape());
+            click(c, "", theme_pos(crate::themepanel::Row::AddRule, |r| (r.row.l + 20.0, (r.row.t + r.row.b) / 2.0)));
+            click(c, "", theme_option_pos(crate::themepanel::Target::AddRule, 0));
+        },
+        |_, a| {
+            let rules = &a.theme.color.file_rule;
+            expect("規則數", rules.len(), 1)?;
+            expect("樣式", rules[0].pattern.as_str(), zing_core::theme::FILE_PRESETS[0].1)?;
+            expect("顏色規則已套用", a.rules.len(), 1)
+        },
+    ));
+    v.push(step("主題：換成淺色（保留尺寸、網址列與檔案顏色）", |c| {
+        click(c, "", theme_pos(crate::themepanel::Row::Mode, |r| (r.value.l + 20.0, (r.row.t + r.row.b) / 2.0)));
+        click(c, "", theme_option_pos(crate::themepanel::Target::Mode, 1));
+    }, |_, a| {
+        expect("深淺色", a.theme.mode, zing_core::theme::Mode::Light)?;
+        expect("背景", a.theme.color.background, zing_core::theme::Theme::light().color.background)?;
+        expect("網址列", a.theme.chrome.address, zing_core::theme::AddressStyle::Breadcrumb)?;
+        expect("列高", a.theme.metrics.row_height, 23.0)?;
+        expect("檔案顏色", a.theme.color.file_rule.len(), 1)
+    }));
+    v.push(step("主題：換回深色", |c| {
+        click(c, "", theme_pos(crate::themepanel::Row::Mode, |r| (r.value.l + 20.0, (r.row.t + r.row.b) / 2.0)));
+        click(c, "", theme_option_pos(crate::themepanel::Target::Mode, 0));
+    }, |_, a| expect("深淺色", a.theme.mode, zing_core::theme::Mode::Dark)));
     v.push(step(
         "主題：輸入強調色",
         |c| {
@@ -2801,7 +3160,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         "主題：取消時還原到上次儲存",
         |c| {
             wheel(c, theme_row_pos("列高", false), 120);
-            click(c, "", theme_button_pos(2));
+            click(c, "", theme_button_pos(1));
         },
         |_, a| {
             expect("面板關閉", a.theme_editor.is_none(), true)?;

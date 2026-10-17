@@ -26,6 +26,12 @@ position = "top"
 # match = "*.stl;*.3mf"
 # cmd = 'stl-thumb -s {size} "{in}" "{out}"'
 
+[command_bar]
+# ツールバーの下のコマンドバー（新規作成、切り取り、コピー、貼り付け…）
+visible = true
+# false：ボタンはアイコンだけ
+labels = true
+
 [folder_sizes]
 # NTFS インデックス サービス（コマンドパレット：NTFS インデックス サービスを有効にする）があるときは、サイズは常にインデックスからすぐに得られ、この設定は影響しません。
 # インデックスがないとき（サービスが無効、NTFS 以外のドライブ）：
@@ -210,10 +216,9 @@ cmd = "jobs.toggle"
 key = "Ctrl+Shift+R"
 cmd = "config.reload"
 
-# ---- ツールバーのボタン ----
-[[button]]
-label = "新しいフォルダー"
-cmd = "file.newfolder"
-[[button]]
-label = "ターミナル"
-cmd = "run wt.exe -d {path}"
+# ---- コマンドバーのカスタムボタン ----
+# 通常は「⋯ → コマンドバーのカスタマイズ…」で調整します（zing.exe の隣の toolbar.toml に保存）。
+# toolbar.toml がまだないときは、ここの [[button]] がコマンドバーの「⋯」の前に追加されます：
+# [[button]]
+# label = "メモ帳"
+# cmd = "run notepad.exe"

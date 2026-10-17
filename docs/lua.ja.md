@@ -761,7 +761,7 @@ tree.toggle()
 
 並べ替え
 
-- `opts`：{by: "name"|"modified"|"type"|"size", asc?: boolean, desc?: boolean}
+- `opts`：{by?: "name"|"modified"|"type"|"size", asc?: boolean, desc?: boolean} asc／desc だけのときは現在の列のまま
 
 ```lua
 view.sort{ by = "size", desc = true }
@@ -793,6 +793,30 @@ thumb.set{ image = "D:\\カバー.jpg" }
 
 ```lua
 thumb.clear()
+```
+
+### `cmdbar.edit()`
+
+コマンドバーのカスタマイズ パネルを開く（結果はプログラムと同じ場所の toolbar.toml に保存）
+
+```lua
+cmdbar.edit()
+```
+
+### `cmdbar.hide()`
+
+コマンドバーを非表示にする（config.toml の command_bar.visible に書き戻す）
+
+```lua
+cmdbar.hide()
+```
+
+### `file.newfile()`
+
+現在のフォルダーにテキスト ドキュメントを作成して名前の変更を始める
+
+```lua
+file.newfile()
 ```
 
 ### `settings.open()`

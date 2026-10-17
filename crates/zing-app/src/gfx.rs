@@ -50,6 +50,50 @@ fn text_locale() -> HSTRING {
     }
 }
 
+/// 系統安裝的字型家族（主題編輯器的字型選單）：（存進主題的英文名稱, 依介面語言的顯示名稱），依顯示名稱排序。
+/// 讀取字型資料夾，在背景執行緒呼叫
+pub fn system_font_families() -> Vec<(String, String)> {
+    use windows::Win32::Graphics::DirectWrite::{IDWriteFontCollection, IDWriteLocalizedStrings};
+    zing_core::guard::io("列出系統字型");
+    let name_in = |names: &IDWriteLocalizedStrings, locale: &HSTRING| -> Option<String> {
+        let (mut idx, mut exists) = (0u32, BOOL(0));
+        unsafe {
+            names.FindLocaleName(locale, &mut idx, &mut exists).ok()?;
+            if !exists.as_bool() {
+                return None;
+            }
+            let len = names.GetStringLength(idx).ok()? as usize;
+            let mut buf = vec![0u16; len + 1];
+            names.GetString(idx, &mut buf).ok()?;
+            Some(String::from_utf16_lossy(&buf[..len]))
+        }
+    };
+    let mut out = Vec::new();
+    let Ok(dw) = (unsafe { DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) }) else { return out };
+    let mut coll: Option<IDWriteFontCollection> = None;
+    if unsafe { dw.GetSystemFontCollection(&mut coll, false) }.is_err() {
+        return out;
+    }
+    let Some(coll) = coll else { return out };
+    let (en, ui) = (HSTRING::from("en-us"), text_locale());
+    for i in 0..unsafe { coll.GetFontFamilyCount() } {
+        let Ok(names) = (unsafe { coll.GetFontFamily(i).and_then(|f| f.GetFamilyNames()) }) else { continue };
+        let value = name_in(&names, &en).or_else(|| {
+            // 沒有英文名稱：用第一個
+            let len = unsafe { names.GetStringLength(0) }.ok()? as usize;
+            let mut buf = vec![0u16; len + 1];
+            unsafe { names.GetString(0, &mut buf) }.ok()?;
+            Some(String::from_utf16_lossy(&buf[..len]))
+        });
+        let Some(value) = value.filter(|v| !v.starts_with('@')) else { continue };
+        let label = name_in(&names, &ui).unwrap_or_else(|| value.clone());
+        out.push((value, label));
+    }
+    out.sort_by_key(|(_, l)| l.to_lowercase());
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
 /// 背景執行緒建立好硬體繪圖裝置時送出
 pub const WM_APP_GPU_READY: u32 = WM_APP + 4;
 
@@ -119,6 +163,7 @@ pub mod glyph {
     pub const PC: &str = "\u{E977}";
     pub const STAR: &str = "\u{E734}";
     pub const FILTER: &str = "\u{E71C}";
+    pub const SETTINGS: &str = "\u{E713}";
 }
 
 struct Formats {
@@ -155,6 +200,8 @@ pub struct Gfx {
     thumb_bitmaps: RefCell<HashMap<u32, ID2D1Bitmap1>>,
     /// 預覽窗格目前的圖片（版本, 點陣圖）
     preview_bitmap: RefCell<Option<(u32, ID2D1Bitmap1)>>,
+    /// 以字串為鍵的小圖（命令列的圖片圖示）
+    keyed_bitmaps: RefCell<HashMap<String, ID2D1Bitmap1>>,
     /// 上一幀 EndDraw（GPU 清空）與 Present 的耗時（毫秒），供效能測試拆解幀時間
     pub last_end_ms: (f64, f64),
 }
@@ -221,6 +268,7 @@ impl Gfx {
             icon_bitmaps: RefCell::new(HashMap::new()),
             thumb_bitmaps: RefCell::new(HashMap::new()),
             preview_bitmap: RefCell::new(None),
+            keyed_bitmaps: RefCell::new(HashMap::new()),
             last_end_ms: (0.0, 0.0),
         })
     }
@@ -312,6 +360,7 @@ impl Gfx {
         self.icon_bitmaps.borrow_mut().clear();
         self.thumb_bitmaps.borrow_mut().clear();
         self.preview_bitmap.borrow_mut().take();
+        self.keyed_bitmaps.borrow_mut().clear();
         match self.build_device(d3d, false) {
             Ok(d) => {
                 self.dev = Some(d);
@@ -362,6 +411,7 @@ impl Gfx {
             self.icon_bitmaps.borrow_mut().clear();
         self.thumb_bitmaps.borrow_mut().clear();
         self.preview_bitmap.borrow_mut().take();
+        self.keyed_bitmaps.borrow_mut().clear();
             crate::perf::mark("device");
         }
         let d = self.dev.as_mut().unwrap();
@@ -427,6 +477,7 @@ impl Gfx {
         self.icon_bitmaps.borrow_mut().clear();
         self.thumb_bitmaps.borrow_mut().clear();
         self.preview_bitmap.borrow_mut().take();
+        self.keyed_bitmaps.borrow_mut().clear();
         // 下一次成功呈現後重新在背景建立硬體裝置
         self.hw_rx = None;
         self.hw_started = false;
@@ -509,6 +560,34 @@ impl Gfx {
         let bmp = &slot.as_ref().unwrap().1;
         unsafe { rt.DrawBitmap(bmp, Some(&dest.d2d()), 1.0, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None) };
         true
+    }
+
+    /// 以 `key` 快取點陣圖，在 `r` 內等比縮放、置中繪製（命令列的圖片圖示）
+    pub fn keyed_image(&self, key: &str, p: &crate::icons::IconPixels, r: Rect, opacity: f32) {
+        let Some(rt) = &self.rt else { return };
+        let mut cache = self.keyed_bitmaps.borrow_mut();
+        if !cache.contains_key(key) {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                ..Default::default()
+            };
+            let Ok(b) = (unsafe {
+                rt.CreateBitmap(D2D_SIZE_U { width: p.w, height: p.h }, Some(p.bgra.as_ptr() as *const _), p.w * 4, &props)
+            }) else {
+                return;
+            };
+            cache.insert(key.to_string(), b);
+        }
+        let (bw, bh) = (p.w as f32, p.h as f32);
+        if bw <= 0.0 || bh <= 0.0 {
+            return;
+        }
+        let k = (r.w() / bw).min(r.h() / bh);
+        let (w, h) = (bw * k, bh * k);
+        let dest = Rect::new(r.l + (r.w() - w) / 2.0, r.t + (r.h() - h) / 2.0, r.l + (r.w() + w) / 2.0, r.t + (r.h() + h) / 2.0);
+        unsafe { rt.DrawBitmap(&cache[key], Some(&dest.d2d()), opacity, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None) };
     }
 
     /// 縮圖快取丟掉的項目：一併釋放點陣圖

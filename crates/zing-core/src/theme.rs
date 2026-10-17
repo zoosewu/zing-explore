@@ -570,7 +570,66 @@ impl Theme {
     pub fn base(&self) -> Theme {
         Self::builtin_style(self.style, self.mode)
     }
+
+    /// 欄位是否與內建基礎相同（編輯器只在改過的欄位顯示「還原」）
+    pub fn is_default(&self, f: &Field) -> bool {
+        self.field_value(f) == self.base().field_value(f)
+    }
+
+    /// 欄位還原成內建基礎的值
+    pub fn reset_field(&self, f: &Field) -> Option<Theme> {
+        self.with_field(f, &self.base().field_value(f)).ok()
+    }
+
+    /// 換一個基礎風格或深淺色，保留使用者改過的欄位與檔案顏色。換深淺色時，背景、文字等配色不沿用
+    /// （深色主題的背景放到淺色主題上會看不清楚），只保留強調色與資料夾的顏色。
+    pub fn rebased(&self, style: Style, mode: Mode) -> Theme {
+        let old = self.base();
+        let mut t = Theme::builtin_style(style, mode);
+        t.name = self.name.clone();
+        for f in FIELDS {
+            let keep_color = mode == self.mode || matches!(f.path, ["color", "accent"] | ["color", "folder"]);
+            if f.kind == FieldKind::Color && !keep_color {
+                continue;
+            }
+            let v = self.field_value(f);
+            if v != old.field_value(f)
+                && let Ok(n) = t.with_field(f, &v)
+            {
+                t = n;
+            }
+        }
+        t.color.file_rule = self.color.file_rule.clone();
+        t
+    }
 }
+
+/// 主題編輯器的色票：點一下套用；其他顏色用「更多顏色…」或輸入色碼
+pub const SWATCHES: [u32; 16] = [
+    0xf2c230, 0xff8c00, 0xe81123, 0xe3008c, 0x8764b8, 0x0078d4, 0x00b7c3, 0x00cc6a,
+    0x10893e, 0x7a7574, 0xffffff, 0xe8e8e8, 0xa0a0a0, 0x333333, 0x1b1b1b, 0x000000,
+];
+
+/// 新增檔案顏色時可選的類別：（名稱, 萬用字元樣式, 預設顏色）
+pub const FILE_PRESETS: &[(&str, &str, u32)] = &[
+    (tr_key!("圖片"), "*.jpg;*.jpeg;*.png;*.gif;*.bmp;*.webp;*.heic;*.svg", 0x4fc3f7),
+    (tr_key!("影片"), "*.mp4;*.mkv;*.mov;*.avi;*.wmv;*.webm", 0xba68c8),
+    (tr_key!("音樂"), "*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg", 0xf06292),
+    (tr_key!("文件"), "*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.txt;*.md", 0x81c784),
+    (tr_key!("壓縮檔"), "*.zip;*.7z;*.rar;*.tar;*.gz", 0xffb74d),
+    (tr_key!("執行檔"), "*.exe;*.msi;*.bat;*.cmd;*.ps1", 0xe57373),
+    (tr_key!("程式碼"), "*.rs;*.py;*.js;*.ts;*.c;*.cpp;*.h;*.cs;*.java;*.go;*.lua", 0xaed581),
+];
+
+/// 檔案顏色規則的顯示名稱：與某個類別的樣式相同就顯示類別名稱
+pub fn rule_label(pattern: &str) -> Option<&'static str> {
+    FILE_PRESETS.iter().find(|(_, p, _)| *p == pattern).map(|(l, _, _)| crate::i18n::tr(l))
+}
+
+/// 基礎風格的選項：（值, 顯示名稱）
+pub const STYLE_CHOICES: [(Style, &str); 3] =
+    [(Style::Compact, tr_key!("緊湊")), (Style::Fluent, tr_key!("Fluent")), (Style::Balanced, tr_key!("折衷"))];
+pub const MODE_CHOICES: [(Mode, &str); 2] = [(Mode::Dark, tr_key!("深色")), (Mode::Light, tr_key!("淺色"))];
 
 /// 主題名稱能不能當檔名（themes\<名稱>.toml），且不與內建主題同名
 pub fn valid_theme_name(name: &str) -> Result<(), String> {
@@ -596,6 +655,52 @@ fn merge(base: &mut toml::Table, over: toml::Table) {
                 base.insert(k, v);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+
+    fn field(label: &str) -> &'static Field {
+        FIELDS.iter().find(|f| f.label == label).unwrap()
+    }
+
+    #[test]
+    fn reset_and_default() {
+        let t = Theme::dark();
+        let f = field("強調色");
+        assert!(t.is_default(f));
+        let t2 = t.with_field(f, "#ff0000").unwrap();
+        assert!(!t2.is_default(f));
+        assert_eq!(t2.reset_field(f).unwrap().color.accent, t.color.accent);
+    }
+
+    #[test]
+    fn rebase_keeps_changes() {
+        let t = Theme::dark()
+            .with_field(field("強調色"), "#ff0000")
+            .unwrap()
+            .with_field(field("背景"), "#000000")
+            .unwrap()
+            .with_field(field("列高"), "30")
+            .unwrap();
+        // 換風格：配色、尺寸都保留
+        let f = t.rebased(Style::Fluent, Mode::Dark);
+        assert_eq!((f.style, f.color.accent, f.color.background, f.metrics.row_height), (Style::Fluent, Color::rgb(0xff0000), Color::rgb(0), 30.0));
+        // 沒改過的欄位用新風格的值
+        assert_eq!(f.metrics.radius, Theme::builtin_style(Style::Fluent, Mode::Dark).metrics.radius);
+        // 換深淺色：背景不沿用，強調色保留
+        let l = t.rebased(Style::Compact, Mode::Light);
+        assert_eq!(l.color.background, Theme::light().color.background);
+        assert_eq!(l.color.accent, Color::rgb(0xff0000));
+        assert_eq!(l.metrics.row_height, 30.0);
+    }
+
+    #[test]
+    fn rule_labels() {
+        assert_eq!(rule_label(FILE_PRESETS[0].1), Some("圖片"));
+        assert_eq!(rule_label("*.foo"), None);
     }
 }
 

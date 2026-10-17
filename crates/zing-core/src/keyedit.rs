@@ -19,6 +19,20 @@ pub fn assign(keys: &mut Vec<(KeyChord, String)>, cmd: &str, chord: KeyChord) ->
     prev
 }
 
+/// 再加一個按鍵給 `cmd`（保留原本的按鍵）；回傳原本使用這個按鍵的其他命令
+pub fn add(keys: &mut Vec<(KeyChord, String)>, cmd: &str, chord: KeyChord) -> Option<String> {
+    let prev = keys.iter().position(|(c, _)| *c == chord).map(|i| keys.remove(i).1).filter(|p| p != cmd);
+    keys.push((chord, cmd.to_string()));
+    prev
+}
+
+/// 移除 `cmd` 的一個按鍵
+pub fn remove(keys: &mut Vec<(KeyChord, String)>, cmd: &str, chord: KeyChord) -> bool {
+    let n = keys.len();
+    keys.retain(|(c, x)| !(*c == chord && x == cmd));
+    keys.len() != n
+}
+
 /// 移除 `cmd` 的所有按鍵；回傳有沒有移除
 pub fn clear(keys: &mut Vec<(KeyChord, String)>, cmd: &str) -> bool {
     let n = keys.len();
@@ -75,6 +89,20 @@ fn quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_and_remove_one() {
+        let k = |s: &str| KeyChord::parse(s).unwrap();
+        let mut keys = vec![(k("F5"), "nav.refresh".to_string()), (k("Ctrl+C"), "file.copy".to_string())];
+        assert_eq!(add(&mut keys, "nav.refresh", k("Ctrl+F9")), None);
+        assert_eq!(chords_for(&keys, "nav.refresh"), vec![k("F5"), k("Ctrl+F9")]);
+        // 搶走其他命令的按鍵
+        assert_eq!(add(&mut keys, "nav.refresh", k("Ctrl+C")).as_deref(), Some("file.copy"));
+        assert!(chords_for(&keys, "file.copy").is_empty());
+        assert!(remove(&mut keys, "nav.refresh", k("F5")));
+        assert!(!remove(&mut keys, "nav.refresh", k("F5")));
+        assert_eq!(chords_for(&keys, "nav.refresh"), vec![k("Ctrl+F9"), k("Ctrl+C")]);
+    }
     use crate::config::Config;
 
     fn k(s: &str) -> KeyChord {

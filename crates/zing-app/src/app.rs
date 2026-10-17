@@ -52,6 +52,8 @@ pub const TIMER_PREVIEW_WATCHDOG: usize = 11;
 pub const TIMER_TREE_REFRESH: usize = 12;
 /// 全磁碟搜尋：輸入停頓後才查詢
 pub const TIMER_SEARCH: usize = 13;
+/// 游標停留提示（tooltip.rs）
+pub const TIMER_TIP: usize = 14;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -78,13 +80,17 @@ pub enum Press {
     ColResize { col: usize, start_x: f32, start_w: f32 },
     TreeSplit { start_x: f32, start_w: f32 },
     PreviewSplit { start_x: f32, start_w: f32 },
+    /// 主題編輯面板：拖曳數字欄位的滑桿（`row` 是面板中的列）
+    ThemeSlider { field: usize, row: usize },
+    /// 自訂命令列面板：拖曳按鈕調整順序（`item` 是命令列的第幾個按鈕）
+    BarEditDrag { item: usize },
 }
 
 /// 有自己訊息迴圈的動作：必須在釋放 App 借用後才執行（見 window.rs）
 pub enum Modal {
     DragOut { paths: Vec<String> },
     /// 主題編輯器：選色對話框
-    PickColor { field: usize, initial: String },
+    PickColor { target: crate::themepanel::Target, initial: String },
     ImportTheme,
     ExportTheme { name: String, text: String },
     /// 匯入的主題與現有的同名：詢問是否覆蓋
@@ -93,6 +99,8 @@ pub enum Modal {
     PickFolder { title: String, default: String, reply: std::sync::mpsc::SyncSender<Option<String>> },
     /// 設定縮圖：選擇圖片
     PickThumb { path: String },
+    /// 自訂命令列：選擇按鈕的圖片
+    PickBarIcon { item: usize },
 }
 
 pub enum EditKind {
@@ -102,8 +110,15 @@ pub enum EditKind {
     /// 主題編輯器：欄位的值、另存新主題的名稱
     ThemeField { field: usize },
     ThemeSaveAs,
+    /// 主題編輯器：檔案顏色的萬用字元樣式
+    ThemeRule { rule: usize },
     /// 設定頁的文字欄位
     Pref { field: usize },
+    /// 自訂命令列：按鈕的名稱、自訂命令的命令腳本
+    BarLabel { item: usize },
+    BarCustom,
+    /// 快速鍵編輯面板的搜尋框（內容改變時即時篩選）
+    KeysSearch,
     /// Lua 腳本的 ask()
     Ask,
 }
@@ -147,9 +162,19 @@ pub struct App {
     pub batch: Option<crate::batch::Batch>,
     /// 目前主題的名稱（內建名稱或 themes 資料夾中的檔名）
     pub theme_name: String,
-    pub theme_editor: Option<crate::themeedit::ThemeEditor>,
+    pub theme_editor: Option<crate::themepanel::ThemeEditor>,
     /// 設定頁（settings.open）
     pub settings_page: Option<crate::prefspage::SettingsPage>,
+    /// 自訂命令列的面板（cmdbar.edit）
+    pub cmdbar_editor: Option<crate::cmdbaredit::CmdBarEditor>,
+    /// 快速鍵編輯面板（keys.edit）
+    pub keys_panel: Option<crate::keyspanel::KeysPanel>,
+    /// 開啟中的下拉選單（menu.rs）
+    pub menu: Option<crate::menu::Menu>,
+    /// 游標停留提示（tooltip.rs）
+    pub tip: Option<crate::tooltip::Tip>,
+    /// 命令列的圖片圖示（路徑 → 讀取結果；None 表示讀取中或讀不到）
+    pub cmdbar_images: std::cell::RefCell<std::collections::HashMap<String, Option<std::rc::Rc<crate::icons::IconPixels>>>>,
     pub scripts: crate::script::Scripts,
     /// Lua 腳本的 ask() 等待中的提示與回答通道
     pub ask: Option<(String, AskReply)>,
@@ -249,6 +274,11 @@ impl App {
             theme_name,
             theme_editor: None,
             settings_page: None,
+            cmdbar_editor: None,
+            keys_panel: None,
+            menu: None,
+            tip: None,
+            cmdbar_images: Default::default(),
             scripts: Default::default(),
             ask: None,
             theme_watch: None,
@@ -890,7 +920,7 @@ impl App {
                     config.language = self.config.language;
                 }
                 let lang = config.language;
-                self.config = config;
+                self.config = *config;
                 self.set_language(lang);
                 // 重新載入設定時以設定檔的主題為準
                 self.theme_name = self.config.theme.clone();
@@ -906,6 +936,8 @@ impl App {
             Msg::ThemeFileTime { name, mtime } => self.on_theme_file_time(name, mtime),
             Msg::ThemeImport(result) => self.on_theme_import(result),
             Msg::UserThemes(themes) => self.on_user_themes(themes),
+            Msg::Fonts(fonts) => self.on_fonts(fonts),
+            Msg::CmdBarImage { path, pixels } => self.on_cmdbar_image(path, pixels),
             Msg::AddressResolved { pane, target, normalized, is_dir, cwd } => {
                 if is_dir && pane < self.panes.len() {
                     self.navigate(pane, normalized, true);
@@ -948,7 +980,7 @@ impl App {
             let (config, mut warnings) = settings::load_config();
             let (theme, warn) = settings::resolve_theme(&config.theme);
             warnings.extend(warn);
-            n.send(Msg::ConfigLoaded { config, theme, warnings });
+            n.send(Msg::ConfigLoaded { config: Box::new(config), theme, warnings });
         });
     }
 
@@ -1053,8 +1085,15 @@ impl App {
             "address.edit" => window::begin_address_edit(self),
             "palette.open" => self.open_palette(),
             "search.open" => self.open_search(),
-            "keys.edit" => self.open_key_editor(),
+            "keys.edit" => self.open_keys_panel(),
             "settings.open" => self.open_settings(),
+            "cmdbar.edit" => self.open_cmdbar_editor(),
+            "cmdbar.hide" => {
+                if let Some(i) = zing_core::prefs::PREFS.iter().position(|p| p.key == "command_bar.visible") {
+                    self.set_pref(i, "false".into());
+                    self.set_status(tr!("已隱藏命令列；可在設定頁重新顯示"), false);
+                }
+            }
             "jobs.toggle" => self.jobs_toggle(),
             "jobs.clear" => self.jobs_clear(),
             "file.copy" | "file.cut" => {
@@ -1095,6 +1134,13 @@ impl App {
                     return Err(tr!("無法在「此電腦」建立資料夾").into());
                 }
                 self.submit_op(FileOp::NewFolder { dir });
+            }
+            "file.newfile" => {
+                let dir = self.tab().path.clone();
+                if dir.is_empty() {
+                    return Err(tr!("無法在「此電腦」建立檔案").into());
+                }
+                self.submit_op(FileOp::NewFile { dir });
             }
             "file.properties" => {
                 let paths = self.tab().target_paths();
@@ -1205,8 +1251,13 @@ impl App {
                 }
             }
             "view.sort" => {
-                let key = inv.flag("by").and_then(SortKey::parse).ok_or(tr!("view.sort 需要 --by=name|modified|type|size"))?;
                 let asc = if inv.has("desc") { Some(false) } else if inv.has("asc") { Some(true) } else { None };
+                // 只有 --asc／--desc：維持目前的排序欄位
+                let key = match inv.flag("by") {
+                    Some(b) => SortKey::parse(b).ok_or(tr!("view.sort 需要 --by=name|modified|type|size"))?,
+                    None if asc.is_some() => self.tab().spec.key,
+                    None => return Err(tr!("view.sort 需要 --by=name|modified|type|size").into()),
+                };
                 self.set_sort(key, asc);
             }
             "view.foldersizes" => self.compute_folder_sizes(p, false, false),
@@ -1582,7 +1633,11 @@ impl App {
                 EditKind::Palette => {}
                 EditKind::ThemeField { field } => self.commit_theme_field(field, &text),
                 EditKind::ThemeSaveAs => self.save_theme_as(&text),
+                EditKind::ThemeRule { rule } => self.commit_rule_pattern(rule, &text),
                 EditKind::Pref { field } => self.set_pref(field, text.trim().to_string()),
+                EditKind::BarLabel { item } => self.commit_bar_label(item, &text),
+                EditKind::BarCustom => self.commit_bar_custom(&text),
+                EditKind::KeysSearch => {}
                 EditKind::Ask => {}
             }
         }

@@ -9,10 +9,6 @@ pub const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
 const DEFAULT_CONFIG_EN: &str = include_str!("default_config.en.toml");
 const DEFAULT_CONFIG_JA: &str = include_str!("default_config.ja.toml");
 
-/// 預設工具列按鈕的名稱：設定資料是繁體中文，顯示時翻譯（`i18n::tr_str`）
-#[cfg_attr(not(test), allow(dead_code))]
-const DEFAULT_BUTTON_LABELS: [&str; 2] = [tr_key!("新資料夾"), tr_key!("終端機")];
-
 /// 建立使用者設定檔時的範本（註解用 `lang` 的語言）
 pub fn default_config_for(lang: crate::i18n::Lang) -> &'static str {
     match lang {
@@ -54,6 +50,21 @@ pub enum PalettePosition {
 #[serde(default)]
 pub struct PaletteConfig {
     pub position: PalettePosition,
+}
+
+/// 命令列（工具列下方的按鈕列）
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CommandBarConfig {
+    pub visible: bool,
+    /// false：按鈕只顯示圖示
+    pub labels: bool,
+}
+
+impl Default for CommandBarConfig {
+    fn default() -> Self {
+        CommandBarConfig { visible: true, labels: true }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -112,6 +123,7 @@ pub struct RawConfig {
     pub layout: Option<Layout>,
     pub palette: Option<PaletteConfig>,
     pub folder_sizes: Option<FolderSizesConfig>,
+    pub command_bar: Option<CommandBarConfig>,
     pub key: Vec<KeyBinding>,
     pub button: Option<Vec<Button>>,
     pub thumbnailer: Vec<Thumbnailer>,
@@ -137,6 +149,9 @@ pub struct Config {
     pub layout: Layout,
     pub palette: PaletteConfig,
     pub folder_sizes: FolderSizesConfig,
+    pub command_bar: CommandBarConfig,
+    /// 命令列的按鈕（toolbar.toml，沒有時為預設＋舊版的 [[button]]）
+    pub cmdbar: Vec<crate::cmdbar::Item>,
     /// 解析後的快速鍵；後定義者優先
     pub keys: Vec<(KeyChord, String)>,
     /// 預設設定＋config.toml 的快速鍵（不含 keys.toml）：快速鍵編輯器以此判斷哪些是改過的
@@ -154,6 +169,11 @@ impl Config {
 
     /// 另外套用快速鍵編輯器寫的 `keys.toml`（優先於 config.toml 的 `[[key]]`）
     pub fn load_with_keys(user_src: Option<&str>, keys_src: Option<&str>) -> (Self, Vec<String>) {
+        Self::load_files(user_src, keys_src, None)
+    }
+
+    /// 另外套用命令列的 `toolbar.toml`
+    pub fn load_files(user_src: Option<&str>, keys_src: Option<&str>, toolbar_src: Option<&str>) -> (Self, Vec<String>) {
         let mut warnings = Vec::new();
         let base: RawConfig = toml::from_str(DEFAULT_CONFIG).expect("內建預設設定必須合法");
         let user = match user_src.map(toml::from_str::<RawConfig>) {
@@ -212,9 +232,15 @@ impl Config {
             folder_sizes: user.folder_sizes.or(base.folder_sizes).unwrap_or_default(),
             keys,
             config_keys,
+            command_bar: user.command_bar.or(base.command_bar).unwrap_or_default(),
+            cmdbar: Vec::new(),
             buttons: user.button.or(base.button).unwrap_or_default(),
             thumbnailers: user.thumbnailer.into_iter().chain(base.thumbnailer).collect(),
         };
+        let mut cfg = cfg;
+        let (items, warn) = crate::cmdbar::load(toolbar_src, &cfg.buttons);
+        cfg.cmdbar = items;
+        warnings.extend(warn);
         (cfg, warnings)
     }
 
@@ -248,7 +274,9 @@ mod tests {
         assert!(warn.is_empty(), "{warn:?}");
         let k = KeyChord::parse("Ctrl+C").unwrap();
         assert_eq!(cfg.command_for(k), Some("file.copy"));
-        assert!(!cfg.buttons.is_empty());
+        assert!(cfg.buttons.is_empty());
+        assert_eq!(cfg.cmdbar, crate::cmdbar::defaults());
+        assert!(cfg.command_bar.visible && cfg.command_bar.labels);
         assert_eq!(cfg.palette.position, PalettePosition::Top);
     }
 
@@ -258,19 +286,13 @@ mod tests {
             let mut keys: Vec<(String, String)> = c.keys.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
             keys.sort();
             let buttons: Vec<String> = c.buttons.iter().map(|b| b.cmd.clone()).collect();
-            (keys, buttons, c.theme.clone(), c.show_hidden, c.layout.tree, c.palette.position, c.folder_sizes.auto)
+            (keys, buttons, c.theme.clone(), c.show_hidden, c.layout.tree, c.palette.position, c.folder_sizes.auto, c.command_bar.clone())
         };
         let (zh, _) = Config::load(None);
-        let labels: Vec<&str> = zh.buttons.iter().map(|b| b.label.as_str()).collect();
-        assert_eq!(labels, DEFAULT_BUTTON_LABELS);
         for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Ja] {
             let (c, warn) = Config::load(Some(default_config_for(lang)));
             assert!(warn.is_empty(), "{lang:?}: {warn:?}");
             assert_eq!(summary(&c), summary(&zh), "{lang:?} 的範本與預設設定不一致");
-            // 範本的按鈕名稱就是翻譯
-            for (b, k) in c.buttons.iter().zip(DEFAULT_BUTTON_LABELS) {
-                assert_eq!(b.label, crate::i18n::tr_in(lang, k));
-            }
         }
     }
 

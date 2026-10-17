@@ -96,6 +96,8 @@ pub enum FileOp {
     Delete { paths: Vec<String>, permanent: bool },
     Rename { path: String, new_name: String },
     NewFolder { dir: String },
+    /// 新增空白的文字文件，建立後進入重新命名
+    NewFile { dir: String },
     /// 同一個資料夾內批次改名：(舊名稱, 新名稱)
     BatchRename { dir: String, pairs: Vec<(String, String)> },
 }
@@ -400,7 +402,7 @@ fn affected(op: &FileOp) -> (Vec<String>, Option<Select>) {
             let dir = parent(path);
             (vec![dir.clone()], Some(Select { dir, name: new_name.clone(), rename: false }))
         }
-        FileOp::NewFolder { dir } => {
+        FileOp::NewFolder { dir } | FileOp::NewFile { dir } => {
             (vec![dir.clone()], Some(Select { dir: dir.clone(), name: String::new(), rename: true }))
         }
         FileOp::BatchRename { dir, .. } => (vec![dir.clone()], None),
@@ -506,6 +508,14 @@ fn perform(hwnd: isize, op: FileOp, sink: Option<&IFileOperationProgressSink>) -
                 fo.NewItem(&shell_item(&dir)?, FILE_ATTRIBUTE_DIRECTORY.0, PCWSTR(name_w.as_ptr()), PCWSTR::null(), none_sink)?;
                 created = Some(name);
             }
+            FileOp::NewFile { dir } => {
+                fo.SetOperationFlags(FOF_ALLOWUNDO)?;
+                let stem = unique_stem(&dir, tr!("新增文字文件"), ".txt");
+                let name = format!("{stem}.txt");
+                let name_w = wide_z(&name);
+                fo.NewItem(&shell_item(&dir)?, windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL.0, PCWSTR(name_w.as_ptr()), PCWSTR::null(), none_sink)?;
+                created = Some(name);
+            }
             FileOp::BatchRename { .. } => unreachable!("在函式開頭處理"),
         }
         fo.PerformOperations()?;
@@ -514,6 +524,15 @@ fn perform(hwnd: isize, op: FileOp, sink: Option<&IFileOperationProgressSink>) -
         }
         Ok(created)
     }
+}
+
+/// 「新增文字文件.txt」已存在時改用「新增文字文件 (2).txt」…：回傳不含副檔名的部分
+fn unique_stem(dir: &str, base: &str, ext: &str) -> String {
+    let exists = |n: &str| unsafe { GetFileAttributesW(PCWSTR(wide_z(&path::join(dir, &format!("{n}{ext}"))).as_ptr())) != INVALID_FILE_ATTRIBUTES };
+    if !exists(base) {
+        return base.to_string();
+    }
+    (2..).map(|i| format!("{base} ({i})")).find(|n| !exists(n)).unwrap()
 }
 
 fn unique_name(dir: &str, base: &str) -> String {

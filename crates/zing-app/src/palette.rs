@@ -32,8 +32,6 @@ pub struct Palette {
     pub top: usize,
     /// 全磁碟搜尋模式：`matches` 是 `items` 的索引
     pub search: Option<crate::search::Results>,
-    /// 快速鍵編輯器模式
-    pub keys: Option<crate::keys::KeyEdit>,
 }
 
 impl Palette {
@@ -42,9 +40,9 @@ impl Palette {
         self.plain().then(|| self.query.trim_start().strip_prefix('>').map(str::trim)).flatten()
     }
 
-    /// 一般的命令面板（不是搜尋、快速鍵編輯器）
+    /// 一般的命令面板（不是搜尋）
     fn plain(&self) -> bool {
-        self.search.is_none() && self.keys.is_none()
+        self.search.is_none()
     }
 
     /// `=` 開頭：立即執行的 Lua 運算式
@@ -67,8 +65,6 @@ pub struct PaletteLayout {
     pub input: Rect,
     /// 可見的列（第 i 列對應 `matches[top + i]`）
     pub rows: Vec<Rect>,
-    /// 快速鍵編輯器：底部的說明列
-    pub footer: Option<Rect>,
 }
 
 impl App {
@@ -100,7 +96,7 @@ impl App {
         }
         let entries = self.palette_entries();
         let matches = filter(&entries, "", &self.palette_recent);
-        self.palette = Some(Palette { entries, query: String::new(), matches, sel: 0, top: 0, search: None, keys: None });
+        self.palette = Some(Palette { entries, query: String::new(), matches, sel: 0, top: 0, search: None });
         if let Some(r) = self.palette_edit_rect() {
             window::begin_palette_edit(self, r);
         }
@@ -134,16 +130,15 @@ impl App {
         let width = WIDTH.min(w - 32.0).max(200.0);
         let l = ((w - width) / 2.0).round();
         let rh = self.row_h();
-        let footer_h = if p.keys.is_some() { rh + 4.0 } else { 0.0 };
         let t = match self.config.palette.position {
             PalettePosition::Top => 6.0,
             // 以清單填滿時的高度置中，篩選結果變少時輸入框不會跳動
             PalettePosition::Center => {
-                let full = PAD + INPUT_H + 6.0 + MAX_ROWS as f32 * rh + footer_h + PAD;
+                let full = PAD + INPUT_H + 6.0 + MAX_ROWS as f32 * rh + PAD;
                 ((h - full) / 2.0).max(6.0).round()
             }
             PalettePosition::Middle => {
-                let actual = PAD + INPUT_H + 6.0 + p.visible_rows() as f32 * rh + footer_h + PAD;
+                let actual = PAD + INPUT_H + 6.0 + p.visible_rows() as f32 * rh + PAD;
                 ((h - actual) / 2.0).max(6.0).round()
             }
         };
@@ -152,9 +147,8 @@ impl App {
         let rows: Vec<Rect> =
             (0..p.visible_rows()).map(|i| Rect::new(input.l, y0 + i as f32 * rh, input.r, y0 + (i + 1) as f32 * rh)).collect();
         let rows_b = rows.last().map_or(input.b, |r| r.b);
-        let footer = p.keys.is_some().then(|| Rect::new(input.l, rows_b + 4.0, input.r, rows_b + footer_h));
-        let bottom = rows_b + footer_h + PAD;
-        Some(PaletteLayout { card: Rect::new(l, t, l + width, bottom), input, rows, footer })
+        let bottom = rows_b + PAD;
+        Some(PaletteLayout { card: Rect::new(l, t, l + width, bottom), input, rows })
     }
 
     /// 面板開啟時的點擊判定：面板外為 Hit::None（點擊會關閉面板）
@@ -181,9 +175,6 @@ impl App {
         let recent = &self.palette_recent;
         let Some(p) = self.palette.as_mut() else { return };
         p.query = text;
-        if let Some(k) = p.keys.as_mut() {
-            k.recording = false;
-        }
         if p.search.is_some() {
             self.search_query_changed();
             return;
@@ -212,10 +203,6 @@ impl App {
 
     /// 關閉面板並執行選取的命令（`index` 為 `matches` 索引；None 表示目前選取項）
     pub fn run_palette(&mut self, index: Option<usize>) {
-        if self.keys_mode() {
-            self.keys_begin_record(index);
-            return;
-        }
         let Some(mut p) = self.palette.take() else { return };
         self.close_palette_edit();
         if let Some(r) = p.search.take() {
@@ -294,15 +281,10 @@ impl App {
             g.text(&text, Font::Text, Rect::new(row0.l + 10.0, row0.t, row0.r - 10.0, row0.b), c.text);
             return;
         }
-        if let (Some(f), Some((text, warn))) = (lay.footer, self.keys_footer()) {
-            g.hline(f.l, f.r, f.t - 2.0, c.border);
-            g.text(&text, Font::Small, Rect::new(f.l + 10.0, f.t, f.r - 10.0, f.b), if warn { c.error } else { c.text_secondary });
-        }
         if p.matches.is_empty() {
             g.text(tr!("沒有符合的命令"), Font::Text, Rect::new(row0.l + 10.0, row0.t, row0.r - 10.0, row0.b), c.text_secondary);
             return;
         }
-        let recording = self.keys_recording();
         for (i, row) in lay.rows.iter().enumerate() {
             let mi = p.top + i;
             let Some(&k) = p.matches.get(mi) else { break };
@@ -313,11 +295,8 @@ impl App {
                 g.fill_round(*row, self.theme.metrics.radius, c.hover);
             }
             let mut right = row.r - 10.0;
-            // 快速鍵編輯器錄製中：選取列的按鍵欄改為提示
-            let key = if recording && mi == p.sel { Some(tr!("按下新的快速鍵…（Esc 取消）")) } else { e.key.as_deref() };
-            if let Some(key) = key {
-                let col = if recording && mi == p.sel { c.selection_text } else { c.text_secondary };
-                g.text(key, Font::SmallRight, Rect::new(row.l, row.t, right, row.b), col);
+            if let Some(key) = e.key.as_deref() {
+                g.text(key, Font::SmallRight, Rect::new(row.l, row.t, right, row.b), c.text_secondary);
                 right -= g.measure(key, Font::Small) + 16.0;
             }
             let title_r = Rect::new(row.l + 10.0, row.t, right, row.b);

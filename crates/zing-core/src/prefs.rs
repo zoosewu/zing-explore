@@ -59,6 +59,13 @@ pub const PREFS: &[Pref] = &[
     },
     Pref { key: "show_hidden", group: tr_key!("一般"), label: tr_key!("顯示隱藏檔案"), hint: "", kind: Kind::Bool },
     Pref { key: "theme", group: tr_key!("外觀"), label: tr_key!("主題"), hint: "", kind: Kind::Theme },
+    Pref {
+        key: "",
+        group: tr_key!("外觀"),
+        label: tr_key!("自訂主題…"),
+        hint: tr_key!("調整顏色、字型、大小，改了立即看到效果"),
+        kind: Kind::Action("theme.edit"),
+    },
     Pref { key: "layout.tree", group: tr_key!("外觀"), label: tr_key!("樹狀列位置"), hint: "", kind: Kind::Choice(TREE_SIDES) },
     Pref {
         key: "palette.position",
@@ -66,6 +73,21 @@ pub const PREFS: &[Pref] = &[
         label: tr_key!("命令面板位置"),
         hint: "",
         kind: Kind::Choice(PALETTE_POSITIONS),
+    },
+    Pref { key: "command_bar.visible", group: tr_key!("外觀"), label: tr_key!("顯示命令列"), hint: "", kind: Kind::Bool },
+    Pref {
+        key: "command_bar.labels",
+        group: tr_key!("外觀"),
+        label: tr_key!("命令列按鈕顯示文字"),
+        hint: tr_key!("關閉後只顯示圖示（游標停在按鈕上會顯示名稱）"),
+        kind: Kind::Bool,
+    },
+    Pref {
+        key: "",
+        group: tr_key!("外觀"),
+        label: tr_key!("自訂命令列…"),
+        hint: tr_key!("選擇要顯示的按鈕、順序、名稱與圖示"),
+        kind: Kind::Action("cmdbar.edit"),
     },
     Pref {
         key: "folder_sizes.auto",
@@ -84,7 +106,6 @@ pub const PREFS: &[Pref] = &[
     Pref { key: "", group: tr_key!("資料夾大小"), label: tr_key!("NTFS 索引服務狀態"), hint: "", kind: Kind::Action("index.status") },
     Pref { key: "", group: tr_key!("資料夾大小"), label: tr_key!("移除 NTFS 索引服務"), hint: "", kind: Kind::Action("index.uninstall") },
     Pref { key: "", group: tr_key!("其他"), label: tr_key!("編輯快速鍵"), hint: "", kind: Kind::Action("keys.edit") },
-    Pref { key: "", group: tr_key!("其他"), label: tr_key!("編輯目前的主題"), hint: "", kind: Kind::Action("theme.edit") },
     Pref {
         key: "",
         group: tr_key!("其他"),
@@ -131,6 +152,8 @@ impl Config {
             "layout.tree" => tree_side_code(self.layout.tree).into(),
             "palette.position" => palette_code(self.palette.position).into(),
             "folder_sizes.auto" => self.folder_sizes.auto.to_string(),
+            "command_bar.visible" => self.command_bar.visible.to_string(),
+            "command_bar.labels" => self.command_bar.labels.to_string(),
             _ => String::new(),
         }
     }
@@ -149,6 +172,8 @@ impl Config {
             "layout.tree" => self.layout.tree = toml_enum(value).ok_or_else(bad)?,
             "palette.position" => self.palette.position = toml_enum(value).ok_or_else(bad)?,
             "folder_sizes.auto" => self.folder_sizes.auto = value.parse().map_err(|_| bad())?,
+            "command_bar.visible" => self.command_bar.visible = value.parse().map_err(|_| bad())?,
+            "command_bar.labels" => self.command_bar.labels = value.parse().map_err(|_| bad())?,
             _ => return Err(bad()),
         }
         Ok(())
@@ -369,7 +394,7 @@ mod tests {
         assert_eq!((cfg.language, cfg.pref_value("language").as_str()), (crate::i18n::Lang::Ja, "ja"));
         assert!(cfg.set_pref("palette.position", "left").is_err());
         assert!(cfg.set_pref("show_hidden", "maybe").is_err());
-        assert_eq!(choice_label(&PREFS[4], "right"), "右側");
+        assert_eq!(choice_label(&PREFS[5], "right"), "右側");
         assert_eq!(choice_label(&PREFS[3], "我的主題"), "我的主題");
     }
 }

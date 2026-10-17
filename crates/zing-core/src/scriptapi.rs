@@ -77,7 +77,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("pane.close", &[], tr_key!("關閉窗格"), "pane.close()"),
     spec("pane.focusnext", &[], tr_key!("切換到下一個窗格"), "pane.focusnext()"),
     spec("tree.toggle", &[], tr_key!("顯示／隱藏樹狀列"), "tree.toggle()"),
-    spec("view.sort", &["opts {by: \"name\"|\"modified\"|\"type\"|\"size\", asc?: boolean, desc?: boolean}"], tr_key!("排序"), "view.sort{ by = \"size\", desc = true }"),
+    spec("view.sort", &[tr_key!("opts {by?: \"name\"|\"modified\"|\"type\"|\"size\", asc?: boolean, desc?: boolean} 只給 asc／desc 時維持目前的欄位")], tr_key!("排序"), "view.sort{ by = \"size\", desc = true }"),
     spec("view.foldersizes", &[], tr_key!("計算資料夾大小"), "view.foldersizes()"),
     spec(
         "thumb.set",
@@ -86,6 +86,9 @@ pub const COMMANDS: &[Spec] = &[
         tr_key!("thumb.set{ image = \"D:\\\\封面.jpg\" }"),
     ),
     spec("thumb.clear", &["opts? {path?: string}"], tr_key!("移除手動指定的縮圖"), "thumb.clear()"),
+    spec("cmdbar.edit", &[], tr_key!("開啟自訂命令列的面板（結果存在程式旁的 toolbar.toml）"), "cmdbar.edit()"),
+    spec("cmdbar.hide", &[], tr_key!("隱藏命令列（寫回 config.toml 的 command_bar.visible）"), "cmdbar.hide()"),
+    spec("file.newfile", &[], tr_key!("在目前的資料夾新增文字文件並進入重新命名"), "file.newfile()"),
     spec("settings.open", &[], tr_key!("開啟設定頁（修改會寫回 config.toml 的對應行，保留註解）"), "settings.open()"),
     spec("keys.edit", &[], tr_key!("開啟快速鍵編輯器（結果存在程式旁的 keys.toml）"), "keys.edit()"),
     spec("view.preview", &[], tr_key!("顯示／隱藏預覽窗格"), "view.preview()"),

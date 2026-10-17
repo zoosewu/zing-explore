@@ -89,6 +89,12 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 設定頁（`prefspage.rs`，命令 `settings.open`）：項目定義在 `zing_core::prefs::PREFS`，新增設定時同步加上 `Config::pref_value`／
   `set_pref` 與設定頁的立即套用（`App::set_pref`）。寫回 config.toml 只改那一行（`prefs::write_pref`，保留註解），改不了（行內表、
   多行字串）就回報錯誤、不寫入；隔離模式不寫檔。與主題編輯面板共用右側位置，兩者只開一個。
+- 介面要讓不會寫程式的人也能用：能用 UI 調整的就不要求改設定檔或寫命令（選單、開關、滑桿、色票，改了立即看到效果）；
+  設定檔與命令腳本留給進階使用者。主題編輯面板在 `themepanel.rs`（檔案操作在 `themeedit.rs`）。
+  命令面板視為只有工程師會用：每個操作都要能從命令列（`cmdbar.rs`，內容在 `zing_core::cmdbar`）、「⋯」選單、右鍵或面板完成
+  （搜尋本來就是輸入框，除外）。新增命令時同步加進 `zing_core::cmdbar` 的選單（或確認已在其中）與 `LABELS` 的短名稱；
+  不能用時在 `App::cmd_disabled` 回傳原因（按鈕變灰、提示顯示原因）。圖示按鈕都要有提示（`tooltip.rs`）。
+  下拉選單用 `menu.rs`（D2D 自繪、跟著主題）。右側面板（設定、主題、自訂命令列、快速鍵）一次只開一個（`App::close_side_panels`）。
 - 執行外部程式一律經 `services::start`／`services::launch`：`Show::HideConsole`（`run`、Lua 的 `run`）時主控台程式以
   CREATE_NO_WINDOW 執行；開啟檔案、網址列輸入維持 `Show::Normal`（與檔案總管相同）。Lua 的 `os.execute`、`io.popen`
   在 prelude 換成不顯示主控台視窗的版本。
@@ -142,7 +148,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 資料存放位置：
   - 使用者的設定與習慣放在 `zing.exe` 所在的資料夾（可攜式，重灌系統不受影響）：`config.toml`（設定）、
     `themes\*.toml`（主題）、`session.toml`（視窗、分頁、我的最愛與其順序、命令面板最近使用）、
-    `keys.toml`（快速鍵編輯器寫的按鍵，只含與預設＋config.toml 不同的，見 `zing_core::keyedit`）。路徑一律經 `settings::app_dir()`。
+    `keys.toml`（快速鍵編輯器寫的按鍵，只含與預設＋config.toml 不同的，見 `zing_core::keyedit`）、
+    `toolbar.toml`（命令列的按鈕，「自訂命令列」寫的，見 `zing_core::cmdbar`）。路徑一律經 `settings::app_dir()`。
   - 系統產生、可重建的資料（資料夾大小快取、縮圖快取…）放在 `%LOCALAPPDATA%\zing-explore\`（只屬於這台電腦、不漫遊，
     刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（沒有索引時的資料夾大小，見 `sizes.rs`）、
     `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`）、

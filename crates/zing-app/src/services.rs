@@ -58,7 +58,7 @@ pub enum Msg {
     /// 剪貼簿上的檔案已讀出，交給檔案作業佇列
     Paste { sources: Vec<String>, dest: String, cut: bool },
     /// 背景重新讀取的設定與主題
-    ConfigLoaded { config: zing_core::config::Config, theme: zing_core::theme::Theme, warnings: Vec<String> },
+    ConfigLoaded { config: Box<zing_core::config::Config>, theme: zing_core::theme::Theme, warnings: Vec<String> },
     /// 背景讀取的主題（theme.set）
     ThemeLoaded { name: String, result: Result<zing_core::theme::Theme, String> },
     /// 主題檔寫入完成（另存、覆蓋、匯入）
@@ -69,6 +69,10 @@ pub enum Msg {
     ThemeImport(Result<(String, String, bool), String>),
     /// themes 資料夾中的使用者主題名稱（設定頁）
     UserThemes(Vec<String>),
+    /// 系統字型（主題編輯器的字型選單）：（英文名稱, 顯示名稱）
+    Fonts(Vec<(String, String)>),
+    /// 命令列的圖片圖示讀取完成
+    CmdBarImage { path: String, pixels: Option<crate::icons::IconPixels> },
     /// 網址列輸入已在背景確認是否為資料夾
     AddressResolved { pane: usize, target: String, normalized: String, is_dir: bool, cwd: String },
     /// 作業佇列中某個工作的狀態或進度

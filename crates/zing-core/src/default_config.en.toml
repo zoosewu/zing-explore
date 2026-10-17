@@ -26,6 +26,12 @@ position = "top"
 # match = "*.stl;*.3mf"
 # cmd = 'stl-thumb -s {size} "{in}" "{out}"'
 
+[command_bar]
+# The command bar below the toolbar (New, Cut, Copy, Paste…)
+visible = true
+# false: buttons show icons only
+labels = true
+
 [folder_sizes]
 # With the NTFS index service (command palette: Enable NTFS index service), sizes always come instantly from the index and this setting has no effect.
 # Without the index (service not enabled, non-NTFS drives):
@@ -210,10 +216,9 @@ cmd = "jobs.toggle"
 key = "Ctrl+Shift+R"
 cmd = "config.reload"
 
-# ---- Toolbar buttons ----
-[[button]]
-label = "New folder"
-cmd = "file.newfolder"
-[[button]]
-label = "Terminal"
-cmd = "run wt.exe -d {path}"
+# ---- Custom command bar buttons ----
+# Usually adjusted with "⋯ → Customize command bar…" (saved in toolbar.toml next to zing.exe).
+# While there is no toolbar.toml, the [[button]] entries here are added before "⋯" on the command bar:
+# [[button]]
+# label = "Notepad"
+# cmd = "run notepad.exe"

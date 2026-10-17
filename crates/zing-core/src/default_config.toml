@@ -26,6 +26,12 @@ position = "top"
 # match = "*.stl;*.3mf"
 # cmd = 'stl-thumb -s {size} "{in}" "{out}"'
 
+[command_bar]
+# 工具列下方的命令列（新增、剪下、複製、貼上…）
+visible = true
+# false：按鈕只顯示圖示
+labels = true
+
 [folder_sizes]
 # 有 NTFS 索引服務（命令面板：啟用 NTFS 索引服務）時，大小一律由索引立即提供，不受這個設定影響。
 # 沒有索引時（服務未啟用、非 NTFS 磁碟）：
@@ -210,10 +216,9 @@ cmd = "jobs.toggle"
 key = "Ctrl+Shift+R"
 cmd = "config.reload"
 
-# ---- 工具列按鈕 ----
-[[button]]
-label = "新資料夾"
-cmd = "file.newfolder"
-[[button]]
-label = "終端機"
-cmd = "run wt.exe -d {path}"
+# ---- 命令列的自訂按鈕 ----
+# 一般用「⋯ → 自訂命令列…」調整即可（存在 zing.exe 旁的 toolbar.toml）。
+# 還沒有 toolbar.toml 時，這裡的 [[button]] 會加在命令列的「⋯」前面：
+# [[button]]
+# label = "記事本"
+# cmd = "run notepad.exe"

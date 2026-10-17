@@ -67,6 +67,7 @@ impl App {
                 self.cols[col] = clamp_col(start_w - (x - start_x));
                 self.invalidate();
             }
+            Some(Press::ThemeSlider { .. }) => self.theme_slide(x),
             Some(Press::PreviewSplit { start_x, start_w }) => {
                 // 預覽窗格在右側：往左拖變寬
                 self.preview.width = (start_w - (x - start_x)).clamp(200.0, 900.0);
@@ -78,9 +79,14 @@ impl App {
                 self.tree_width = (if right { start_w - dx } else { start_w + dx }).clamp(120.0, 800.0);
                 self.invalidate();
             }
+            Some(Press::BarEditDrag { .. }) => self.cmdbar_edit_drag(y),
             None => {
                 let hit = self.hit_test(&self.layout, x, y);
                 if hit != self.hover {
+                    if self.menu.is_some() {
+                        self.menu_hover(&hit);
+                    }
+                    self.update_tip(&hit);
                     self.hover = hit;
                     self.invalidate();
                 }
@@ -89,6 +95,7 @@ impl App {
     }
 
     pub fn on_mouse_leave(&mut self) {
+        self.hide_tip();
         if self.hover != Hit::None {
             self.hover = Hit::None;
             self.invalidate();
@@ -97,7 +104,13 @@ impl App {
 
     pub fn on_lbutton_down(&mut self, x: f32, y: f32) {
         let mods = Mods::current();
+        self.hide_tip();
         let hit = self.fresh_hit(x, y);
+        // 下拉選單開著：點項目執行，點選單外關閉（不傳給底下的元件）
+        if self.menu.is_some() {
+            self.menu_click(hit);
+            return;
+        }
         // Lua 的 ask()：點輸入框外視為取消
         if self.ask.is_some() {
             if self.ask_layout().is_some_and(|(card, _, _)| !card.contains(x, y)) {
@@ -127,6 +140,21 @@ impl App {
             }
             Hit::Address => crate::window::begin_address_edit(self),
             Hit::FilterChip => self.set_filter(String::new()),
+            Hit::CmdButton(k) => {
+                if let Some(&(i, r, _)) = self.layout.cmdbar.as_ref().and_then(|b| b.buttons.get(k)) {
+                    self.cmdbar_click(i, r);
+                }
+            }
+            Hit::CmdBar | Hit::MenuItem(..) | Hit::Menu => {}
+            Hit::BarEditRow(_) | Hit::BarEditPart(..) | Hit::BarEditButton(_) | Hit::BarEditPanel => self.cmdbar_edit_click(hit, y),
+            Hit::KeysRow(_) | Hit::KeysPart(..) | Hit::KeysButton(_) | Hit::KeysPanel => self.keys_click(hit),
+            Hit::SettingsGear => {
+                if self.settings_page.is_some() {
+                    self.close_settings();
+                } else {
+                    self.open_settings();
+                }
+            }
             Hit::Button(i) => {
                 let cmd = self.config.buttons[i].cmd.clone();
                 self.exec(&cmd);
@@ -143,7 +171,16 @@ impl App {
             }
             Hit::TreeEmpty => self.focus = Focus::Tree,
             Hit::Preview => {}
-            Hit::ThemeRow(_) | Hit::ThemeSwatch(_) | Hit::ThemeButton(_) | Hit::ThemePanel => self.theme_click(hit),
+            Hit::ThemeRow(_)
+            | Hit::ThemeText(_)
+            | Hit::ThemeCell(..)
+            | Hit::ThemeReset(_)
+            | Hit::ThemeStep(..)
+            | Hit::ThemeSlider(_)
+            | Hit::ThemeDelete(_)
+            | Hit::ThemeButton(_)
+            | Hit::ThemeLink(_)
+            | Hit::ThemePanel => self.theme_click(hit, x),
             Hit::SettingsRow(_) | Hit::SettingsButton(_) | Hit::SettingsPanel => self.settings_click(hit),
             // 批次重新命名面板開啟時在函式開頭處理
             Hit::BatchChip(_) | Hit::BatchField(_) | Hit::BatchRun | Hit::BatchCancel | Hit::Batch => {}
@@ -269,7 +306,18 @@ impl App {
         if self.batch.is_some() {
             return;
         }
-        match self.fresh_hit(x, y) {
+        self.hide_tip();
+        let hit = self.fresh_hit(x, y);
+        if self.menu.is_some() {
+            self.menu_right_click(hit, x, y);
+            return;
+        }
+        match hit {
+            Hit::CmdButton(k) => {
+                let i = self.layout.cmdbar.as_ref().and_then(|b| b.buttons.get(k)).map(|b| b.0);
+                self.cmdbar_right_click(i, x, y);
+            }
+            Hit::CmdBar => self.cmdbar_right_click(None, x, y),
             Hit::Row(p, i) => {
                 self.activate_pane(p);
                 let tab = self.panes[p].tab_mut();
@@ -350,6 +398,19 @@ impl App {
 
     /// `delta`：WHEEL_DELTA（120）的倍數，正值往上
     pub fn on_wheel(&mut self, x: f32, y: f32, delta: i16, ctrl: bool) {
+        self.hide_tip();
+        if self.menu.is_some() {
+            self.close_menu();
+            return;
+        }
+        if let Some(cp) = self.layout.cmdbar_panel.filter(|r| r.contains(x, y)) {
+            self.cmdbar_edit_wheel(cp, delta);
+            return;
+        }
+        if let Some(kp) = self.layout.keys_panel.filter(|r| r.contains(x, y)) {
+            self.keys_wheel(kp, delta);
+            return;
+        }
         if self.batch.is_some() {
             self.batch_command(crate::batch::CMD_SCROLL, -3 * delta as isize / 120);
             return;
@@ -401,6 +462,17 @@ impl App {
     /// 回傳 true 表示已處理
     pub fn on_key(&mut self, vk: u16, mods: Mods) -> bool {
         self.suppress_char = false;
+        self.hide_tip();
+        if self.menu.is_some() {
+            self.suppress_char = true;
+            return self.menu_key(vk);
+        }
+        // 快速鍵編輯面板正在錄製或依按鍵搜尋：按鍵交給面板
+        if self.keys_capturing() {
+            self.suppress_char = true;
+            self.keys_key(vk, mods);
+            return true;
+        }
         // 批次重新命名面板開啟、但焦點不在它的輸入框（例如點了面板後）時
         if self.batch.is_some() {
             match vk {
@@ -418,6 +490,15 @@ impl App {
         // 設定頁開著：Esc 收起選項或關閉設定頁（篩選與選取之前）
         if plain && vk == VK_ESCAPE.0 && self.settings_page.is_some() {
             self.settings_escape();
+            return true;
+        }
+        // 主題編輯面板：Esc 收起展開的選單或色票
+        if plain && vk == VK_ESCAPE.0 && self.theme_escape() {
+            return true;
+        }
+        // 自訂命令列、快速鍵面板：Esc 關閉
+        if plain && vk == VK_ESCAPE.0 && (self.cmdbar_editor.is_some() || self.keys_panel.is_some()) {
+            self.close_side_panels();
             return true;
         }
 
