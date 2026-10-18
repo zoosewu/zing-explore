@@ -2132,6 +2132,28 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("圖示", it.icon.as_str(), &format!("glyph:{}", zing_core::cmdbar::GLYPHS[2].0))
     }));
     v.push(step("截圖：自訂命令列", |_| {}, |c, _| screenshot(c, "20-自訂命令列")));
+    v.push(step("自訂命令列：搜尋「終端機」後點結果加入", |c| {
+        with_app(|a| a.bar_query("終端機".into()));
+        let rows = with_app(|a| a.cmdbar_edit_rows()).unwrap_or_default();
+        let only = rows.iter().filter(|r| matches!(r, crate::cmdbaredit::Row::Avail(..))).count();
+        c.notes.push(("bar_search_count", only.to_string()));
+        click(c, "", bar_edit_pos(zing_core::cmdbar::TERMINAL, true, None));
+    }, |c, a| {
+        expect("只列出符合的", c.note("bar_search_count"), Some("1"))?;
+        expect("已加入", a.config.cmdbar.iter().any(|i| i.cmd == zing_core::cmdbar::TERMINAL), true)
+    }));
+    v.push(step("自訂命令列：點 × 清除搜尋", |c| {
+        let at = with_app(|a| {
+            a.layout = a.compute_layout();
+            let s = a.bar_search_rect(a.layout.cmdbar_panel?);
+            Some((s.r - s.h() / 2.0, (s.t + s.b) / 2.0))
+        })
+        .flatten();
+        click(c, "", at);
+    }, |_, a| {
+        expect("清除", a.cmdbar_editor.as_ref().map(|e| e.query.as_str()), Some(""))?;
+        expect("又看到目前的按鈕", a.cmdbar_edit_rows().iter().any(|r| matches!(r, crate::cmdbaredit::Row::Item(_))), true)
+    }));
     v.push(step("自訂命令列：還原預設後 Esc 關閉", |c| {
         with_app(|a| {
             a.config.cmdbar = zing_core::cmdbar::defaults();
@@ -2141,6 +2163,43 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     }, |_, a| {
         expect("面板關閉", a.cmdbar_editor.is_none(), true)?;
         expect("預設", a.config.cmdbar == zing_core::cmdbar::defaults(), true)
+    }));
+
+    // ------------------------------------------------ 鍵盤操作命令列（F10）
+    let f10 = VIRTUAL_KEY(0x79);
+    v.push(step("命令列鍵盤：F10 移到第一個按鈕並顯示提示", move |c| key(c, "", f10), |_, a| {
+        let first = a.layout.cmdbar.as_ref().and_then(|b| b.buttons.first()).map(|b| b.0);
+        expect("焦點", a.bar_focus, first)?;
+        expect("是「新增」", a.bar_focus.map(|i| a.config.cmdbar[i].cmd.as_str()), Some(zing_core::cmdbar::MENU_NEW))?;
+        expect("提示", a.tip.as_ref().is_some_and(|t| t.shown), true)
+    }));
+    v.push(step("命令列鍵盤：→ 略過不能用的按鈕", |c| key(c, "", VK_RIGHT), |_, a| {
+        let i = a.bar_focus.ok_or("沒有焦點")?;
+        let it = &a.config.cmdbar[i];
+        expect("不是分隔線", it.is_separator(), false)?;
+        expect("可以用", it.is_menu() || a.cmd_disabled(&it.cmd).is_none(), true)?;
+        expect("移動了", it.cmd != zing_core::cmdbar::MENU_NEW, true)
+    }));
+    v.push(step("命令列鍵盤：Home 後 Enter 開啟「新增」選單並選取第一項", |c| {
+        key(c, "", VK_HOME);
+        key(c, "", VK_RETURN);
+    }, |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒開")?;
+        expect("第一項", m.levels[0].hover, Some(0))
+    }));
+    v.push(step("命令列鍵盤：選單開著時 ← 換到「⋯」並開啟", |c| key(c, "", VK_LEFT), |_, a| {
+        expect("焦點", a.bar_focus.map(|i| a.config.cmdbar[i].cmd.as_str()), Some(zing_core::cmdbar::MENU_MORE))?;
+        expect("選單", a.menu.is_some(), true)
+    }));
+    v.push(step("命令列鍵盤：Esc 關閉選單、留在命令列，再按 Esc 離開", |c| {
+        key(c, "", VK_ESCAPE);
+        let still = with_app(|a| a.menu.is_none() && a.bar_focus.is_some()).unwrap_or(false);
+        c.notes.push(("bar_after_esc", still.to_string()));
+        key(c, "", VK_ESCAPE);
+    }, |c, a| {
+        expect("第一次 Esc", c.note("bar_after_esc"), Some("true"))?;
+        expect("離開", a.bar_focus, None)?;
+        expect("提示消失", a.tip.is_none(), true)
     }));
 
     // ------------------------------------------------ 介面語言（隔離模式預設繁體中文；切換後檢查幾處文字並截圖）

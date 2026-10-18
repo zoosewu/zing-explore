@@ -5,6 +5,8 @@
 //! - 視窗變窄：先收起文字，再把右邊的按鈕依序移進「⋯」。
 //! - 右鍵：從命令列移除、左移／右移、自訂命令列…；「⋯」中的項目按右鍵可加到命令列。
 //! - 圖片圖示在背景讀取（`shell_image`），讀好之前不畫。
+//! - 鍵盤（與 Windows 的選單列相同）：F10 移到命令列，←→ 移動（略過不能用的）、Enter／空白鍵／↓ 執行或開啟選單，
+//!   選單開著時 ←→ 換到相鄰的按鈕，Esc 回到命令列，再按 Esc、F10 或 Tab 離開。焦點所在的按鈕立即顯示提示。
 
 use zing_core::cmdbar::{self as core, Entry, Icon, Item};
 
@@ -297,6 +299,93 @@ impl App {
         }
     }
 
+    /// 鍵盤可以停留的按鈕（命令列索引）：不含分隔線與不能用的
+    fn bar_focusable(&self) -> Vec<usize> {
+        let Some(bl) = self.layout.cmdbar.as_ref() else { return Vec::new() };
+        bl.buttons
+            .iter()
+            .map(|&(i, _, _)| i)
+            .filter(|&i| self.config.cmdbar.get(i).is_some_and(|it| !it.is_separator() && (it.is_menu() || self.cmd_disabled(&it.cmd).is_none())))
+            .collect()
+    }
+
+    /// F10：進入或離開命令列
+    pub fn cmdbar_focus_toggle(&mut self) {
+        if self.bar_focus.take().is_none() {
+            self.bar_focus = self.bar_focusable().first().copied();
+            self.show_bar_tip();
+        } else {
+            self.hide_tip();
+        }
+        self.invalidate();
+    }
+
+    pub fn leave_cmdbar(&mut self) {
+        if self.bar_focus.take().is_some() {
+            self.hide_tip();
+            self.invalidate();
+        }
+    }
+
+    /// 移到前（-1）、後（1）一個按鈕，到頭時繞回
+    pub fn bar_focus_move(&mut self, d: isize) {
+        let list = self.bar_focusable();
+        if list.is_empty() {
+            return self.leave_cmdbar();
+        }
+        let n = list.len() as isize;
+        let next = match self.bar_focus.and_then(|i| list.iter().position(|&j| j == i)) {
+            Some(p) => list[(p as isize + d).rem_euclid(n) as usize],
+            None => list[0],
+        };
+        self.bar_focus = Some(next);
+        self.show_bar_tip();
+        self.invalidate();
+    }
+
+    /// 焦點所在的按鈕：選單就開啟（並選取第一項），命令就執行並離開命令列
+    pub fn bar_activate(&mut self) {
+        let Some(i) = self.bar_focus else { return };
+        let Some(r) = self.layout.cmdbar.as_ref().and_then(|b| b.buttons.iter().find(|(j, _, _)| *j == i)).map(|b| b.1) else { return };
+        let menu = self.config.cmdbar.get(i).is_some_and(|it| it.is_menu());
+        if !menu {
+            self.leave_cmdbar();
+        }
+        self.cmdbar_click(i, r);
+        if menu {
+            self.menu_select_first();
+        }
+    }
+
+    /// 焦點在命令列時的按鍵；不是命令列的按鍵就離開命令列、回傳 false（照常處理）
+    pub fn cmdbar_key(&mut self, vk: u16) -> bool {
+        match vk {
+            0x25 => self.bar_focus_move(-1),
+            0x27 => self.bar_focus_move(1),
+            0x24 | 0x23 => {
+                let list = self.bar_focusable();
+                self.bar_focus = if vk == 0x24 { list.first() } else { list.last() }.copied();
+                self.show_bar_tip();
+                self.invalidate();
+            }
+            0x0D | 0x20 | 0x28 => self.bar_activate(),
+            0x1B | 0x79 | 0x09 => self.leave_cmdbar(),
+            _ => {
+                self.leave_cmdbar();
+                return false;
+            }
+        }
+        true
+    }
+
+    fn show_bar_tip(&mut self) {
+        let k = self.bar_focus.and_then(|i| self.layout.cmdbar.as_ref()?.buttons.iter().position(|(j, _, _)| *j == i));
+        match k {
+            Some(k) => self.show_tip_now(&Hit::CmdButton(k)),
+            None => self.hide_tip(),
+        }
+    }
+
     pub fn paint_cmdbar(&self, lay: &crate::view::Layout) {
         let Some(bl) = lay.cmdbar.as_ref() else { return };
         let c = &self.theme.color;
@@ -312,8 +401,13 @@ impl App {
                 continue;
             }
             let disabled = !it.is_menu() && self.cmd_disabled(&it.cmd).is_some();
-            if self.hover == Hit::CmdButton(k) && !disabled {
-                g.fill_round(r, self.theme.metrics.radius.max(4.0), c.hover);
+            let radius = self.theme.metrics.radius.max(4.0);
+            let focused = self.bar_focus == Some(i);
+            if (self.hover == Hit::CmdButton(k) || focused) && !disabled {
+                g.fill_round(r, radius, c.hover);
+            }
+            if focused {
+                g.stroke_round(r, radius, c.accent, 2.0);
             }
             let col = if disabled { c.text_secondary.with_alpha(110) } else { c.text };
             let icon_r = Rect::new(r.l + (r.h() - 16.0) / 2.0, r.t, r.l + (r.h() + 16.0) / 2.0 + 4.0, r.b);

@@ -991,6 +991,11 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 with_app(|a| a.keys_query(text));
                 return Some(LRESULT(0));
             }
+            if with_app(|a| a.edit.as_ref().is_some_and(|e| e.hwnd == edit && matches!(e.kind, EditKind::BarSearch))) == Some(true) {
+                let text = edit_text(edit);
+                with_app(|a| a.bar_query(text));
+                return Some(LRESULT(0));
+            }
             match kind {
                 Some((true, _)) => {
                     let text = edit_text(edit);
@@ -1115,9 +1120,15 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             brush.map(|b| LRESULT(b.0 as isize))
         }
         WM_SETFOCUS | WM_KILLFOCUS => {
+            if msg == WM_KILLFOCUS {
+                with_app(|a| a.leave_cmdbar());
+            }
             with_app(|a| a.invalidate());
             None
         }
+        // F10 放開：DefWindowProc 會進入（沒有選單列的）選單模式並吞掉下一個按鍵；F10 已由命令列處理。
+        // Shift+F10 照常交給 DefWindowProc（轉成 WM_CONTEXTMENU）
+        WM_SYSKEYUP if wparam.0 == 0x79 && !Mods::current().shift => Some(LRESULT(0)),
         WM_CLOSE => {
             // 還有檔案作業：確認後取消它們，隱藏視窗，等作業停止（最多 5 秒）再結束
             let active = with_app(|a| if a.pending_exit { 0 } else { a.jobs.active() }).unwrap_or(0);

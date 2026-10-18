@@ -105,6 +105,7 @@ impl App {
     pub fn on_lbutton_down(&mut self, x: f32, y: f32) {
         let mods = Mods::current();
         self.hide_tip();
+        self.leave_cmdbar();
         let hit = self.fresh_hit(x, y);
         // 下拉選單開著：點項目執行，點選單外關閉（不傳給底下的元件）
         if self.menu.is_some() {
@@ -146,7 +147,7 @@ impl App {
                 }
             }
             Hit::CmdBar | Hit::MenuItem(..) | Hit::Menu => {}
-            Hit::BarEditRow(_) | Hit::BarEditPart(..) | Hit::BarEditButton(_) | Hit::BarEditPanel => self.cmdbar_edit_click(hit, y),
+            Hit::BarEditRow(_) | Hit::BarEditPart(..) | Hit::BarEditButton(_) | Hit::BarEditPanel | Hit::BarEditSearch(_) => self.cmdbar_edit_click(hit, y),
             Hit::KeysRow(_) | Hit::KeysPart(..) | Hit::KeysButton(_) | Hit::KeysPanel => self.keys_click(hit),
             Hit::SettingsGear => {
                 if self.settings_page.is_some() {
@@ -467,6 +468,11 @@ impl App {
             self.suppress_char = true;
             return self.menu_key(vk);
         }
+        // 鍵盤操作命令列中（F10）
+        if self.bar_focus.is_some() && self.cmdbar_key(vk) {
+            self.suppress_char = true;
+            return true;
+        }
         // 快速鍵編輯面板正在錄製或依按鍵搜尋：按鍵交給面板
         if self.keys_capturing() {
             self.suppress_char = true;
@@ -517,6 +523,12 @@ impl App {
         }
 
         let chord = KeyChord { ctrl: mods.ctrl, shift: mods.shift, alt: mods.alt, vk };
+        // F10 移到命令列（與 Windows 的選單列相同；使用者把 F10 指定給命令時以命令為準）
+        if plain && vk == 0x79 && self.config.command_bar.visible && self.config.command_for(chord).is_none() {
+            self.cmdbar_focus_toggle();
+            self.suppress_char = true;
+            return true;
+        }
         if let Some(cmd) = self.config.command_for(chord).map(str::to_string) {
             self.exec(&cmd);
             self.suppress_char = true;

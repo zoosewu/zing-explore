@@ -699,3 +699,6 @@
 "顯示命令列" = "Show command bar"
 "opts {by?: \"name\"|\"modified\"|\"type\"|\"size\", asc?: boolean, desc?: boolean} 只給 asc／desc 時維持目前的欄位" = "opts {by?: \"name\"|\"modified\"|\"type\"|\"size\", asc?: boolean, desc?: boolean} with only asc/desc, the current column is kept"
 "toolbar.toml 格式錯誤，已改用預設的命令列：{e}" = "toolbar.toml is invalid; using the default command bar: {e}"
+"搜尋結果" = "Search results"
+"找不到符合的命令" = "No matching commands"
+"搜尋要加入的命令" = "Search commands to add"

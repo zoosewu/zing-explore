@@ -122,6 +122,8 @@ pub enum Hit {
     BarEditPart(usize, usize),
     BarEditButton(usize),
     BarEditPanel,
+    /// 自訂命令列的搜尋框（true：清除鈕）
+    BarEditSearch(bool),
     /// 快速鍵編輯面板（keyspanel.rs）：列、列中的按鍵或按鈕（列, 第幾個）、底部按鈕、面板其他位置
     KeysRow(usize),
     KeysPart(usize, usize),

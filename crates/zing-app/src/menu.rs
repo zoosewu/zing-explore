@@ -204,7 +204,10 @@ impl App {
     pub fn menu_action(&mut self, a: Action) {
         match a {
             Action::None => {}
-            Action::Exec(cmd) => self.exec(&cmd),
+            Action::Exec(cmd) => {
+                self.leave_cmdbar();
+                self.exec(&cmd)
+            }
             Action::BarRemove(i) => self.cmdbar_remove(i),
             Action::BarMove(i, d) => self.cmdbar_move(i, d),
             Action::BarAdd(cmd) => self.cmdbar_add(&cmd),
@@ -212,7 +215,36 @@ impl App {
     }
 
     /// 選單開著時的按鍵；回傳 true 表示已處理（所有按鍵都不傳給底下）
+    /// 選取第一個可選的項目（以鍵盤開啟的選單）
+    pub fn menu_select_first(&mut self) {
+        if let Some(level) = self.menu.as_mut().and_then(|m| m.levels.last_mut()) {
+            level.hover = level.items.iter().position(|it| !it.separator && it.enabled);
+            self.invalidate();
+        }
+    }
+
     pub fn menu_key(&mut self, vk: u16) -> bool {
+        // 從命令列（F10）開啟的選單：最上層的 ←→ 換到相鄰的按鈕，是選單就開啟
+        if self.bar_focus.is_some()
+            && let Some(m) = self.menu.as_ref()
+            && m.levels.len() == 1
+        {
+            let level = &m.levels[0];
+            let opens_sub = level.hover.is_some_and(|i| !level.items[i].sub.is_empty());
+            let d = match vk {
+                0x25 => -1,
+                0x27 if !opens_sub => 1,
+                _ => 0,
+            };
+            if d != 0 {
+                self.close_menu();
+                self.bar_focus_move(d);
+                if self.bar_focus.and_then(|i| self.config.cmdbar.get(i)).is_some_and(|it| it.is_menu()) {
+                    self.bar_activate();
+                }
+                return true;
+            }
+        }
         let Some(m) = self.menu.as_mut() else { return false };
         let li = m.levels.len() - 1;
         let level = &mut m.levels[li];

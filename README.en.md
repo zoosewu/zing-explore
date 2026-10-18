@@ -45,8 +45,9 @@ cargo build --release
   changes apply immediately and are written back to the matching line of `config.toml` (the file's comments and layout are kept). The shortcut editor, theme editor and config file can also be opened from here
 - Everything can be done with the mouse, no commands to remember: the command bar below the toolbar (Windows 11 File Explorer style) has New▾, Cut, Copy, Paste, Rename, Delete,
   Sort▾ and View▾, and everything else is under "⋯" (grouped submenus, including Lua script commands). Unavailable buttons are grayed out; hovering a button shows its name,
-  shortcut and why it is unavailable; menus show shortcuts on the right. When the window gets narrow, labels collapse first, then buttons move into "⋯". The command palette (`Ctrl+Shift+P`) is for people who know the commands
-- Customize the command bar ("⋯ → Customize command bar…" or right-click the command bar): drag to reorder, add any built-in or script command, rename, pick a Fluent icon or use your own image file;
+  shortcut and why it is unavailable; menus show shortcuts on the right. When the window gets narrow, labels collapse first, then buttons move into "⋯". Keyboard only: press `F10` to move to the command bar, `←` `→` to move, `Enter` to run or open a menu
+  (with a menu open, `←` `→` switch to the neighboring menu), `Esc` to leave. The command palette (`Ctrl+Shift+P`) is for people who know the commands
+- Customize the command bar ("⋯ → Customize command bar…" or right-click the command bar): drag to reorder, search for and add any built-in or script command, rename, pick a Fluent icon or use your own image file;
   right-click an item under "⋯" to "Add to command bar". Saved in `toolbar.toml` next to `zing.exe`. The settings page can hide the command bar or show icons only
 - Keyboard shortcut editor ("⋯ → Edit keyboard shortcuts…"): commands are grouped; click "＋" and press a key combination to add it; if another command uses it you are asked to "Replace" or "Cancel";
   hover a key to remove it, ↺ to restore, "Restore all"; search by name or "Search by key". Saved in `keys.toml` next to `zing.exe` (it takes precedence over `config.toml`, which is never rewritten)

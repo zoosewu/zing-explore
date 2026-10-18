@@ -66,6 +66,17 @@ impl App {
         }
     }
 
+    /// 不等待、立即顯示（鍵盤移到命令列的按鈕時）
+    pub fn show_tip_now(&mut self, hit: &Hit) {
+        match self.tip_for(hit) {
+            Some((text, anchor)) => {
+                self.tip = Some(Tip { hit: hit.clone(), text, anchor, shown: true });
+                self.invalidate();
+            }
+            None => self.hide_tip(),
+        }
+    }
+
     /// 游標移到新的位置（hover 改變時呼叫）
     pub fn update_tip(&mut self, hit: &Hit) {
         if self.menu.is_some() {

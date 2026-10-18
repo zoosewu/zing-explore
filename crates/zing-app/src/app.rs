@@ -119,6 +119,8 @@ pub enum EditKind {
     BarCustom,
     /// 快速鍵編輯面板的搜尋框（內容改變時即時篩選）
     KeysSearch,
+    /// 自訂命令列的搜尋框（輸入時即時篩選）
+    BarSearch,
     /// Lua 腳本的 ask()
     Ask,
 }
@@ -173,6 +175,8 @@ pub struct App {
     pub menu: Option<crate::menu::Menu>,
     /// 游標停留提示（tooltip.rs）
     pub tip: Option<crate::tooltip::Tip>,
+    /// 以鍵盤（F10）操作命令列時，焦點所在的按鈕（命令列索引）
+    pub bar_focus: Option<usize>,
     /// 命令列的圖片圖示（路徑 → 讀取結果；None 表示讀取中或讀不到）
     pub cmdbar_images: std::cell::RefCell<std::collections::HashMap<String, Option<std::rc::Rc<crate::icons::IconPixels>>>>,
     pub scripts: crate::script::Scripts,
@@ -278,6 +282,7 @@ impl App {
             keys_panel: None,
             menu: None,
             tip: None,
+            bar_focus: None,
             cmdbar_images: Default::default(),
             scripts: Default::default(),
             ask: None,
@@ -1637,7 +1642,7 @@ impl App {
                 EditKind::Pref { field } => self.set_pref(field, text.trim().to_string()),
                 EditKind::BarLabel { item } => self.commit_bar_label(item, &text),
                 EditKind::BarCustom => self.commit_bar_custom(&text),
-                EditKind::KeysSearch => {}
+                EditKind::KeysSearch | EditKind::BarSearch => {}
                 EditKind::Ask => {}
             }
         }

@@ -699,3 +699,6 @@
 "顯示命令列" = "コマンドバーを表示"
 "opts {by?: \"name\"|\"modified\"|\"type\"|\"size\", asc?: boolean, desc?: boolean} 只給 asc／desc 時維持目前的欄位" = "opts {by?: \"name\"|\"modified\"|\"type\"|\"size\", asc?: boolean, desc?: boolean} asc／desc だけのときは現在の列のまま"
 "toolbar.toml 格式錯誤，已改用預設的命令列：{e}" = "toolbar.toml の形式が正しくないため、既定のコマンドバーを使います：{e}"
+"搜尋結果" = "検索結果"
+"找不到符合的命令" = "一致するコマンドがありません"
+"搜尋要加入的命令" = "追加するコマンドを検索"

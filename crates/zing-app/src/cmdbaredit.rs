@@ -3,6 +3,7 @@
 //! - 上半部「目前的按鈕」：拖曳左側的 ⋮⋮ 或按 ↑↓ 調整順序、× 移除；點一個按鈕展開，可改名稱、從 Fluent 圖示中挑選，
 //!   或「選擇圖片…」用自己的圖片檔。
 //! - 下半部「加入命令」：依分組列出內建命令與 Lua 腳本的命令，點一下加到命令列；「自訂命令（進階）」輸入命令腳本。
+//! - 標題下方的搜尋框依名稱、說明或命令篩選可加入的命令（輸入時即時更新）；有搜尋文字時只列出結果。
 //! - 每次修改立即生效，並在背景寫入程式旁的 `toolbar.toml`（隔離模式不寫檔）。
 
 use zing_core::cmdbar::{self as core, GLYPHS, Item};
@@ -22,6 +23,8 @@ pub struct CmdBarEditor {
     pub scroll: f32,
     /// 展開編輯的按鈕（命令列的索引）
     pub expanded: Option<usize>,
+    /// 搜尋文字（篩選可加入的命令）
+    pub query: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,7 +66,7 @@ impl App {
         if self.keys_panel.is_some() {
             self.close_keys_panel();
         }
-        if matches!(self.edit.as_ref().map(|e| &e.kind), Some(EditKind::BarLabel { .. } | EditKind::BarCustom))
+        if matches!(self.edit.as_ref().map(|e| &e.kind), Some(EditKind::BarLabel { .. } | EditKind::BarCustom | EditKind::BarSearch))
             && let Some(e) = self.edit.take()
         {
             window::destroy_edit(e.hwnd);
@@ -79,6 +82,10 @@ impl App {
 
     pub fn cmdbar_edit_rows(&self) -> Vec<Row> {
         let Some(ed) = self.cmdbar_editor.as_ref() else { return Vec::new() };
+        let q = ed.query.trim().to_lowercase();
+        if !q.is_empty() {
+            return self.bar_search_rows(&q);
+        }
         let mut out = vec![Row::Header(tr!("目前的按鈕"))];
         for i in 0..self.config.cmdbar.len() {
             out.push(Row::Item(i));
@@ -102,6 +109,36 @@ impl App {
         out
     }
 
+    /// 搜尋結果：符合的命令（保留分組標題），最後是自訂命令
+    fn bar_search_rows(&self, q: &str) -> Vec<Row> {
+        let long = |cmd: &str| zing_core::palette::BUILTIN.iter().find(|(c, _)| *c == cmd).map_or("", |(_, t)| zing_core::i18n::tr(t));
+        let hit = |cmd: &str, title: &str| [cmd, title, long(cmd)].iter().any(|s| s.to_lowercase().contains(q));
+        let mut out = vec![Row::Header(tr!("搜尋結果"))];
+        let mut groups: Vec<(&'static str, Vec<Row>)> = core::catalog()
+            .into_iter()
+            .map(|(g, cmds)| (zing_core::i18n::tr(g), cmds.into_iter().filter(|c| hit(c, core::label_for(c))).map(|c| Row::Avail(c.to_string(), core::label_for(c).to_string())).collect()))
+            .collect();
+        groups.push((tr!("腳本"), self.scripts.commands.iter().filter(|(n, t)| hit(n, t)).map(|(n, t)| Row::Avail(n.clone(), t.clone())).collect()));
+        let before = out.len();
+        for (g, rows) in groups.into_iter().filter(|(_, r)| !r.is_empty()) {
+            out.push(Row::Group(g));
+            out.extend(rows);
+        }
+        if out.len() == before {
+            out.push(Row::Group(tr!("找不到符合的命令")));
+        }
+        out.push(Row::Custom);
+        out
+    }
+
+    /// 標題下方的搜尋框
+    pub fn bar_search_rect(&self, r: Rect) -> Rect {
+        let rh = self.row_h();
+        let inner = r.inset(12.0, 10.0);
+        let t = inner.t + rh * 2.0 + 4.0;
+        Rect::new(inner.l, t, inner.r, t + (rh + 6.0).max(26.0))
+    }
+
     pub fn cmdbar_edit_layout(&self, r: Rect) -> (Rect, Rect, [Rect; 2]) {
         let rh = self.row_h();
         let inner = r.inset(12.0, 10.0);
@@ -110,7 +147,7 @@ impl App {
         let row = Rect::new(inner.l, inner.b - bh, inner.r, inner.b);
         let half = (inner.w() - 6.0) / 2.0;
         let buttons = [Rect::new(row.l, row.t, row.l + half, row.b), Rect::new(row.l + half + 6.0, row.t, row.r, row.b)];
-        let list = Rect::new(inner.l, title.b + 4.0, inner.r, row.t - 8.0);
+        let list = Rect::new(inner.l, self.bar_search_rect(r).b + 6.0, inner.r, row.t - 8.0);
         (title, list, buttons)
     }
 
@@ -148,6 +185,11 @@ impl App {
         let (_, list, buttons) = self.cmdbar_edit_layout(panel);
         if let Some(k) = buttons.iter().position(|b| b.contains(x, y)) {
             return Hit::BarEditButton(k);
+        }
+        let search = self.bar_search_rect(panel);
+        if search.contains(x, y) {
+            let clear = !ed.query.is_empty() && x >= search.r - search.h();
+            return Hit::BarEditSearch(clear);
         }
         if !list.contains(x, y) {
             return Hit::BarEditPanel;
@@ -226,9 +268,29 @@ impl App {
                 self.cmdbar_changed();
             }
             Hit::BarEditButton(_) => self.close_side_panels(),
+            Hit::BarEditSearch(true) => self.bar_query(String::new()),
+            Hit::BarEditSearch(false) => self.begin_bar_search(),
             _ => {}
         }
         self.invalidate();
+    }
+
+    fn begin_bar_search(&mut self) {
+        let (Some(panel), Some(ed)) = (self.layout.cmdbar_panel, self.cmdbar_editor.as_ref()) else { return };
+        let s = self.bar_search_rect(panel);
+        let text = ed.query.clone();
+        let len = text.encode_utf16().count();
+        window::begin_edit(self, Rect::new(s.l + 26.0, s.t + 1.0, s.r - s.h(), s.b - 1.0), &text, len, EditKind::BarSearch);
+    }
+
+    /// 搜尋框內容改變（EN_CHANGE）
+    pub fn bar_query(&mut self, text: String) {
+        if let Some(ed) = self.cmdbar_editor.as_mut() {
+            ed.query = text;
+            ed.scroll = 0.0;
+            ed.expanded = None;
+            self.invalidate();
+        }
     }
 
     fn bar_edit_move(&mut self, i: usize, d: isize) {
@@ -338,6 +400,18 @@ impl App {
         let half = title.h() / 2.0;
         g.text(tr!("自訂命令列"), Font::Bold, Rect::new(title.l, title.t, title.r, title.t + half), c.text);
         g.text(tr!("拖曳 ⋮⋮ 調整順序；點一個按鈕可改名稱與圖示"), Font::Small, Rect::new(title.l, title.t + half, title.r, title.b), c.text_secondary);
+        let s = self.bar_search_rect(r);
+        g.fill_round(s, radius, c.background);
+        g.stroke_round(s, radius, if matches!(self.hover, Hit::BarEditSearch(false)) { c.accent } else { c.border }, 1.0);
+        g.text(crate::gfx::glyph::FILTER, Font::GlyphSmall, Rect::new(s.l + 6.0, s.t, s.l + 24.0, s.b), c.text_secondary);
+        if !matches!(self.edit.as_ref().map(|e| &e.kind), Some(EditKind::BarSearch)) {
+            let (text, col) = if ed.query.is_empty() { (tr!("搜尋要加入的命令"), c.text_secondary) } else { (ed.query.as_str(), c.text) };
+            g.text(text, Font::Small, Rect::new(s.l + 26.0, s.t, s.r - s.h(), s.b), col);
+        }
+        if !ed.query.is_empty() {
+            let col = if self.hover == Hit::BarEditSearch(true) { c.text } else { c.text_secondary };
+            g.text("×", Font::Text, Rect::new(s.r - s.h() + 6.0, s.t, s.r, s.b), col);
+        }
         g.push_clip(list);
         let dragging = match self.press {
             Some(Press::BarEditDrag { item }) => Some(item),

@@ -94,7 +94,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   命令面板視為只有工程師會用：每個操作都要能從命令列（`cmdbar.rs`，內容在 `zing_core::cmdbar`）、「⋯」選單、右鍵或面板完成
   （搜尋本來就是輸入框，除外）。新增命令時同步加進 `zing_core::cmdbar` 的選單（或確認已在其中）與 `LABELS` 的短名稱；
   不能用時在 `App::cmd_disabled` 回傳原因（按鈕變灰、提示顯示原因）。圖示按鈕都要有提示（`tooltip.rs`）。
-  下拉選單用 `menu.rs`（D2D 自繪、跟著主題）。右側面板（設定、主題、自訂命令列、快速鍵）一次只開一個（`App::close_side_panels`）。
+  下拉選單用 `menu.rs`（D2D 自繪、跟著主題）。命令列可只用鍵盤操作（F10，`App::bar_focus`、`cmdbar_key`），新的按鈕種類
+  也要能用鍵盤啟動。右側面板（設定、主題、自訂命令列、快速鍵）一次只開一個（`App::close_side_panels`）。
 - 執行外部程式一律經 `services::start`／`services::launch`：`Show::HideConsole`（`run`、Lua 的 `run`）時主控台程式以
   CREATE_NO_WINDOW 執行；開啟檔案、網址列輸入維持 `Show::Normal`（與檔案總管相同）。Lua 的 `os.execute`、`io.popen`
   在 prelude 換成不顯示主控台視窗的版本。
