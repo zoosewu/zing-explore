@@ -27,7 +27,8 @@ cargo build --release
 - Batch rename (`F2` with several items selected): find and replace (text or regular expressions, `$1` references groups, `\w`, `\d`, `\p{Han}` work with CJK), scope (name without extension / extension / whole name),
   numbering `{n}`, `{n:3}` (zero-padded), `{n:3:10}` (starting at 10, counting only matching items), case conversion; live preview with conflicts highlighted
   (duplicate names, invalid characters, reserved names); it cannot run while there are conflicts. When old and new names overlap (for example 01→02, 02→03) temporary names are used automatically
-- System context menu (including third-party extensions; Shift+F10 / the menu key also open it), drag and drop in and out
+- System context menu (including third-party extensions; Shift+F10 / the menu key also open it), plus zing's own items (open in new tab, favorites,
+  "Batch rename" when several items are selected, set thumbnail), drag and drop in and out
 - System file icons (loaded in the background; executables and shortcuts show their own icons)
 - Preview pane (`Alt+P`): text files (UTF-8 / UTF-16 / Big5 detected automatically); PDF, Office, video and so on through Windows preview handlers
   (same as File Explorer; a large thumbnail is shown when there is none or it does not respond), picture thumbnails, item counts for folders,
@@ -129,8 +130,8 @@ See [docs/lua.en.md](docs/lua.en.md) for the full function reference (generated 
 Themes (command palette):
 - "Edit the current theme" (or "Customize theme…" on the settings page): a panel on the right; every change applies to the whole window right away. No color codes needed:
   pick the style and light/dark from a menu (your changes are kept); click a color to open swatches, or use "More colors…" or type a code; numbers have a slider, −/+ and the wheel;
-  pick a font from those installed; add "File colors" by category (images, videos, music…); changed fields have a ↺ to reset them.
-  "Save" on a built-in theme asks for a name and saves it as your own theme (only the fields that differ from the built-in base); "Cancel" reverts
+  pick a font from those installed; add "File colors" by category (images, videos, music…); changed fields have a ↺ to reset them;
+  hover a name to see where it is used on screen (for example, "Surface" is the background of the toolbar, tree and so on). "Save" on a built-in theme asks for a name and saves it as your own theme (only the fields that differ from the built-in base); "Cancel" reverts
 - "Open the current theme file in a text editor": applied automatically when saved
 - "Import theme…" / "Export current theme…": `.zingtheme` files; you can also drag a `.zingtheme` file into the window to import it
 - The last chosen theme is remembered; when you change `theme` in the config file and reload, the config file wins

@@ -3092,6 +3092,26 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
         |_, a| expect("面板關閉", a.batch.is_none(), true),
     ));
+    // 系統選單本身無法在程序內測試：檢查自訂項目，並直接執行它
+    v.push(step(
+        "批次：多選時右鍵選單有「批次重新命名」",
+        |c| {
+            key(c, "c", letter('a'));
+            let has = with_app(|a| {
+                let (items, folder) = (a.tab().target_paths(), a.tab().path.clone());
+                let (extras, _) = a.entry_menu_extras(&items, &folder);
+                let has = extras.iter().any(|(id, _)| *id == crate::app::MENU_BATCH_RENAME);
+                a.on_menu_extra(crate::app::MENU_BATCH_RENAME, String::new());
+                has
+            });
+            c.notes.push(("ctx_batch", has.unwrap_or(false).to_string()));
+        },
+        |c, a| {
+            expect("選單項目", c.note("ctx_batch"), Some("true"))?;
+            expect("面板開啟", a.batch.as_ref().map(|b| b.items.len()), Some(3))
+        },
+    ));
+    v.push(step("批次：關閉面板", |_| with_app(|a| a.close_batch()).unwrap_or(()), |_, a| expect("面板關閉", a.batch.is_none(), true)));
     v.push(step(
         "批次：回到測試資料夾並清除",
         {
@@ -3154,6 +3174,18 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |_, a| expect("資料夾", a.theme.color.folder, zing_core::theme::Color::rgb(zing_core::theme::SWATCHES[5])),
     ));
     v.push(step("截圖：主題編輯器的色票", |_| {}, |c, _| screenshot(c, "17-主題色票")));
+    v.push(step("主題：游標停在「次要區域」上說明用在哪裡", |c| {
+        hover_at(c, theme_row_pos("次要區域", false));
+        with_app(|a| a.on_tip_timer());
+        let tip = with_app(|a| a.tip.as_ref().filter(|t| t.shown).map(|t| t.text.joined())).flatten().unwrap_or_default();
+        c.notes.push(("theme_tip", tip));
+    }, |c, _| {
+        let tip = c.note("theme_tip").unwrap_or_default();
+        if !(tip.starts_with("次要區域") && tip.contains("工具列")) {
+            return Err(format!("提示：{tip}"));
+        }
+        Ok(())
+    }));
     v.push(step(
         "主題：新增「圖片」的檔案顏色",
         |c| {

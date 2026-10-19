@@ -63,6 +63,7 @@ pub const MENU_FAV_UP: u32 = shell::EXTRA_ID_BASE + 4;
 pub const MENU_FAV_DOWN: u32 = shell::EXTRA_ID_BASE + 5;
 pub const MENU_THUMB_SET: u32 = shell::EXTRA_ID_BASE + 6;
 pub const MENU_THUMB_CLEAR: u32 = shell::EXTRA_ID_BASE + 7;
+pub const MENU_BATCH_RENAME: u32 = shell::EXTRA_ID_BASE + 8;
 
 /// 超過這個數量的排序交給背景執行緒，避免卡住 UI
 const INLINE_SORT_LIMIT: usize = 20_000;
@@ -1478,7 +1479,8 @@ impl App {
     }
 
     /// 清單項目右鍵選單的自訂項目：只選了一個資料夾時提供「在新分頁開啟」與我的最愛；
-    /// 沒有選取時（背景選單）提供把目前資料夾加入我的最愛
+    /// 選了多個項目時提供批次重新命名（系統選單沒有）；沒有選取時（背景選單）提供把目前資料夾加入我的最愛。
+    /// 複製路徑、在終端機開啟 Windows 11 的選單已經有，不重複加
     pub fn entry_menu_extras(&self, items: &[String], folder: &str) -> (Vec<(u32, String)>, String) {
         let tab = self.tab();
         let single_dir = match tab.targets().as_slice() {
@@ -1492,6 +1494,8 @@ impl App {
                 extras.push((MENU_THUMB_CLEAR, tr!("移除自訂縮圖").into()));
             }
             (extras, one.clone())
+        } else if items.len() > 1 {
+            (vec![(MENU_BATCH_RENAME, tr!("批次重新命名").into())], String::new())
         } else if items.is_empty() && !folder.is_empty() && !self.is_favorite(folder) {
             (vec![(MENU_FAV_ADD, tr!("將此資料夾加入我的最愛").into())], folder.to_string())
         } else {
@@ -1526,6 +1530,10 @@ impl App {
                 Ok(())
             }
             MENU_FAV_DOWN => self.move_favorite(&target, 1),
+            MENU_BATCH_RENAME => {
+                self.exec("file.batchrename");
+                Ok(())
+            }
             _ => Ok(()),
         };
         if let Err(e) = result {

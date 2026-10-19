@@ -115,6 +115,7 @@ function rename_undo()
     if new then entries[#entries + 1] = { new = new, old = old } end
   end
   f:close()
+  if #entries == 0 then return msg("沒有可以復原的重新命名") end
 
   -- 倒序復原：先改的後還原，連鎖的名稱（a→b、b→c）才不會互相覆蓋
   local restored, failed = 0, 0
@@ -128,7 +129,11 @@ function rename_undo()
       log("無法復原：", e.new, "→", e.old)
     end
   end
-  os.remove(UNDO_FILE)
+  -- 刪不掉（例如防毒軟體正在掃描）就清空，下次不會重複復原
+  if not os.remove(UNDO_FILE) then
+    local w = io.open(UNDO_FILE, "w")
+    if w then w:close() end
+  end
   if failed == 0 then
     msg(("已復原 %d 個項目"):format(restored))
   else

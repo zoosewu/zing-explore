@@ -439,6 +439,32 @@ pub const FIELDS: &[Field] = &[
     Field { group: tr_key!("外觀"), label: tr_key!("標題列 Mica 效果"), path: &["effects", "backdrop"], kind: FieldKind::Choice(&["mica", "none"]) },
 ];
 
+/// 欄位的說明（主題編輯面板的提示：這個顏色或尺寸用在畫面的哪裡）
+pub fn field_hint(f: &Field) -> Option<&'static str> {
+    Some(match *f.path.last()? {
+        "background" => tr!("檔案清單與預覽窗格的底色"),
+        "surface" => tr!("工具列、命令列、分頁列、樹狀列、狀態列與側邊面板的底色"),
+        "text" => tr!("一般的文字"),
+        "text_secondary" => tr!("日期、大小等欄位、說明文字與不能用的按鈕"),
+        "border" => tr!("區域之間的分隔線，以及輸入框與按鈕的外框"),
+        "hover" => tr!("游標停在項目或按鈕上時的底色"),
+        "selection" => tr!("選取項目的底色（使用中的窗格）"),
+        "selection_text" => tr!("選取項目上的文字"),
+        "selection_inactive" => tr!("另一個窗格或視窗不在前景時，選取項目的底色"),
+        "accent" => tr!("主要按鈕、目前的分頁、焦點外框與連結"),
+        "folder" => tr!("資料夾圖示"),
+        "error" => tr!("錯誤訊息與刪除按鈕"),
+        "row_height" => tr!("檔案清單每一列的高度"),
+        "radius" => tr!("按鈕、選取底色等的圓角半徑（0 為直角）"),
+        "padding" => tr!("元件內側的留白"),
+        "tab_accent" => tr!("在目前的分頁上方畫一條強調色的線"),
+        "selection_after_icon" => tr!("選取底色從圖示右側開始，圖示不被蓋住"),
+        "address" => tr!("顯示完整路徑，或可以點每一層的麵包屑"),
+        "backdrop" => tr!("Windows 11 的半透明標題列材質"),
+        _ => return None,
+    })
+}
+
 /// 選項的顯示名稱
 pub fn choice_label(v: &str) -> &str {
     match v {

@@ -61,6 +61,10 @@ impl App {
             }
             Hit::TabNew(p) => Some((self.tip_text(tr!("新增分頁"), "tab.new", false), lay.panes.get(p)?.tab_new)),
             Hit::TabClose(p, t) => Some((self.tip_text(tr!("關閉分頁"), "tab.close", false), *lay.panes.get(p)?.tab_close.get(t)?)),
+            Hit::ThemeRow(k) => {
+                let (title, hint, r) = self.theme_field_tip(k)?;
+                Some((TipText { title: title.into(), key: None, detail: Some(hint.into()) }, r))
+            }
             Hit::FilterChip => Some((TipText { title: tr!("清除篩選").into(), key: Some("Esc".into()), detail: None }, lay.filter_chip?)),
             _ => None,
         }

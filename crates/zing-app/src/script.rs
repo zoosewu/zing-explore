@@ -1172,11 +1172,17 @@ mod tests {
     fn example_lua(name: &str, src: &str) -> Lua {
         let l = lua();
         let g = l.globals();
+        // 範例寫在 %LOCALAPPDATA% 的資料（復原記錄）改放測試資料夾，不碰使用者的資料
+        let local = zing_core::testdir::dir().join(format!("zing-localappdata-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&local);
+        g.set("__test_localappdata", local.to_string_lossy().into_owned()).unwrap();
         g.set("__is_dir", l.create_function(|_, p: String| Ok(Path::new(&p).is_dir())).unwrap()).unwrap();
         g.set("__msg", l.create_function(|l, m: String| l.globals().set("last_msg", m)).unwrap()).unwrap();
         drop(g);
         l.load(
-            "function __ask() return table.remove(__answers, 1) end; __pick_folder = __ask
+            "local getenv = os.getenv
+             os.getenv = function(k) if k == 'LOCALAPPDATA' then return __test_localappdata end; return getenv(k) end
+             function __ask() return table.remove(__answers, 1) end; __pick_folder = __ask
              __calls = {}
              function __clipboard_set(t) __clip = t; return true end
              function __invoke(name, pos, flags)

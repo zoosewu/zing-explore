@@ -267,6 +267,16 @@ impl App {
         Rect::new(l, row.t + 3.0, l + size, row.t + 3.0 + size)
     }
 
+    /// 第 k 列欄位的提示：（名稱, 說明, 名稱的位置）
+    pub fn theme_field_tip(&self, k: usize) -> Option<(&'static str, &'static str, Rect)> {
+        let (panel, ed) = (self.layout.theme_panel?, self.theme_editor.as_ref()?);
+        let Row::Field(i) = *ed.rows(&self.theme).get(k)? else { return None };
+        let f = &FIELDS[i];
+        let hint = zing_core::theme::field_hint(f)?;
+        let rr = self.theme_row_rects(self.theme_panel_layout(panel).list, k, ed.scroll);
+        Some((zing_core::i18n::tr(f.label), hint, Rect::new(rr.row.l, rr.row.t, rr.value.l, rr.row.b)))
+    }
+
     pub fn theme_hit(&self, panel: Rect, x: f32, y: f32) -> Hit {
         let Some(ed) = self.theme_editor.as_ref() else { return Hit::None };
         let pl = self.theme_panel_layout(panel);
