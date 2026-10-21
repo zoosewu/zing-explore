@@ -509,7 +509,9 @@ impl App {
         }
         crate::perf::mark("begin_draw");
         self.paint_toolbar(&lay);
-        self.paint_cmdbar(&lay);
+        // 選取數要掃過整個清單：每一幀只算一次，命令列與狀態列共用
+        let sel = self.tab().selection_count();
+        self.paint_cmdbar(&lay, sel.0 > 0);
         if let Some(tr) = lay.tree {
             self.paint_tree(tr);
         }
@@ -552,7 +554,7 @@ impl App {
         self.thumbs.end_frame();
         self.paint_rename_frame();
         self.paint_jobs(&lay);
-        self.paint_status(&lay);
+        self.paint_status(&lay, sel);
         self.paint_palette();
         self.paint_batch();
         self.paint_ask();
@@ -1014,14 +1016,13 @@ impl App {
         }
     }
 
-    fn paint_status(&self, lay: &Layout) {
+    fn paint_status(&self, lay: &Layout, (n_sel, bytes): (usize, u64)) {
         let c = &self.theme.color;
         let g = &self.gfx;
         let s = lay.status;
         g.fill(s, c.surface);
         g.hline(0.0, s.r, s.t, c.border);
         let tab = self.tab();
-        let (n_sel, bytes) = tab.selection_count();
         let mut left = tr!("{n} 個項目", n = tab.view.len());
         if tab.view.len() != tab.listing.len() {
             left.push_str(&tr!("（共 {n}）", n = tab.listing.len()));
