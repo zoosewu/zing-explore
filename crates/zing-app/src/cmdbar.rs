@@ -93,19 +93,13 @@ impl App {
 
     /// 命令現在不能用的原因（None 表示可以用）
     pub fn cmd_disabled(&self, cmd: &str) -> Option<&'static str> {
-        self.cmd_disabled_with(cmd, &std::cell::OnceCell::new())
-    }
-
-    /// 同 `cmd_disabled`；`has_sel` 快取「有沒有選取」：要掃過整個清單（10 萬個項目約 0.1 ms），
-    /// 繪製時用這一幀已算好的值
-    fn cmd_disabled_with(&self, cmd: &str, has_sel: &std::cell::OnceCell<bool>) -> Option<&'static str> {
         let tab = self.tab();
         let in_pc = tab.path.is_empty();
         // 與檔案總管相同：沒有選取（只有焦點）時剪下、複製等按鈕是灰色的
-        let has_sel = || *has_sel.get_or_init(|| tab.selection_count().0 > 0);
+        let has_sel = tab.selection_count().0 > 0;
         match cmd {
             "file.cut" | "file.copy" | "file.delete" | "file.delete --permanent" | "file.rename" | "file.batchrename" | "thumb.set" | "thumb.clear"
-                if !has_sel() =>
+                if !has_sel =>
             {
                 Some(tr!("請先選取項目"))
             }
@@ -392,13 +386,12 @@ impl App {
         }
     }
 
-    pub fn paint_cmdbar(&self, lay: &crate::view::Layout, has_sel: bool) {
+    pub fn paint_cmdbar(&self, lay: &crate::view::Layout) {
         let Some(bl) = lay.cmdbar.as_ref() else { return };
         let c = &self.theme.color;
         let g = &self.gfx;
         g.fill(bl.bar, c.surface);
         g.hline(0.0, bl.bar.r, bl.bar.b - 1.0, c.border);
-        let has_sel = std::cell::OnceCell::from(has_sel);
         for (k, &(i, r, label)) in bl.buttons.iter().enumerate() {
             // 版面可能是按鈕改變前算的
             let Some(it) = self.config.cmdbar.get(i) else { continue };
@@ -407,7 +400,7 @@ impl App {
                 g.vline(x, r.t + 4.0, r.b - 4.0, c.border);
                 continue;
             }
-            let disabled = !it.is_menu() && self.cmd_disabled_with(&it.cmd, &has_sel).is_some();
+            let disabled = !it.is_menu() && self.cmd_disabled(&it.cmd).is_some();
             let radius = self.theme.metrics.radius.max(4.0);
             let focused = self.bar_focus == Some(i);
             if (self.hover == Hit::CmdButton(k) || focused) && !disabled {

@@ -509,9 +509,7 @@ impl App {
         }
         crate::perf::mark("begin_draw");
         self.paint_toolbar(&lay);
-        // 選取數要掃過整個清單：每一幀只算一次，命令列與狀態列共用
-        let sel = self.tab().selection_count();
-        self.paint_cmdbar(&lay, sel.0 > 0);
+        self.paint_cmdbar(&lay);
         if let Some(tr) = lay.tree {
             self.paint_tree(tr);
         }
@@ -554,7 +552,7 @@ impl App {
         self.thumbs.end_frame();
         self.paint_rename_frame();
         self.paint_jobs(&lay);
-        self.paint_status(&lay, sel);
+        self.paint_status(&lay);
         self.paint_palette();
         self.paint_batch();
         self.paint_ask();
@@ -782,7 +780,7 @@ impl App {
             let entry = &tab.listing.entries[e];
             let y = list.t + i as f32 * rh - tab.scroll;
             let row = Rect::new(list.l + 4.0, y, list.r - SCROLLBAR_W, y + rh);
-            let selected = tab.selected[e];
+            let selected = tab.is_selected(e);
             // 焦點所在的選取列：文字一律用選取文字色（緊湊風格的實心強調色上用深色字）
             let on_selection = selected && list_focused && drop_row != Some(i);
             if drop_row == Some(i) {
@@ -891,7 +889,7 @@ impl App {
             let entry = &tab.listing.entries[e];
             let cell = gr.cell(i);
             let r = at(cell.x, cell.y, cell.w, cell.h).inset(2.0, 2.0);
-            let selected = tab.selected[e];
+            let selected = tab.is_selected(e);
             let on_selection = selected && list_focused && drop_row != Some(i);
             if drop_row == Some(i) {
                 g.fill_round(r, radius, c.accent.with_alpha(70));
@@ -1016,13 +1014,14 @@ impl App {
         }
     }
 
-    fn paint_status(&self, lay: &Layout, (n_sel, bytes): (usize, u64)) {
+    fn paint_status(&self, lay: &Layout) {
         let c = &self.theme.color;
         let g = &self.gfx;
         let s = lay.status;
         g.fill(s, c.surface);
         g.hline(0.0, s.r, s.t, c.border);
         let tab = self.tab();
+        let (n_sel, bytes) = tab.selection_count();
         let mut left = tr!("{n} 個項目", n = tab.view.len());
         if tab.view.len() != tab.listing.len() {
             left.push_str(&tr!("（共 {n}）", n = tab.listing.len()));

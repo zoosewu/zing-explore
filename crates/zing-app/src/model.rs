@@ -21,8 +21,11 @@ pub struct Tab {
     pub sorted: Vec<u32>,
     /// 篩選後實際顯示的項目（listing 索引）
     pub view: Vec<u32>,
-    /// 依 listing 索引記錄是否選取，篩選時選取狀態不會遺失
-    pub selected: Vec<bool>,
+    /// 依 listing 索引記錄是否選取，篩選時選取狀態不會遺失。
+    /// 只經下面的方法修改，才能同步更新 `sel`
+    selected: Vec<bool>,
+    /// 可見的選取項目數與總大小：選取、清單、篩選改變時更新（繪製時直接讀，不必每一幀掃過清單）
+    sel: (usize, u64),
     /// 焦點（view 索引）
     pub focus: usize,
     pub anchor: usize,
@@ -63,6 +66,7 @@ impl Tab {
             sorted: Vec::new(),
             view: Vec::new(),
             selected: Vec::new(),
+            sel: (0, 0),
             focus: 0,
             anchor: 0,
             scroll: 0.0,
@@ -96,6 +100,7 @@ impl Tab {
         self.sorted.clear();
         self.view.clear();
         self.selected.clear();
+        self.sel = (0, 0);
         self.focus = 0;
         self.anchor = 0;
         self.scroll = 0.0;
@@ -112,6 +117,7 @@ impl Tab {
         self.view = filter_order(&self.listing, &self.sorted, &self.pattern, show_hidden);
         self.focus = focused.and_then(|e| self.view.iter().position(|&v| v as usize == e)).unwrap_or(0);
         self.anchor = self.anchor.min(self.view.len().saturating_sub(1));
+        self.recount_selection();
     }
 
     pub fn set_filter(&mut self, filter: String, show_hidden: bool) {
@@ -137,6 +143,7 @@ impl Tab {
                 .and_then(|n| self.view.iter().position(|&v| self.listing.name(v as usize) == n.as_slice()))
                 .unwrap_or(self.focus.min(self.view.len().saturating_sub(1)));
             self.anchor = self.focus;
+            self.recount_selection();
         } else {
             // 初次載入的分段結果是前綴穩定的，選取陣列直接延伸即可
             self.selected.resize(listing.len(), false);
@@ -174,18 +181,66 @@ impl Tab {
         self.targets().into_iter().map(|i| self.full_path(i)).collect()
     }
 
+    /// listing 第 `entry` 個項目是否選取
+    pub fn is_selected(&self, entry: usize) -> bool {
+        self.selected.get(entry).copied().unwrap_or(false)
+    }
+
+    /// 改變一個可見項目（`entry` 必須在 view 中）的選取狀態，同步更新選取數
+    fn set_selected(&mut self, entry: usize, on: bool) {
+        let Some(s) = self.selected.get_mut(entry) else { return };
+        if *s == on {
+            return;
+        }
+        *s = on;
+        let size = self.listing.entries[entry].size;
+        if on {
+            self.sel.0 += 1;
+            self.sel.1 += size;
+        } else {
+            self.sel.0 -= 1;
+            self.sel.1 -= size;
+        }
+    }
+
+    /// 掃過 view 計算選取數（只在清單或篩選改變時）
+    fn scan_selection(&self) -> (usize, u64) {
+        let mut n = 0;
+        let mut bytes = 0;
+        for &v in &self.view {
+            let v = v as usize;
+            if self.selected[v] {
+                n += 1;
+                bytes += self.listing.entries[v].size;
+            }
+        }
+        (n, bytes)
+    }
+
+    fn recount_selection(&mut self) {
+        self.sel = self.scan_selection();
+    }
+
+    /// 項目的大小改變後（資料夾大小算好）：有選取的才需要重算
+    pub fn sizes_changed(&mut self, entries: &[usize]) {
+        if entries.iter().any(|&e| self.is_selected(e)) {
+            self.recount_selection();
+        }
+    }
+
     pub fn is_selected_view(&self, view_idx: usize) -> bool {
         self.view.get(view_idx).is_some_and(|&v| self.selected.get(v as usize).copied().unwrap_or(false))
     }
 
     pub fn clear_selection(&mut self) {
         self.selected.iter_mut().for_each(|s| *s = false);
+        self.sel = (0, 0);
     }
 
     pub fn select_only(&mut self, view_idx: usize) {
         self.clear_selection();
         if let Some(&v) = self.view.get(view_idx) {
-            self.selected[v as usize] = true;
+            self.set_selected(v as usize, true);
         }
         self.focus = view_idx;
         self.anchor = view_idx;
@@ -193,7 +248,8 @@ impl Tab {
 
     pub fn toggle(&mut self, view_idx: usize) {
         if let Some(&v) = self.view.get(view_idx) {
-            self.selected[v as usize] ^= true;
+            let v = v as usize;
+            self.set_selected(v, !self.selected[v]);
         }
         self.focus = view_idx;
         self.anchor = view_idx;
@@ -207,7 +263,7 @@ impl Tab {
         let (a, b) = if self.anchor <= view_idx { (self.anchor, view_idx) } else { (view_idx, self.anchor) };
         for i in a..=b.min(self.view.len().saturating_sub(1)) {
             let v = self.view[i] as usize;
-            self.selected[v] = true;
+            self.set_selected(v, true);
         }
         self.focus = view_idx;
     }
@@ -216,25 +272,21 @@ impl Tab {
         for &v in &self.view {
             self.selected[v as usize] = true;
         }
+        self.recount_selection();
     }
 
     pub fn invert_selection(&mut self) {
         for &v in &self.view {
             self.selected[v as usize] ^= true;
         }
+        self.recount_selection();
     }
 
+    /// 可見的選取項目數與總大小（事件更新的值，不掃描）
     pub fn selection_count(&self) -> (usize, u64) {
-        let mut n = 0;
-        let mut bytes = 0;
-        for &v in &self.view {
-            let v = v as usize;
-            if self.selected[v] {
-                n += 1;
-                bytes += self.listing.entries[v].size;
-            }
-        }
-        (n, bytes)
+        // debug build 核對：有修改選取、清單或篩選卻沒更新的地方，冒煙測試就會失敗
+        debug_assert_eq!(self.sel, self.scan_selection(), "選取數沒有同步更新");
+        self.sel
     }
 
     pub fn find_view(&self, name: &str) -> Option<usize> {

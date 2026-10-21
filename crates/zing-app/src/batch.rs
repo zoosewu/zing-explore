@@ -107,14 +107,14 @@ impl App {
         if tab.path.is_empty() {
             return false;
         }
-        let picked: Vec<usize> = tab.view.iter().map(|&e| e as usize).filter(|&e| tab.selected[e]).collect();
+        let picked: Vec<usize> = tab.view.iter().map(|&e| e as usize).filter(|&e| tab.is_selected(e)).collect();
         if picked.len() < 2 {
             return false;
         }
         let items: Vec<(String, bool)> =
             picked.iter().map(|&e| (tab.listing.name_string(e), tab.listing.entries[e].is_dir())).collect();
         let others: Vec<String> =
-            (0..tab.listing.len()).filter(|&e| !tab.selected[e]).map(|e| tab.listing.name_string(e)).collect();
+            (0..tab.listing.len()).filter(|&e| !tab.is_selected(e)).map(|e| tab.listing.name_string(e)).collect();
         let (tab_id, dir) = (tab.id, tab.path.clone());
         if let Some(e) = self.edit.take() {
             window::destroy_edit(e.hwnd);

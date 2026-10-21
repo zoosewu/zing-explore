@@ -254,9 +254,10 @@ impl App {
             return false;
         }
         let listing = Arc::make_mut(&mut tab.listing);
-        for (i, bytes) in changes {
+        for &(i, bytes) in &changes {
             listing.entries[i].size = bytes;
         }
+        tab.sizes_changed(&changes.iter().map(|c| c.0).collect::<Vec<_>>());
         true
     }
 

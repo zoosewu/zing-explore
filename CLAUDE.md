@@ -51,6 +51,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   重新命名與新增資料夾走另一條執行緒，不會被大量複製擋住。UI 只透過 `JobCtl` 的 atomic 旗標控制工作，不等待鎖；
   暫停／取消在 Shell 的進度回呼（`shell.rs` 的 `Progress`）中生效。冒煙測試用 `shell::TEST_PROGRESS_DELAY_MS` 放慢複製。
 - 清單一律虛擬化：只處理可見的列；昂貴的欄位（圖示、縮圖、屬性）延遲到捲到才計算。
+  繪製時不掃過整個清單：選取數由 `Tab` 在選取、清單、篩選改變時更新（`selected` 只經 `Tab` 的方法修改，
+  debug build 讀取時會以掃描結果核對）。
 - 縮圖同樣只取看得到的格子（`thumbs.rs`）：繪製時登記，繪製結束時取消已不可見、還沒開始的請求；
   本機兩條、網路磁碟與光碟一條執行緒（背景模式）。清單與縮圖的幾何一律經 `App::grid`／`App::item_rect`，
   不要再自行以 `row_h` 換算位置。
