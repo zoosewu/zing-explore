@@ -9,6 +9,11 @@
 //! 主機視窗是 message-only 視窗（不是頂層視窗）：系統啟用視窗時會同步送 WM_ACTIVATEAPP 給
 //! 同一程序的所有頂層視窗，若主機卡住，UI 執行緒會跟著等。選單顯示時才臨時建立頂層的擁有者視窗，
 //! 選單關閉後立刻銷毀；也不設擁有者（跨執行緒的擁有關係會合併輸入佇列）。
+//!
+//! 預先準備：建立右鍵選單最慢的是 `QueryContextMenu`（文字檔約 200 ms，第一次載入擴充功能可達數秒）。
+//! 游標在清單停住時 UI 送出 `Prepare`，主機先建好那些項目的選單；按下右鍵時項目相同、剪貼簿沒變、
+//! 沒按 Shift、沒放太久就直接顯示。選單關閉後佇列空了再為同樣的項目準備一份。
+//! 同一批佇列中被後面的 `Prepare`／`ContextMenu` 取代的 `Prepare` 不執行。
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -23,6 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE, DispatchMessageW, GetMessageW, MSG, PostMessageW, RegisterClassExW,
     SetForegroundWindow, TranslateMessage, WM_APP, WM_NULL, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
+use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 use windows::core::w;
 
 use crate::services::{Msg, Notifier};
@@ -33,6 +39,11 @@ const WM_APP_JOB: u32 = WM_APP + 10;
 const STUCK_AFTER: Duration = Duration::from_secs(3);
 
 pub enum ShellJob {
+    /// 先建好這些項目（空的話是 `folder` 的背景）的右鍵選單，不顯示；同時載入第三方擴充功能，項目送回 UI。
+    /// `show_slow`：緩慢的擴充功能也載入；`persist`：讀寫緩慢擴充功能的記錄（隔離模式為 false）
+    Prepare { items: Vec<String>, folder: String, show_slow: bool, persist: bool },
+    /// 執行精簡選單中第三方擴充功能的項目（`ext` 是 `MenuExtensions` 中的第幾個）
+    InvokeExt { items: Vec<String>, folder: String, ext: usize, id: u32, pt: POINT },
     ContextMenu {
         items: Vec<String>,
         folder: String,
@@ -57,6 +68,71 @@ const IDLE: u8 = 0;
 const BUSY: u8 = 1;
 /// 選單顯示中：使用者正在操作，不算卡住
 const MENU_OPEN: u8 = 2;
+/// 預先準備中：第一次載入擴充功能可能要數秒，超過 `PREPARE_STUCK_AFTER` 才算卡住
+const PREPARING: u8 = 3;
+const PREPARE_STUCK_AFTER: Duration = Duration::from_secs(10);
+/// 準備好的選單放太久就重建（擴充功能的項目可能依當下狀態而定）
+const PREPARED_MAX_AGE: Duration = Duration::from_secs(60);
+
+/// 預先建好的選單與它對應的項目
+struct Prepared {
+    items: Vec<String>,
+    folder: String,
+    show_slow: bool,
+    /// 建立時的剪貼簿序號：剪貼簿變了（「貼上」可不可用）就重建
+    clip_seq: u32,
+    at: Instant,
+    menu: shell::PreparedMenu,
+}
+
+thread_local! {
+    static PREPARED: RefCell<Option<Prepared>> = const { RefCell::new(None) };
+    /// 選單關閉後要再準備的項目（佇列空了才做）
+    static REPREPARE: RefCell<Option<(Vec<String>, String)>> = const { RefCell::new(None) };
+    /// 最近一次 Prepare 的（show_slow, persist）：再準備時沿用
+    static PREPARE_OPTS: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+    /// 已載入的第三方擴充功能，等使用者在精簡選單中選擇
+    static EXTS: RefCell<Option<LoadedExts>> = const { RefCell::new(None) };
+}
+
+/// 已載入的第三方擴充功能與它們對應的（項目, 資料夾）
+type LoadedExts = (Vec<String>, String, Vec<crate::shellext::LoadedExt>);
+
+/// 預先準備成功的次數（冒煙測試用）
+pub static PREPARED_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn prepare(host: HWND, n: &Notifier, items: Vec<String>, folder: String, show_slow: bool, persist: bool) {
+    PREPARE_OPTS.with(|o| o.set((show_slow, persist)));
+    let fresh = PREPARED.with(|p| {
+        p.borrow().as_ref().is_some_and(|p| p.items == items && p.folder == folder && p.show_slow == show_slow && p.at.elapsed() < PREPARED_MAX_AGE)
+    });
+    if fresh {
+        return;
+    }
+    // 先丟掉舊的（釋放擴充功能的物件），再建新的
+    PREPARED.with(|p| *p.borrow_mut() = None);
+    EXTS.with(|e| *e.borrow_mut() = None);
+    let clip_seq = unsafe { GetClipboardSequenceNumber() };
+    // 第三方擴充功能（精簡選單的第一層）先做：UI 較早拿到
+    let loaded = crate::shellext::load(&items, &folder, show_slow, persist);
+    n.send(Msg::MenuExtensions { items: items.clone(), folder: folder.clone(), menus: loaded.menus, hidden: loaded.hidden });
+    EXTS.with(|e| *e.borrow_mut() = Some((items.clone(), folder.clone(), loaded.exts)));
+    if let Ok(menu) = shell::prepare_menu(host, &items, &folder, false) {
+        PREPARED_COUNT.fetch_add(1, Ordering::Relaxed);
+        PREPARED.with(|p| *p.borrow_mut() = Some(Prepared { items, folder, show_slow, clip_seq, at: Instant::now(), menu }));
+    }
+}
+
+/// 取出可以直接使用的預先準備的選單
+fn take_prepared(items: &[String], folder: &str, extended: bool) -> Option<shell::PreparedMenu> {
+    let p = PREPARED.with(|p| p.borrow_mut().take())?;
+    let ok = !extended
+        && p.items == items
+        && p.folder == folder
+        && p.clip_seq == unsafe { GetClipboardSequenceNumber() }
+        && p.at.elapsed() < PREPARED_MAX_AGE;
+    ok.then_some(p.menu)
+}
 
 struct Shared {
     state: AtomicU8,
@@ -87,8 +163,12 @@ impl ShellHost {
     }
 
     fn stuck(h: &Host) -> bool {
-        h.shared.state.load(Ordering::Acquire) == BUSY
-            && now_ms().saturating_sub(h.shared.busy_since_ms.load(Ordering::Acquire)) > STUCK_AFTER.as_millis() as u64
+        let limit = match h.shared.state.load(Ordering::Acquire) {
+            BUSY => STUCK_AFTER,
+            PREPARING => PREPARE_STUCK_AFTER,
+            _ => return false,
+        };
+        now_ms().saturating_sub(h.shared.busy_since_ms.load(Ordering::Acquire)) > limit.as_millis() as u64
     }
 
     pub fn submit(&mut self, job: ShellJob) {
@@ -226,9 +306,30 @@ unsafe extern "system" fn host_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
     if msg == WM_APP_JOB {
         // 逐一取出工作；選單有自己的訊息迴圈，期間不持有 CTX 的借用
         loop {
-            let job = CTX.with(|c| c.borrow().as_ref().and_then(|ctx| ctx.rx.try_recv().ok()));
-            let Some(job) = job else { break };
-            run_job(job);
+            let mut jobs: Vec<ShellJob> = Vec::new();
+            CTX.with(|c| {
+                if let Some(ctx) = c.borrow().as_ref() {
+                    jobs.extend(ctx.rx.try_iter());
+                }
+            });
+            if jobs.is_empty() {
+                // 佇列空了：為剛關閉的選單再準備一份（同樣的項目再按右鍵也很快）
+                if let Some((items, folder)) = REPREPARE.with(|r| r.borrow_mut().take()) {
+                    let (show_slow, persist) = PREPARE_OPTS.with(|o| o.get());
+                    run_job(ShellJob::Prepare { items, folder, show_slow, persist });
+                    continue;
+                }
+                break;
+            }
+            let menu_job = |j: &ShellJob| matches!(j, ShellJob::Prepare { .. } | ShellJob::ContextMenu { .. });
+            let superseded: Vec<bool> = (0..jobs.len()).map(|k| jobs[k + 1..].iter().any(menu_job)).collect();
+            for (job, later) in jobs.into_iter().zip(superseded) {
+                // 後面還有 Prepare 或 ContextMenu：這個 Prepare 已經過時
+                if later && matches!(job, ShellJob::Prepare { .. }) {
+                    continue;
+                }
+                run_job(job);
+            }
         }
         return LRESULT(0);
     }
@@ -247,6 +348,29 @@ fn run_job(job: ShellJob) {
     shared.busy_since_ms.store(now_ms(), Ordering::Release);
     shared.state.store(BUSY, Ordering::Release);
     match job {
+        ShellJob::Prepare { items, folder, show_slow, persist } => {
+            if !shared.abandoned.load(Ordering::Acquire) {
+                shared.state.store(PREPARING, Ordering::Release);
+                prepare(host, &n, items, folder, show_slow, persist);
+            }
+        }
+        ShellJob::InvokeExt { items, folder, ext, id, pt } => {
+            // 擴充功能可能顯示對話方塊：與選單顯示中相同，不算卡住
+            shared.state.store(MENU_OPEN, Ordering::Release);
+            let r = EXTS.with(|e| {
+                let e = e.borrow();
+                match e.as_ref() {
+                    Some((i, f, loaded)) if *i == items && *f == folder => loaded.get(ext).map(|x| crate::shellext::invoke(x, id, host, &folder, pt)),
+                    _ => None,
+                }
+            });
+            match r {
+                Some(Ok(())) => {}
+                Some(Err(e)) => n.status(tr!("無法執行：{e}", e = e.message()), true),
+                None => n.status(tr!("選單已過期，請再按一次右鍵"), true),
+            }
+            REPREPARE.with(|r| *r.borrow_mut() = Some((items, folder)));
+        }
         ShellJob::ContextMenu { items, folder, pt, extras, target, extended, ctrl } => {
             if shared.abandoned.load(Ordering::Acquire) {
                 shared.state.store(IDLE, Ordering::Release);
@@ -284,7 +408,14 @@ fn run_job(job: ShellJob) {
                 }
                 let _ = SetForegroundWindow(main);
             };
-            let result = shell::context_menu(host, &items, &folder, pt, &extras, extended, ctrl, &mut before_show, &after_close);
+            let prepared = match take_prepared(&items, &folder, extended) {
+                Some(p) => Ok(p),
+                None => shell::prepare_menu(host, &items, &folder, extended),
+            };
+            let result = prepared.and_then(|p| shell::show_menu(host, p, !items.is_empty(), &folder, pt, &extras, extended, ctrl, &mut before_show, &after_close));
+            if !shared.abandoned.load(Ordering::Acquire) {
+                REPREPARE.with(|r| *r.borrow_mut() = Some((items, folder)));
+            }
             match result {
                 Ok(MenuResult::Rename) => n.send(Msg::MenuRename),
                 Ok(MenuResult::Extra(id)) => n.send(Msg::MenuExtra { id, target }),

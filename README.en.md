@@ -27,8 +27,10 @@ cargo build --release
 - Batch rename (`F2` with several items selected): find and replace (text or regular expressions, `$1` references groups, `\w`, `\d`, `\p{Han}` work with CJK), scope (name without extension / extension / whole name),
   numbering `{n}`, `{n:3}` (zero-padded), `{n:3:10}` (starting at 10, counting only matching items), case conversion; live preview with conflicts highlighted
   (duplicate names, invalid characters, reserved names); it cannot run while there are conflicts. When old and new names overlap (for example 01→02, 02→03) temporary names are used automatically
-- System context menu (including third-party extensions; Shift+F10 / the menu key also open it), plus zing's own items (open in new tab, favorites,
-  "Batch rename" when several items are selected, set thumbnail), drag and drop in and out
+- Right-click menu (two levels, like Windows 11): common items that appear instantly (Open, Open with, Cut, Copy, Rename, Delete, Copy path,
+  open in new tab, favorites, "Batch rename" when several items are selected, Properties…) plus third-party items such as 7-Zip, WinRAR and PowerToys;
+  "Show more options" or Shift+right-click opens the full Windows menu. Third-party items that slow the menu down move to "Show more options" automatically
+  (the settings page can show them anyway, or switch back to the full Windows menu). Shift+F10 / the menu key also open it. Drag and drop in and out
 - System file icons (loaded in the background; executables and shortcuts show their own icons)
 - Preview pane (`Alt+P`): text files (UTF-8 / UTF-16 / Big5 detected automatically); PDF, Office, video and so on through Windows preview handlers
   (same as File Explorer; a large thumbnail is shown when there is none or it does not respond), picture thumbnails, item counts for folders,

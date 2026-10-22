@@ -4,7 +4,7 @@
 //! 沒有這一行就插入在同一節的最後一個值後面，沒有這一節就加在檔案最後。修改後重新解析整份檔案，
 //! 結果不是預期的值（例如使用者寫成 `layout = { tree = "left" }`）就放棄、不寫入。
 
-use crate::config::{Config, PalettePosition, RawConfig, TreeSide};
+use crate::config::{Config, MenuStyle, PalettePosition, RawConfig, TreeSide};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
@@ -32,6 +32,8 @@ pub struct Pref {
 const LANGUAGES: &[(&str, &str)] =
     &[("auto", tr_key!("跟隨 Windows")), ("zh-TW", "繁體中文"), ("en", "English"), ("ja", "日本語")];
 const TREE_SIDES: &[(&str, &str)] = &[("left", tr_key!("左側")), ("right", tr_key!("右側")), ("hidden", tr_key!("隱藏"))];
+const MENU_STYLES: &[(&str, &str)] =
+    &[("compact", tr_key!("精簡（先顯示常用項目）")), ("full", tr_key!("完整的 Windows 選單"))];
 const PALETTE_POSITIONS: &[(&str, &str)] =
     &[("top", tr_key!("視窗上方")), ("center", tr_key!("正中央（輸入框固定）")), ("middle", tr_key!("正中央（整個面板置中）"))];
 
@@ -90,6 +92,20 @@ pub const PREFS: &[Pref] = &[
         kind: Kind::Action("cmdbar.edit"),
     },
     Pref {
+        key: "context_menu.style",
+        group: tr_key!("右鍵選單"),
+        label: tr_key!("右鍵選單樣式"),
+        hint: tr_key!("精簡：立即出現，「顯示更多選項」或 Shift+右鍵開啟完整的 Windows 選單"),
+        kind: Kind::Choice(MENU_STYLES),
+    },
+    Pref {
+        key: "context_menu.show_slow",
+        group: tr_key!("右鍵選單"),
+        label: tr_key!("顯示緩慢的擴充功能項目"),
+        hint: tr_key!("關閉時，讓選單變慢的第三方項目只在「顯示更多選項」中"),
+        kind: Kind::Bool,
+    },
+    Pref {
         key: "folder_sizes.auto",
         group: tr_key!("資料夾大小"),
         label: tr_key!("自動計算資料夾大小"),
@@ -120,6 +136,13 @@ fn tree_side_code(t: TreeSide) -> &'static str {
         TreeSide::Left => "left",
         TreeSide::Right => "right",
         TreeSide::Hidden => "hidden",
+    }
+}
+
+fn menu_style_code(s: MenuStyle) -> &'static str {
+    match s {
+        MenuStyle::Compact => "compact",
+        MenuStyle::Full => "full",
     }
 }
 
@@ -154,6 +177,8 @@ impl Config {
             "folder_sizes.auto" => self.folder_sizes.auto.to_string(),
             "command_bar.visible" => self.command_bar.visible.to_string(),
             "command_bar.labels" => self.command_bar.labels.to_string(),
+            "context_menu.style" => menu_style_code(self.context_menu.style).into(),
+            "context_menu.show_slow" => self.context_menu.show_slow.to_string(),
             _ => String::new(),
         }
     }
@@ -174,6 +199,8 @@ impl Config {
             "folder_sizes.auto" => self.folder_sizes.auto = value.parse().map_err(|_| bad())?,
             "command_bar.visible" => self.command_bar.visible = value.parse().map_err(|_| bad())?,
             "command_bar.labels" => self.command_bar.labels = value.parse().map_err(|_| bad())?,
+            "context_menu.style" => self.context_menu.style = toml_enum(value).ok_or_else(bad)?,
+            "context_menu.show_slow" => self.context_menu.show_slow = value.parse().map_err(|_| bad())?,
             _ => return Err(bad()),
         }
         Ok(())

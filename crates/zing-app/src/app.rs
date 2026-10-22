@@ -54,6 +54,8 @@ pub const TIMER_TREE_REFRESH: usize = 12;
 pub const TIMER_SEARCH: usize = 13;
 /// 游標停留提示（tooltip.rs）
 pub const TIMER_TIP: usize = 14;
+/// 游標在清單停住後預先準備右鍵選單（shellhost.rs）
+pub const TIMER_MENU_PREPARE: usize = 15;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -178,6 +180,12 @@ pub struct App {
     pub tip: Option<crate::tooltip::Tip>,
     /// 以鍵盤（F10）操作命令列時，焦點所在的按鈕（命令列索引）
     pub bar_focus: Option<usize>,
+    /// 最後一次請 ShellHost 預先準備右鍵選單的（項目, 資料夾）
+    pub menu_prepared: Option<(Vec<String>, String)>,
+    /// 精簡右鍵選單的「顯示更多選項」要開的完整選單（ctxmenu.rs）
+    pub pending_shell_menu: Option<crate::ctxmenu::PendingShellMenu>,
+    /// ShellHost 預先載入的第三方擴充功能項目（精簡右鍵選單的第一層）
+    pub menu_exts: Option<crate::ctxmenu::MenuExts>,
     /// 命令列的圖片圖示（路徑 → 讀取結果；None 表示讀取中或讀不到）
     pub cmdbar_images: std::cell::RefCell<std::collections::HashMap<String, Option<std::rc::Rc<crate::icons::IconPixels>>>>,
     pub scripts: crate::script::Scripts,
@@ -284,6 +292,9 @@ impl App {
             menu: None,
             tip: None,
             bar_focus: None,
+            menu_prepared: None,
+            pending_shell_menu: None,
+            menu_exts: None,
             cmdbar_images: Default::default(),
             scripts: Default::default(),
             ask: None,
@@ -878,6 +889,7 @@ impl App {
             Msg::Icon { id, pixels } => self.icons.store(id, pixels),
             Msg::MenuRename => self.start_rename(),
             Msg::MenuExtra { id, target } => self.on_menu_extra(id, target),
+            Msg::MenuExtensions { items, folder, menus, hidden } => self.menu_exts = Some(crate::ctxmenu::MenuExts { items, folder, menus, hidden }),
             Msg::Job { id, event } => self.on_job_event(id, event),
             Msg::FolderSize { parent, name, size, done } => self.on_folder_size(parent, name, size, done),
             Msg::FolderSizesLoaded(lines) => self.on_size_cache_loaded(lines),
@@ -1159,20 +1171,19 @@ impl App {
                 let tab = self.tab();
                 let pl = &self.layout.panes[p];
                 let (items, folder) = (tab.target_paths(), tab.path.clone());
-                let (extras, target) = self.entry_menu_extras(&items, &folder);
-                let tab = self.tab();
                 let item = self.item_rect(p, tab.focus);
                 let y = match item {
                     Some(r) if !items.is_empty() => r.b,
                     _ => pl.list.t,
                 };
                 let x = if self.grid(p, pl.list).is_some() { item.map_or(pl.list.l, |r| r.l) + 16.0 } else { pl.cols[0].0 + 40.0 };
+                let y = y.clamp(pl.list.t, pl.list.b);
                 let s = self.gfx.scale();
-                let mut pt = POINT { x: (x * s) as i32, y: (y.clamp(pl.list.t, pl.list.b) * s) as i32 };
+                let mut pt = POINT { x: (x * s) as i32, y: (y * s) as i32 };
                 unsafe {
                     let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd, &mut pt);
                 }
-                self.show_context_menu(items, folder, pt, extras, target);
+                self.open_context_menu(items, folder, x, y, pt);
             }
             "file.copypath" => {
                 let paths = self.tab().target_paths();

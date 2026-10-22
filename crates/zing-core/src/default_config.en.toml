@@ -32,6 +32,12 @@ visible = true
 # false: buttons show icons only
 labels = true
 
+[context_menu]
+# Right-click menu: compact (common items first, appears instantly; "Show more options" or Shift+right-click opens the full Windows menu) | full (the full Windows menu right away)
+style = "compact"
+# true: also put slow third-party items (detected automatically) on the first level; false: only under "Show more options"
+show_slow = false
+
 [folder_sizes]
 # With the NTFS index service (command palette: Enable NTFS index service), sizes always come instantly from the index and this setting has no effect.
 # Without the index (service not enabled, non-NTFS drives):

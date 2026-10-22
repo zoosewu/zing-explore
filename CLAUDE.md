@@ -79,6 +79,14 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 樹狀列展開中的節點由 `services::TreeWatch` 監看（一條執行緒、只看子資料夾名稱，最多 63 個），變更合併 250 ms 後
   以 `TreeLoad::Refresh` 重新載入並 `reconcile`。
 - 右鍵選單、內容對話方塊、剪貼簿一律交給 `ShellHost`（shellhost.rs）：獨立的 STA 執行緒，UI 只送請求不等待，結果以訊息送回。主機忙碌超過 3 秒時下一個請求會改用新主機。
+  右鍵選單最慢的是 `QueryContextMenu`（Windows 查詢動詞，文字檔約 200 ms；第一次載入擴充功能可達數秒），所以游標在清單停住 150 ms
+  就送 `ShellJob::Prepare` 先建好（`shell::prepare_menu`），按下右鍵時項目相同、剪貼簿序號沒變、沒按 Shift 就直接顯示（`show_menu`）。
+  預先準備中（PREPARING）超過 10 秒才算卡住。各階段耗時：`cargo test --release -p zing-app ctx_menu_timing -- --ignored --nocapture`。
+- 清單的右鍵選單預設是兩層（`ctxmenu.rs`，設定 `context_menu.style`）：第一層用 `menu.rs` 自繪（程式的命令＋`entry_menu_extras`＋
+  第三方擴充功能），立即出現；「顯示更多選項」、Shift+右鍵、「此電腦」才開完整的 Windows 選單。第三方擴充功能在 `shellext.rs`：
+  預先準備時在 ShellHost 載入、計時、讀出項目（`Msg::MenuExtensions`），選了再以同一個物件執行（`ShellJob::InvokeExt`）；
+  還沒準備好就不放（選單不會在顯示後變長）。緩慢的（依檔案／資料夾／背景分開判斷）不放進第一層，除非 `context_menu.show_slow`。
+  這台電腦會放進第一層的項目與耗時：`cargo test --release -p zing-app ext_items_here -- --ignored --nocapture`。
 - `ShellHost` 的視窗必須是 message-only，執行緒上不可留下頂層視窗：系統啟用視窗時會同步送 WM_ACTIVATEAPP 給程序內所有頂層視窗，主機卡住會連帶卡住 UI。選單的擁有者視窗只在選單顯示期間存在。
 - 拖曳出去與放置目標受 COM 限制必須在 UI 執行緒，透過 `App::modal` 在釋放 App 借用後執行；放置目標每次拖曳只解析一次路徑（快取）。
 - 測試卡住的 Shell 擴充功能：debug build 設定 `ZING_TEST_SHELL_DELAY_MS=8000`，第一個右鍵選單會延遲；UI 必須仍可操作，3 秒後再按右鍵會改用新主機。
@@ -157,7 +165,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
     刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（沒有索引時的資料夾大小，見 `sizes.rs`）、
     `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`）、
     `thumbs\`（外部命令產生的縮圖 PNG，上限 256 MB，見 `thumbs.rs`；Windows 的縮圖只放記憶體，上限 64 MB）、
-    `custom-thumbs\`（手動指定的縮圖，檔名是「磁碟區序號-NTFS 檔案 ID」：鍵只在這台電腦有意義，所以不放在程式旁）。
+    `custom-thumbs\`（手動指定的縮圖，檔名是「磁碟區序號-NTFS 檔案 ID」：鍵只在這台電腦有意義，所以不放在程式旁）、
+    `slow-menu-extensions.tsv`（讓右鍵選單變慢的第三方擴充功能，7 天後失效重新量，見 `shellext.rs`）。
   - 索引服務：執行檔安裝時複製到 `%ProgramFiles%\zing-explore\zing-index.exe`（以 LocalSystem 執行的程式不能放在一般使用者
     可修改的位置）；快照（`<磁碟區序號>.zidx`）與 `index.log` 放在服務帳號的 `%LOCALAPPDATA%`，即
     `C:\Windows\System32\config\systemprofile\AppData\Local\zing-explore`（不用 `%ProgramData%`：一般使用者能先建立同名資料夾）。

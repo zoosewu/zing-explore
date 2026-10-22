@@ -112,6 +112,25 @@ impl Thumbnailer {
     }
 }
 
+/// 右鍵選單的樣式
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MenuStyle {
+    /// 先顯示程式自己的常用項目（立即出現），「顯示更多選項」開啟完整的 Windows 選單（同 Windows 11）
+    #[default]
+    Compact,
+    /// 直接顯示完整的 Windows 選單
+    Full,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContextMenuConfig {
+    pub style: MenuStyle,
+    /// 精簡選單的第一層也顯示緩慢的第三方擴充功能（預設隱藏，只在「顯示更多選項」中）
+    pub show_slow: bool,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RawConfig {
@@ -124,6 +143,7 @@ pub struct RawConfig {
     pub palette: Option<PaletteConfig>,
     pub folder_sizes: Option<FolderSizesConfig>,
     pub command_bar: Option<CommandBarConfig>,
+    pub context_menu: Option<ContextMenuConfig>,
     pub key: Vec<KeyBinding>,
     pub button: Option<Vec<Button>>,
     pub thumbnailer: Vec<Thumbnailer>,
@@ -150,6 +170,7 @@ pub struct Config {
     pub palette: PaletteConfig,
     pub folder_sizes: FolderSizesConfig,
     pub command_bar: CommandBarConfig,
+    pub context_menu: ContextMenuConfig,
     /// 命令列的按鈕（toolbar.toml，沒有時為預設＋舊版的 [[button]]）
     pub cmdbar: Vec<crate::cmdbar::Item>,
     /// 解析後的快速鍵；後定義者優先
@@ -233,6 +254,7 @@ impl Config {
             keys,
             config_keys,
             command_bar: user.command_bar.or(base.command_bar).unwrap_or_default(),
+            context_menu: user.context_menu.or(base.context_menu).unwrap_or_default(),
             cmdbar: Vec::new(),
             buttons: user.button.or(base.button).unwrap_or_default(),
             thumbnailers: user.thumbnailer.into_iter().chain(base.thumbnailer).collect(),

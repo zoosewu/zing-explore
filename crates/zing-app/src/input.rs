@@ -88,10 +88,48 @@ impl App {
                     }
                     self.update_tip(&hit);
                     self.hover = hit;
+                    self.schedule_menu_prepare();
                     self.invalidate();
                 }
             }
         }
+    }
+
+    /// 游標移到清單的另一列（或空白處）：停住 150 ms 後預先準備右鍵選單
+    fn schedule_menu_prepare(&self) {
+        if self.perf.is_some() || !matches!(self.hover, Hit::Row(..) | Hit::ListEmpty(_)) {
+            return;
+        }
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), crate::app::TIMER_MENU_PREPARE, 150, None);
+        }
+    }
+
+    /// 按下右鍵時會用的項目：游標所在列已選取就是所有選取項目，否則只有那一列（與 `on_rbutton_up` 相同）
+    pub fn menu_target_at(&self, hit: &Hit) -> Option<(Vec<String>, String)> {
+        match *hit {
+            Hit::Row(p, i) => {
+                let tab = self.panes.get(p)?.tab();
+                let items = if tab.is_selected_view(i) { tab.target_paths() } else { vec![tab.full_path(*tab.view.get(i)? as usize)] };
+                Some((items, tab.path.clone()))
+            }
+            Hit::ListEmpty(p) => Some((Vec::new(), self.panes.get(p)?.tab().path.clone())).filter(|(_, f)| !f.is_empty()),
+            _ => None,
+        }
+    }
+
+    pub fn on_menu_prepare_timer(&mut self) {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(self.hwnd), crate::app::TIMER_MENU_PREPARE);
+        }
+        let Some(target) = self.menu_target_at(&self.hover) else { return };
+        if self.menu_prepared.as_ref() == Some(&target) {
+            return;
+        }
+        let (items, folder) = target.clone();
+        self.menu_prepared = Some(target);
+        let (show_slow, persist) = (self.config.context_menu.show_slow, !self.isolated);
+        self.shell_host.submit(crate::shellhost::ShellJob::Prepare { items, folder, show_slow, persist });
     }
 
     pub fn on_mouse_leave(&mut self) {
@@ -327,17 +365,15 @@ impl App {
                 }
                 tab.focus = i;
                 let (items, folder) = (tab.target_paths(), tab.path.clone());
-                let (extras, target) = self.entry_menu_extras(&items, &folder);
                 self.paint();
-                self.show_context_menu(items, folder, screen, extras, target);
+                self.open_context_menu(items, folder, x, y, screen);
             }
             Hit::ListEmpty(p) => {
                 self.activate_pane(p);
                 self.panes[p].tab_mut().clear_selection();
                 let folder = self.panes[p].tab().path.clone();
-                let (extras, target) = self.entry_menu_extras(&[], &folder);
                 self.paint();
-                self.show_context_menu(Vec::new(), folder, screen, extras, target);
+                self.open_context_menu(Vec::new(), folder, x, y, screen);
             }
             Hit::TreeRow(i) | Hit::TreeArrow(i) => {
                 let n = &self.tree.nodes[i];

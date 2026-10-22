@@ -32,6 +32,12 @@ visible = true
 # false：按鈕只顯示圖示
 labels = true
 
+[context_menu]
+# 右鍵選單：compact（先顯示常用項目，立即出現；「顯示更多選項」或 Shift+右鍵開啟完整的 Windows 選單）| full（直接顯示完整的 Windows 選單）
+style = "compact"
+# true：讓選單變慢的第三方項目（自動偵測）也放在第一層；false 時只在「顯示更多選項」中
+show_slow = false
+
 [folder_sizes]
 # 有 NTFS 索引服務（命令面板：啟用 NTFS 索引服務）時，大小一律由索引立即提供，不受這個設定影響。
 # 沒有索引時（服務未啟用、非 NTFS 磁碟）：

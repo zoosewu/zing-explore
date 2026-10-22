@@ -17,6 +17,12 @@ pub enum Action {
     BarMove(usize, isize),
     /// 把命令加到命令列（「⋯」前面）
     BarAdd(String),
+    /// 右鍵選單中程式自己的項目（`entry_menu_extras` 的 id, 對象）
+    Extra(u32, String),
+    /// 右鍵選單的「顯示更多選項」：開啟完整的 Windows 選單
+    ShellMenu,
+    /// 右鍵選單中第三方擴充功能的項目（第幾個擴充功能, 命令 id）
+    ShellExt(usize, u32),
 }
 
 #[derive(Clone, Debug)]
@@ -211,6 +217,9 @@ impl App {
             Action::BarRemove(i) => self.cmdbar_remove(i),
             Action::BarMove(i, d) => self.cmdbar_move(i, d),
             Action::BarAdd(cmd) => self.cmdbar_add(&cmd),
+            Action::Extra(id, target) => self.on_compact_extra(id, target),
+            Action::ShellMenu => self.show_full_context_menu(),
+            Action::ShellExt(ext, id) => self.invoke_menu_ext(ext, id),
         }
     }
 

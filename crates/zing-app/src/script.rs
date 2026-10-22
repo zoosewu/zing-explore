@@ -1173,7 +1173,7 @@ mod tests {
         let l = lua();
         let g = l.globals();
         // 範例寫在 %LOCALAPPDATA% 的資料（復原記錄）改放測試資料夾，不碰使用者的資料
-        let local = zing_core::testdir::dir().join(format!("zing-localappdata-{name}-{}", std::process::id()));
+        let local = zing_core::testdir::dir().join(format!("zing-localappdata-{name}"));
         let _ = std::fs::remove_dir_all(&local);
         g.set("__test_localappdata", local.to_string_lossy().into_owned()).unwrap();
         g.set("__is_dir", l.create_function(|_, p: String| Ok(Path::new(&p).is_dir())).unwrap()).unwrap();

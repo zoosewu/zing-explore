@@ -234,6 +234,8 @@ impl App {
             "language" => self.set_language(self.config.language),
             "theme" => self.load_theme_by_name(value.clone()),
             "show_hidden" => self.set_show_hidden(self.config.show_hidden),
+            // 下次游標停住時以新的設定重新準備
+            "context_menu.show_slow" => self.menu_prepared = None,
             "layout.tree" => {
                 self.tree_side = self.config.layout.tree;
                 // 選了左側或右側就顯示樹狀列

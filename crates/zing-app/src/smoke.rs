@@ -2096,6 +2096,73 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("提示", a.tip.as_ref().is_some_and(|t| t.shown && t.text.detail.is_some()), true)?;
         screenshot(c, "19-提示")
     }));
+    // 右鍵選單本身無法在程序內測試（會搶前景）：確認游標停住後 ShellHost 真的預先建好選單
+    let prepared_before = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let before = prepared_before.clone();
+    let mut s = step("右鍵選單：游標停在一列後預先準備選單", move |c| {
+        before.set(crate::shellhost::PREPARED_COUNT.load(std::sync::atomic::Ordering::Relaxed));
+        hover_at(c, row_pos("a2.txt"));
+        with_app(|a| a.on_menu_prepare_timer());
+        let target = with_app(|a| a.menu_prepared.as_ref().map(|(items, _)| items.join("|"))).flatten().unwrap_or_default();
+        c.notes.push(("menu_prepared", target));
+    }, move |c, a| {
+        expect("項目", c.note("menu_prepared").is_some_and(|t| t.ends_with("a2.txt")), true)?;
+        // 第三方擴充功能（這台電腦可能沒有）：至少要回報過這一列的結果
+        if !a.menu_exts.as_ref().is_some_and(|m| m.items.first().is_some_and(|i| i.ends_with("a2.txt"))) {
+            return Err("還沒收到擴充功能的項目".into());
+        }
+        let now = crate::shellhost::PREPARED_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        if now <= prepared_before.get() {
+            return Err("ShellHost 還沒建好選單".into());
+        }
+        Ok(())
+    });
+    // 第一次要載入 Shell 擴充功能，可能要數秒
+    s.timeout = Duration::from_secs(15);
+    v.push(s);
+    // 精簡的右鍵選單是程式自己畫的，可以測；「顯示更多選項」會開 Windows 的選單（搶前景），不在這裡測
+    v.push(step("右鍵選單：在檔案上按右鍵立即顯示精簡選單", |c| right_click(c, row_pos("a2.txt")), |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒開")?;
+        let labels: Vec<&str> = m.levels[0].items.iter().map(|i| i.label.as_str()).collect();
+        for want in ["開啟", "開啟方式…", "複製路徑", "內容", "顯示更多選項"] {
+            if !labels.contains(&want) {
+                return Err(format!("缺少「{want}」：{labels:?}"));
+            }
+        }
+        expect("已選取", a.tab().selected_entries().len(), 1)?;
+        expect("完整選單待命", a.pending_shell_menu.is_some(), true)
+    }));
+    v.push(step("截圖：精簡右鍵選單", |_| {}, |c, _| screenshot(c, "21-右鍵選單")));
+    v.push(step("右鍵選單：點「重新命名」開始就地編輯", |c| click(c, "", menu_item_pos(0, "重新命名")), |_, a| {
+        expect("選單關閉", a.menu.is_none(), true)?;
+        match &a.edit {
+            Some(e) if matches!(&e.kind, EditKind::Rename { path, .. } if path.ends_with("a2.txt")) => Ok(()),
+            _ => Err("沒有進入重新命名".into()),
+        }
+    }));
+    v.push(step("右鍵選單：Esc 取消重新命名", |_| {
+        if let Some(e) = edit_hwnd() {
+            key_to(e, "", VK_ESCAPE);
+        }
+    }, |_, a| expect("編輯結束", a.edit.is_none(), true)));
+    v.push(step("右鍵選單：空白處按右鍵有「新增」子選單", |c| {
+        let at = with_app(|a| {
+            a.layout = a.compute_layout();
+            let pl = &a.layout.panes[a.active_pane];
+            Some((pl.list.l + 60.0, pl.list.b - 10.0))
+        })
+        .flatten();
+        right_click(c, at);
+        hover_at(c, menu_item_pos(0, "新增"));
+    }, |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒開")?;
+        expect("沒有選取", a.tab().selected_entries().len(), 0)?;
+        expect("子選單", m.levels.get(1).is_some_and(|l| l.items.iter().any(|i| i.label == "資料夾")), true)
+    }));
+    v.push(step("右鍵選單：Esc 關閉", |c| {
+        key(c, "", VK_ESCAPE);
+        key(c, "", VK_ESCAPE);
+    }, |_, a| expect("關閉", a.menu.is_none(), true)));
     v.push(step("命令列：視窗太窄時移進「⋯」", |c| hover_at(c, Some((5.0, 400.0))), |_, a| {
         let narrow = a.layout_cmdbar(crate::gfx::Rect::new(0.0, 0.0, 180.0, 30.0));
         expect("有移出的按鈕", narrow.overflow.is_empty(), false)?;

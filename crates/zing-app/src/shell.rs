@@ -38,7 +38,7 @@ use windows::Win32::UI::Shell::{
     SHOP_FILEPATH, SHObjectProperties, SHParseDisplayName,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_DRAWITEM,
+    CreatePopupMenu, DestroyMenu, HMENU, InsertMenuW, MF_BYPOSITION, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_DRAWITEM,
     WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR,
 };
 use windows::core::{HRESULT, Interface, PCSTR, PCWSTR, PSTR, Ref, Result, implement};
@@ -55,10 +55,10 @@ const ERROR_CANCELLED_HR: i32 = 0x800704C7_u32 as i32;
 // ---------------------------------------------------------------- PIDL 工具
 
 /// 擁有所有權的絕對 PIDL
-struct Pidl(*mut ITEMIDLIST);
+pub(crate) struct Pidl(pub(crate) *mut ITEMIDLIST);
 
 impl Pidl {
-    fn parse(p: &str) -> Result<Self> {
+    pub(crate) fn parse(p: &str) -> Result<Self> {
         guard::io("解析 Shell 路徑");
         let w = wide_z(p);
         let mut pidl = std::ptr::null_mut();
@@ -700,26 +700,27 @@ pub enum MenuResult {
 /// 程式自訂項目的 id 範圍，與 Shell 項目（1..0x7FFF）分開
 pub const EXTRA_ID_BASE: u32 = 0x8000;
 
-/// 顯示 Shell 右鍵選單。`items` 為空時顯示 `folder` 的背景選單（新增、貼上…）；
-/// 兩者皆空時只顯示 `extras`。`extras` 放在選單最上方，以分隔線隔開。
-///
-/// 在 Shell 主機執行緒呼叫（見 shellhost.rs）：`hwnd` 是該執行緒的 message-only 視窗，
-/// 作為 Shell 物件與叫用命令的擁有者。`before_show` 在選單出現前呼叫，回傳選單的擁有者視窗
-/// （None 表示取消）；`after_close` 在選單關閉、叫用命令前呼叫。
-#[allow(clippy::too_many_arguments)]
-pub fn context_menu(
-    hwnd: HWND,
-    items: &[String],
-    folder: &str,
-    pt: POINT,
-    extras: &[(u32, String)],
-    extended: bool,
-    ctrl: bool,
-    before_show: &mut dyn FnMut() -> Option<HWND>,
-    after_close: &dyn Fn(),
-) -> Result<MenuResult> {
+/// 建好、還沒顯示的 Shell 右鍵選單。`QueryContextMenu` 是右鍵選單最慢的一步（Windows 查詢「開啟」「開啟檔案」等動詞，
+/// 文字檔約 200 ms；第一次還要載入擴充功能，可達數秒），所以 `ShellHost` 在游標停住時就先建好（`prepare_menu`），
+/// 按下右鍵時只剩顯示（`show_menu`）。
+pub struct PreparedMenu {
+    cm: Option<IContextMenu>,
+    menu: HMENU,
+    _keep: Vec<Pidl>,
+}
+
+impl Drop for PreparedMenu {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DestroyMenu(self.menu);
+        }
+    }
+}
+
+/// 建立選單並讓 Shell 與擴充功能加入項目（不顯示）。`items` 為空時是 `folder` 的背景選單
+pub fn prepare_menu(hwnd: HWND, items: &[String], folder: &str, extended: bool) -> Result<PreparedMenu> {
     unsafe {
-        let mut _keep = Vec::new();
+        let mut keep = Vec::new();
         let cm: Option<IContextMenu> = if items.is_empty() {
             if folder.is_empty() {
                 None
@@ -733,40 +734,62 @@ pub fn context_menu(
             let parent: IShellFolder = SHBindToParent(pidls[0].0, None)?;
             let children: Vec<*const ITEMIDLIST> = pidls.iter().map(|p| ILFindLastID(p.0) as *const _).collect();
             let cm = parent.GetUIObjectOf(hwnd, &children, None)?;
-            _keep = pidls;
+            keep = pidls;
             Some(cm)
         };
+        let menu = CreatePopupMenu()?;
+        let prepared = PreparedMenu { cm, menu, _keep: keep };
+        if let Some(cm) = &prepared.cm {
+            let flags = CMF_NORMAL | if items.is_empty() { 0 } else { CMF_CANRENAME } | if extended { CMF_EXTENDEDVERBS } else { 0 };
+            cm.QueryContextMenu(menu, 0, 1, EXTRA_ID_BASE - 1, flags).ok()?;
+        }
+        Ok(prepared)
+    }
+}
+
+/// 顯示建好的選單並執行選到的項目；`extras` 加在最上面
+#[allow(clippy::too_many_arguments)]
+pub fn show_menu(
+    hwnd: HWND,
+    prepared: PreparedMenu,
+    has_items: bool,
+    folder: &str,
+    pt: POINT,
+    extras: &[(u32, String)],
+    extended: bool,
+    ctrl: bool,
+    before_show: &mut dyn FnMut() -> Option<HWND>,
+    after_close: &dyn Fn(),
+) -> Result<MenuResult> {
+    unsafe {
+        let menu = prepared.menu;
+        let cm = &prepared.cm;
         if cm.is_none() && extras.is_empty() {
             return Ok(MenuResult::None);
         }
-
-        let menu = CreatePopupMenu()?;
-        for (id, label) in extras {
+        for (k, (id, label)) in extras.iter().enumerate() {
             let w = wide_z(label);
-            AppendMenuW(menu, MF_STRING, *id as usize, PCWSTR(w.as_ptr()))?;
+            InsertMenuW(menu, k as u32, MF_BYPOSITION | MF_STRING, *id as usize, PCWSTR(w.as_ptr()))?;
         }
-        if let Some(cm) = &cm {
-            if !extras.is_empty() {
-                AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())?;
-            }
-            let flags = CMF_NORMAL | if items.is_empty() { 0 } else { CMF_CANRENAME } | if extended { CMF_EXTENDEDVERBS } else { 0 };
-            cm.QueryContextMenu(menu, extras.len() as u32 + 1, 1, EXTRA_ID_BASE - 1, flags).ok()?;
+        if cm.is_some() && !extras.is_empty() {
+            InsertMenuW(menu, extras.len() as u32, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null())?;
+        }
+        if let Some(cm) = cm {
             ACTIVE_MENU.with(|m| *m.borrow_mut() = (cm.cast().ok(), cm.cast().ok()));
         }
         let Some(owner) = before_show() else {
             ACTIVE_MENU.with(|m| *m.borrow_mut() = (None, None));
-            let _ = DestroyMenu(menu);
             return Ok(MenuResult::None);
         };
         let cmd = TrackPopupMenuEx(menu, (TPM_RETURNCMD | TPM_RIGHTBUTTON).0, pt.x, pt.y, owner, None).0 as u32;
         ACTIVE_MENU.with(|m| *m.borrow_mut() = (None, None));
         after_close();
 
-        let result = match &cm {
+        let result = match cm {
             _ if cmd == 0 => MenuResult::None,
             _ if cmd >= EXTRA_ID_BASE => MenuResult::Extra(cmd),
             None => MenuResult::None,
-            Some(cm) if !items.is_empty() && verb(cm, cmd - 1).as_deref() == Some("rename") => MenuResult::Rename,
+            Some(cm) if has_items && verb(cm, cmd - 1).as_deref() == Some("rename") => MenuResult::Rename,
             Some(cm) => {
                 let dir = wide_z(folder);
                 let mut mask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
@@ -791,7 +814,6 @@ pub fn context_menu(
                 MenuResult::Invoked
             }
         };
-        let _ = DestroyMenu(menu);
         Ok(result)
     }
 }
@@ -1000,6 +1022,114 @@ impl IDropTarget_Impl for DropTarget_Impl {
             _ => {
                 unsafe { *effect = DROPEFFECT_NONE };
                 Ok(())
+            }
+        }
+    }
+}
+
+/// 右鍵選單各階段的耗時（不顯示選單）：`cargo test -p zing-app ctx_menu_timing -- --ignored --nocapture`
+#[cfg(test)]
+mod ctx_menu_timing {
+    use super::*;
+
+    fn build(items: &[String], folder: &str) -> [f64; 4] {
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+        unsafe {
+            let t = Instant::now();
+            let pidls: Vec<Pidl> = if items.is_empty() { vec![Pidl::parse(folder).unwrap()] } else { items.iter().map(|p| Pidl::parse(p).unwrap()).collect() };
+            let parse = ms(t);
+            let t = Instant::now();
+            let cm: IContextMenu = if items.is_empty() {
+                let sf: IShellFolder = SHBindToObject(None, pidls[0].0, None).unwrap();
+                sf.CreateViewObject(HWND::default()).unwrap()
+            } else {
+                let parent: IShellFolder = SHBindToParent(pidls[0].0, None).unwrap();
+                let children: Vec<*const ITEMIDLIST> = pidls.iter().map(|p| ILFindLastID(p.0) as *const _).collect();
+                parent.GetUIObjectOf(HWND::default(), &children, None).unwrap()
+            };
+            let bind = ms(t);
+            let menu = CreatePopupMenu().unwrap();
+            let t = Instant::now();
+            let extra = std::env::var("ZING_CTX_FLAGS").ok().and_then(|v| u32::from_str_radix(&v, 16).ok()).unwrap_or(0);
+            let flags = CMF_NORMAL | if items.is_empty() { 0 } else { CMF_CANRENAME };
+            let _ = cm.QueryContextMenu(menu, 1, 1, EXTRA_ID_BASE - 1, flags | extra);
+            if std::env::var_os("ZING_CTX_COUNT").is_some() {
+                println!("  項目數 {}", windows::Win32::UI::WindowsAndMessaging::GetMenuItemCount(Some(menu)));
+            }
+            let query = ms(t);
+            let t = Instant::now();
+            drop(cm);
+            let _ = DestroyMenu(menu);
+            [parse, bind, query, ms(t)]
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn ctx_menu_timing() {
+        let _allow = guard::allow_io("測試");
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        }
+        let dir = zing_core::testdir::dir().join("zing-ctxmenu-timing");
+        let _ = std::fs::create_dir_all(dir.join("子資料夾"));
+        for n in ["a.txt", "b.jpg", "c.zip"] {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let d = dir.to_string_lossy().into_owned();
+        let p = |n: &str| dir.join(n).to_string_lossy().into_owned();
+        let cases: Vec<(&str, Vec<String>)> = vec![
+            ("文字檔", vec![p("a.txt")]),
+            ("圖片", vec![p("b.jpg")]),
+            ("zip", vec![p("c.zip")]),
+            ("資料夾", vec![p("子資料夾")]),
+            ("三個檔案", vec![p("a.txt"), p("b.jpg"), p("c.zip")]),
+            ("背景", vec![]),
+        ];
+        println!("{:<10} {:>8} {:>8} {:>10} {:>8}", "", "parse", "bind", "query", "release");
+        for round in 0..3 {
+            for (name, items) in &cases {
+                let [a, b, c, e] = build(items, &d);
+                println!("{:<10} {a:>8.1} {b:>8.1} {c:>10.1} {e:>8.1}   (第 {} 輪)", name, round + 1);
+            }
+        }
+    }
+
+    /// 每個右鍵選單擴充功能各自的耗時：ZING_CTX_HANDLERS="名稱|{CLSID};…"、ZING_CTX_FILE=檔案
+    #[test]
+    #[ignore]
+    fn ctx_handler_timing() {
+        use windows::Win32::UI::Shell::IShellExtInit;
+        use windows::core::GUID;
+        let _allow = guard::allow_io("測試");
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        }
+        let file = std::env::var("ZING_CTX_FILE").unwrap();
+        let list = std::env::var("ZING_CTX_HANDLERS").unwrap();
+        let parent = Pidl::parse(&path::parent(&file).unwrap_or_else(|| "C:\\".into())).unwrap();
+        for round in 0..2 {
+            for entry in list.split(';').filter(|s| !s.is_empty()) {
+                let (name, clsid) = entry.split_once('|').unwrap();
+                let Ok(g) = GUID::try_from(clsid.trim_matches(|c| c == '{' || c == '}')) else { continue };
+                let t = Instant::now();
+                let r = (|| -> Result<(f64, f64)> { unsafe {
+                    let init: IShellExtInit = CoCreateInstance(&g, None, CLSCTX_INPROC_SERVER)?;
+                    let obj = data_object(std::slice::from_ref(&file))?;
+                    init.Initialize(Some(parent.0), &obj, Default::default())?;
+                    let created = t.elapsed().as_secs_f64() * 1000.0;
+                    let cm: IContextMenu = init.cast()?;
+                    let menu = CreatePopupMenu()?;
+                    let t2 = Instant::now();
+                    let _ = cm.QueryContextMenu(menu, 0, 1, 0x7000, CMF_NORMAL);
+                    let q = t2.elapsed().as_secs_f64() * 1000.0;
+                    let _ = DestroyMenu(menu);
+                    Ok((created, q))
+                } })();
+                match r {
+                    Ok((c, q)) => println!("{name:<28} 建立 {c:>8.1}  QueryContextMenu {q:>8.1}   (第 {} 輪)", round + 1),
+                    Err(e) => println!("{name:<28} 失敗 {:?}", e.code()),
+                }
             }
         }
     }

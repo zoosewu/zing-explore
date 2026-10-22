@@ -1067,6 +1067,9 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 crate::app::TIMER_TIP => {
                     with_app(|a| a.on_tip_timer());
                 }
+                crate::app::TIMER_MENU_PREPARE => {
+                    with_app(|a| a.on_menu_prepare_timer());
+                }
                 crate::app::TIMER_PREVIEW => {
                     with_app(|a| a.on_preview_timer());
                 }

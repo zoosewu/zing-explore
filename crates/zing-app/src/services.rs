@@ -55,6 +55,8 @@ pub enum Msg {
     MenuRename,
     /// 右鍵選單選了程式自訂的項目
     MenuExtra { id: u32, target: String },
+    /// 預先準備好的第三方擴充功能項目（精簡右鍵選單的第一層）
+    MenuExtensions { items: Vec<String>, folder: String, menus: Vec<crate::shellext::ExtMenu>, hidden: Vec<String> },
     /// 剪貼簿上的檔案已讀出，交給檔案作業佇列
     Paste { sources: Vec<String>, dest: String, cut: bool },
     /// 背景重新讀取的設定與主題

@@ -142,7 +142,7 @@ impl App {
         self.config.key_for(cmd).map(|k| k.to_string())
     }
 
-    fn menu_entries(&self, list: &[Entry]) -> Vec<MenuItem> {
+    pub fn menu_entries(&self, list: &[Entry]) -> Vec<MenuItem> {
         list.iter()
             .map(|e| match *e {
                 Entry::Separator => MenuItem::separator(),
@@ -152,7 +152,7 @@ impl App {
             .collect()
     }
 
-    fn cmd_menu_item(&self, cmd: &str) -> MenuItem {
+    pub fn cmd_menu_item(&self, cmd: &str) -> MenuItem {
         MenuItem {
             key: self.key_text(cmd),
             enabled: self.cmd_disabled(cmd).is_none(),
