@@ -2453,6 +2453,42 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     });
     v.push(step("設定：點工具列的齒輪開啟", move |c| click(c, "", gear()), |_, a| expect("設定頁", a.settings_page.is_some(), true)));
     v.push(step("設定：再點一次關閉", move |c| click(c, "", gear()), |_, a| expect("設定頁", a.settings_page.is_none(), true)));
+    // 重新載入設定（config.reload）與設定頁走同一條套用路徑（App::apply_config）
+    let reload_with = |f: fn(&mut zing_core::config::Config)| {
+        with_app(|a| {
+            let mut cfg = a.config.clone();
+            // 重新載入以設定檔的主題為準：沿用目前的主題，不影響後面的步驟
+            cfg.theme = a.theme_name.clone();
+            f(&mut cfg);
+            let theme = a.theme.clone();
+            a.on_service_msg(crate::services::Msg::ConfigLoaded { config: Box::new(cfg), theme, warnings: Vec::new() });
+        });
+    };
+    v.push(step(
+        "設定：重新載入改了 show_hidden 的設定檔",
+        move |_| {
+            with_app(|a| a.menu_prepared = Some(Default::default()));
+            reload_with(|c| {
+                c.show_hidden = true;
+                c.context_menu.hide_slow = false;
+            });
+        },
+        |_, a| {
+            expect("顯示隱藏檔案", a.show_hidden, true)?;
+            expect("右鍵選單重新準備", a.menu_prepared.is_none(), true)
+        },
+    ));
+    v.push(step(
+        "設定：重新載入還原",
+        move |_| reload_with(|c| {
+            c.show_hidden = false;
+            c.context_menu.hide_slow = true;
+        }),
+        |_, a| {
+            expect("顯示隱藏檔案", a.show_hidden, false)?;
+            expect("hide_slow", a.config.context_menu.hide_slow, true)
+        },
+    ));
 
     // position = middle：整個面板永遠置中，輸入框（子視窗）跟著移動
     let centered = |a: &App| -> Result<f32, String> {

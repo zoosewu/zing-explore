@@ -767,7 +767,7 @@ impl App {
         self.invalidate();
     }
 
-    fn on_service_msg(&mut self, msg: Msg) {
+    pub(crate) fn on_service_msg(&mut self, msg: Msg) {
         match msg {
             Msg::Listing { tab, generation, listing, sorted, done } => {
                 let Some((p, t)) = self.find_tab(tab) else { return };
@@ -830,7 +830,9 @@ impl App {
             }
             Msg::TreeDirChanged(path) => self.on_tree_dir_changed(path),
             Msg::SearchResults { generation, result } => self.on_search_results(generation, result),
-            Msg::TreeChildren { path, children, kind } => match kind {
+            // 顯示隱藏檔案改變前送出的預先載入：節點已重設、新的請求在途中，不能被舊結果填上
+            Msg::TreeChildren { kind: TreeLoad::Probe | TreeLoad::Refresh, show_hidden, .. } if show_hidden != self.show_hidden => {}
+            Msg::TreeChildren { path, children, kind, .. } => match kind {
                 TreeLoad::Probe => self.tree.set_probe(&path, children),
                 TreeLoad::Refresh => {
                     if let Some(c) = children {
@@ -931,18 +933,13 @@ impl App {
             Msg::IndexOutdated { installed } => self.on_index_outdated(installed),
             Msg::Paste { sources, dest, cut } => self.submit_op(FileOp::Transfer { sources, dest, mov: cut }),
             Msg::ConfigLoaded { mut config, theme, warnings } => {
-                if config.thumbnailers != self.config.thumbnailers {
-                    self.thumbs.set_thumbnailers(config.thumbnailers.clone());
-                }
                 if self.isolated {
                     config.language = self.config.language;
                 }
-                let lang = config.language;
-                self.config = *config;
-                self.set_language(lang);
+                let old = std::mem::replace(&mut self.config, *config);
+                self.apply_config(&old);
                 // 重新載入設定時以設定檔的主題為準
                 self.theme_name = self.config.theme.clone();
-                self.tree_side = self.config.layout.tree;
                 self.apply_theme(theme);
                 match warnings.into_iter().next() {
                     Some(w) => self.set_status(w, true),
@@ -1399,7 +1396,33 @@ impl App {
         Ok(())
     }
 
-    /// 切換介面語言（設定檔的 language）：大部分文字在繪製時翻譯，樹狀列的根節點要重建
+    /// 設定改變後的副作用：設定頁（`set_pref`）與重新載入（`Msg::ConfigLoaded`）都經過這裡，
+    /// 依 `old` 與 `self.config` 的差異執行，所以新增設定時只要在這裡加一個比較，兩條路都生效。
+    /// 主題除外：設定頁在背景載入新主題，重新載入時主題已隨設定讀好，由呼叫端套用。
+    pub fn apply_config(&mut self, old: &Config) {
+        if self.config.language != old.language {
+            self.set_language(self.config.language);
+        }
+        if self.config.show_hidden != old.show_hidden {
+            self.set_show_hidden(self.config.show_hidden);
+        }
+        if self.config.layout.tree != old.layout.tree {
+            self.tree_side = self.config.layout.tree;
+            // 選了左側或右側就顯示樹狀列
+            if self.tree_side != TreeSide::Hidden {
+                self.tree_visible = true;
+            }
+        }
+        if self.config.thumbnailers != old.thumbnailers {
+            self.thumbs.set_thumbnailers(self.config.thumbnailers.clone());
+        }
+        // 下次游標停住時以新的設定重新準備右鍵選單
+        if self.config.context_menu != old.context_menu {
+            self.menu_prepared = None;
+        }
+        self.invalidate();
+    }
+
     pub fn set_show_hidden(&mut self, show_hidden: bool) {
         self.show_hidden = show_hidden;
         for pane in &mut self.panes {
@@ -1411,6 +1434,7 @@ impl App {
         self.invalidate();
     }
 
+    /// 切換介面語言（設定檔的 language）：大部分文字在繪製時翻譯，樹狀列的根節點要重建
     pub fn set_language(&mut self, lang: zing_core::i18n::Lang) {
         self.config.language = lang;
         if zing_core::i18n::lang() == lang {

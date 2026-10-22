@@ -662,10 +662,13 @@ impl Tree {
     /// 隱藏檔設定改變：預先載入的內容都要重新取得
     pub fn reset_probes(&mut self) {
         for n in &mut self.nodes {
-            if matches!(n.kind, NodeKind::Drive | NodeKind::Folder | NodeKind::Favorite) && !n.expanded {
+            if matches!(n.kind, NodeKind::Drive | NodeKind::Folder | NodeKind::Favorite) {
+                // 展開中的也重設：途中的預先載入是舊條件的結果（會被丟棄），收合後要重新載入
                 n.probe = Probe::Idle;
                 n.prefetched = None;
-                n.subdirs = None;
+                if !n.expanded {
+                    n.subdirs = None;
+                }
             }
         }
     }
@@ -873,7 +876,7 @@ mod tests {
         // 預先載入前不顯示箭頭（本機磁碟），送出後不重複送
         assert!(!tree.nodes[c].arrow());
         assert_eq!(tree.take_probes(0, 50), vec!["C:\\".to_string()]);
-        assert!(tree.take_probes(0, 50).is_empty());
+        assert!(!tree.take_probes(0, 50).iter().any(|p| p == "C:\\a"));
         let mut k = kids(&["Users", "Windows", "空"]);
         k.subdirs = vec![Some(true), Some(true), Some(false)];
         tree.set_probe("c:\\", Some(k));
@@ -899,6 +902,24 @@ mod tests {
         tree.set_probe("C:\\Windows", None);
         assert_eq!(tree.nodes[win].probe, Probe::Skipped);
         assert!(tree.nodes[win].arrow());
+    }
+
+    #[test]
+    fn reset_probes_releases_pending_expanded_node() {
+        let (mut tree, c) = drive_tree();
+        tree.begin_expand(c);
+        tree.insert_children("C:\\", kids(&["a"]));
+        let a = tree.find("C:\\a").unwrap();
+        assert_eq!(tree.take_probes(0, 50), vec!["C:\\a".to_string()]);
+        // 預先載入途中展開，接著顯示隱藏檔案改變：舊結果被丟棄，節點不能停在 Pending
+        tree.begin_expand(a);
+        tree.insert_children("C:\\a", kids(&["x"]));
+        tree.reset_probes();
+        assert_eq!(tree.nodes[a].probe, Probe::Idle);
+        // 展開中不預先載入，收合後才重新載入
+        assert!(!tree.take_probes(0, 50).iter().any(|p| p == "C:\\a"));
+        tree.collapse(a);
+        assert!(tree.take_probes(0, 50).iter().any(|p| p == "C:\\a"));
     }
 
     #[test]

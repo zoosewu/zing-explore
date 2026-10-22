@@ -37,7 +37,8 @@ pub enum Msg {
     ListingError { tab: TabId, generation: u64, error: String },
     Sorted { tab: TabId, generation: u64, spec: SortSpec, sorted: Vec<u32> },
     /// 樹狀列的子資料夾；None 表示這個位置不預先載入（`kind` 為 Probe 時）
-    TreeChildren { path: String, children: Option<crate::model::Children>, kind: TreeLoad },
+    /// `show_hidden`：列舉時是否包含隱藏資料夾（設定在途中改變時丟棄預先載入的結果）
+    TreeChildren { path: String, children: Option<crate::model::Children>, kind: TreeLoad, show_hidden: bool },
     /// 樹狀列展開中的資料夾，子資料夾有新增、刪除或改名（`TreeWatch`）
     TreeDirChanged(String),
     /// 全磁碟搜尋的結果（search.rs）
@@ -256,7 +257,7 @@ pub fn tree_children(pool: &Pool, n: &Notifier, path: String, show_hidden: bool,
     let n = n.clone();
     pool.spawn(move || {
         let children = subdirs(&path, show_hidden, use_index, kind == TreeLoad::Probe);
-        n.send(Msg::TreeChildren { path, children, kind });
+        n.send(Msg::TreeChildren { path, children, kind, show_hidden });
     });
 }
 

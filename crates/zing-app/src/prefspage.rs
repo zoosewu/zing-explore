@@ -316,26 +316,15 @@ impl App {
             self.invalidate();
             return;
         }
+        let old = self.config.clone();
         if let Err(e) = self.config.set_pref(p.key, &value) {
             self.set_status(e, true);
             return;
         }
-        match p.key {
-            "language" => self.set_language(self.config.language),
-            "theme" => self.load_theme_by_name(value.clone()),
-            "show_hidden" => self.set_show_hidden(self.config.show_hidden),
-            // 下次游標停住時以新的設定重新準備
-            "context_menu.hide_slow" | "context_menu.allow_slow" => self.menu_prepared = None,
-            "layout.tree" => {
-                self.tree_side = self.config.layout.tree;
-                // 選了左側或右側就顯示樹狀列
-                if self.tree_side != zing_core::config::TreeSide::Hidden {
-                    self.tree_visible = true;
-                }
-            }
-            _ => {}
+        self.apply_config(&old);
+        if p.key == "theme" {
+            self.load_theme_by_name(value.clone());
         }
-        self.invalidate();
         if self.isolated {
             return;
         }

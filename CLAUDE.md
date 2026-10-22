@@ -99,7 +99,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   隔離模式（效能、冒煙測試）固定用繁體中文；冒煙測試另有切換成英文、日文的步驟（截圖 `14-英文介面`、`15-日文介面`）。
 - 設定頁（`prefspage.rs`，命令 `settings.open`）：先選分類（`Pref::group`，順序依 `PREFS`）再選項目。項目定義在
   `zing_core::prefs::PREFS`，新增設定時同步加上 `Config::pref_value`／
-  `set_pref` 與設定頁的立即套用（`App::set_pref`）。寫回 config.toml 只改那一行（`prefs::write_pref`，保留註解），改不了（行內表、
+  `set_pref`；改變後的副作用只寫在 `App::apply_config`（比較新舊設定，設定頁與 `config.reload` 共用）。寫回 config.toml 只改那一行（`prefs::write_pref`，保留註解），改不了（行內表、
   多行字串）就回報錯誤、不寫入；隔離模式不寫檔。與主題編輯面板共用右側位置，兩者只開一個。
 - 介面要讓不會寫程式的人也能用：能用 UI 調整的就不要求改設定檔或寫命令（選單、開關、滑桿、色票，改了立即看到效果）；
   設定檔與命令腳本留給進階使用者。主題編輯面板在 `themepanel.rs`（檔案操作在 `themeedit.rs`）。
