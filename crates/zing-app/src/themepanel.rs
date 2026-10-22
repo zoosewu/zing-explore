@@ -18,6 +18,7 @@ use zing_core::theme::{
 use crate::app::{App, EditKind, Modal, Press};
 use crate::gfx::{Font, Rect};
 use crate::services::Msg;
+use crate::sidepanel::{footer_buttons, row_rect};
 use crate::view::Hit;
 use crate::window;
 
@@ -189,32 +190,27 @@ fn mode_code(m: zing_core::theme::Mode) -> &'static str {
 
 impl App {
     pub fn open_theme_editor(&mut self) {
-        if self.theme_editor.is_none() {
-            self.close_side_panels();
-            self.theme_editor = Some(ThemeEditor::new(self.theme.clone(), self.theme_name.clone()));
+        if self.theme_editor().is_none() {
+            self.open_side(crate::sidepanel::SidePanel::Theme(ThemeEditor::new(self.theme.clone(), self.theme_name.clone())));
         }
         self.invalidate();
     }
 
     /// 關閉面板；`revert` 為 true 時還原開啟前的主題
     pub fn close_theme_editor(&mut self, revert: bool) {
-        if let Some(ed) = self.theme_editor.take()
+        let original = self.theme_editor().map(|ed| (ed.original.clone(), ed.original_name.clone()));
+        self.close_side_panels();
+        if let Some((theme, name)) = original
             && revert
-            && self.theme != ed.original
+            && self.theme != theme
         {
-            self.theme_name = ed.original_name;
-            self.apply_theme(ed.original);
+            self.theme_name = name;
+            self.apply_theme(theme);
         }
-        if matches!(self.edit.as_ref().map(|e| &e.kind), Some(EditKind::ThemeField { .. } | EditKind::ThemeSaveAs | EditKind::ThemeRule { .. }))
-            && let Some(e) = self.edit.take()
-        {
-            window::destroy_edit(e.hwnd);
-        }
-        self.invalidate();
     }
 
     pub fn theme_rows(&self) -> Vec<Row> {
-        self.theme_editor.as_ref().map_or_else(Vec::new, |ed| ed.rows(&self.theme))
+        self.theme_editor().map_or_else(Vec::new, |ed| ed.rows(&self.theme))
     }
 
     /// 內建主題顯示名稱（緊湊深色…），使用者主題顯示名稱本身
@@ -232,10 +228,8 @@ impl App {
         let note = Rect::new(inner.l, title.b, inner.r, title.b + rh);
         let link_h = rh;
         let links_row = Rect::new(inner.l, inner.b - link_h, inner.r, inner.b);
-        let bh = (rh + 6.0).max(28.0);
-        let row = Rect::new(inner.l, links_row.t - 4.0 - bh, inner.r, links_row.t - 4.0);
-        let half = (inner.w() - 6.0) / 2.0;
-        let buttons = [Rect::new(row.l, row.t, row.l + half, row.b), Rect::new(row.l + half + 6.0, row.t, row.r, row.b)];
+        let buttons = footer_buttons(Rect::new(inner.l, inner.t, inner.r, links_row.t - 4.0), rh);
+        let row = buttons[0];
         let third = inner.w() / 3.0;
         let links = [0, 1, 2].map(|k| Rect::new(inner.l + third * k as f32, links_row.t, inner.l + third * (k + 1) as f32, links_row.b));
         let list = Rect::new(inner.l, note.b + 4.0, inner.r, row.t - 8.0);
@@ -244,8 +238,8 @@ impl App {
 
     pub fn theme_row_rects(&self, list: Rect, k: usize, scroll: f32) -> RowRects {
         let rh = self.row_h();
-        let y = list.t + k as f32 * rh - scroll;
-        let row = Rect::new(list.l, y, list.r, y + rh);
+        let row = row_rect(list, k, rh, scroll, 0);
+        let y = row.t;
         let tail = Rect::new(list.r - rh, y, list.r, y + rh);
         let value_l = list.l + (list.w() * 0.42).min(150.0);
         let value = Rect::new(value_l, y, tail.l - 4.0, y + rh);
@@ -269,7 +263,7 @@ impl App {
 
     /// 第 k 列欄位的提示：（名稱, 說明, 名稱的位置）
     pub fn theme_field_tip(&self, k: usize) -> Option<(&'static str, &'static str, Rect)> {
-        let (panel, ed) = (self.layout.theme_panel?, self.theme_editor.as_ref()?);
+        let (panel, ed) = (self.layout.side_panel?, self.theme_editor()?);
         let Row::Field(i) = *ed.rows(&self.theme).get(k)? else { return None };
         let f = &FIELDS[i];
         let hint = zing_core::theme::field_hint(f)?;
@@ -278,7 +272,7 @@ impl App {
     }
 
     pub fn theme_hit(&self, panel: Rect, x: f32, y: f32) -> Hit {
-        let Some(ed) = self.theme_editor.as_ref() else { return Hit::None };
+        let Some(ed) = self.theme_editor() else { return Hit::None };
         let pl = self.theme_panel_layout(panel);
         if let Some(k) = pl.buttons.iter().position(|r| r.contains(x, y)) {
             return Hit::ThemeButton(k);
@@ -331,7 +325,7 @@ impl App {
 
     fn toggle_expand(&mut self, t: Target) {
         let need_fonts = matches!(t, Target::Field(i) if is_font(i));
-        if let Some(ed) = self.theme_editor.as_mut() {
+        if let Some(ed) = self.theme_editor_mut() {
             ed.expanded = if ed.expanded == Some(t) { None } else { Some(t) };
             if need_fonts && ed.fonts.is_none() && ed.expanded == Some(t) {
                 ed.fonts = Some(Vec::new());
@@ -343,14 +337,14 @@ impl App {
     }
 
     pub fn on_fonts(&mut self, fonts: Vec<(String, String)>) {
-        if let Some(ed) = self.theme_editor.as_mut() {
+        if let Some(ed) = self.theme_editor_mut() {
             ed.fonts = Some(fonts);
             self.invalidate();
         }
     }
 
     fn collapse(&mut self) {
-        if let Some(ed) = self.theme_editor.as_mut() {
+        if let Some(ed) = self.theme_editor_mut() {
             ed.expanded = None;
         }
     }
@@ -425,7 +419,7 @@ impl App {
     }
 
     fn pick_option(&mut self, t: Target, o: usize) {
-        let Some(ed) = self.theme_editor.as_ref() else { return };
+        let Some(ed) = self.theme_editor() else { return };
         let Some((value, _)) = ed.options(&self.theme, t).get(o).cloned() else { return };
         self.collapse();
         match t {
@@ -504,7 +498,7 @@ impl App {
     /// 拖曳滑桿（Press::ThemeSlider）
     pub fn theme_slide(&mut self, x: f32) {
         let Some(Press::ThemeSlider { field, row }) = self.press else { return };
-        let (Some(panel), Some(ed)) = (self.layout.theme_panel, self.theme_editor.as_ref()) else { return };
+        let (Some(panel), Some(ed)) = (self.layout.side_panel, self.theme_editor()) else { return };
         let FieldKind::Number { min, max, step } = FIELDS[field].kind else { return };
         let pl = self.theme_panel_layout(panel);
         let tr = self.theme_row_rects(pl.list, row, ed.scroll).track;
@@ -517,9 +511,8 @@ impl App {
         }
     }
 
-    /// 滾輪：數字欄位上微調，其他地方捲動清單
-    pub fn theme_wheel(&mut self, panel: Rect, x: f32, y: f32, delta: i16) {
-        let notches = (delta as i32 / 120).signum();
+    /// 滾輪在數字欄位上：微調並回傳 true（其他地方由 `side_wheel` 捲動清單）
+    pub fn theme_nudge_at(&mut self, panel: Rect, x: f32, y: f32, notches: i32) -> bool {
         let k = match self.theme_hit(panel, x, y) {
             Hit::ThemeRow(k) | Hit::ThemeStep(k, _) | Hit::ThemeSlider(k) => Some(k),
             _ => None,
@@ -529,20 +522,14 @@ impl App {
             && matches!(FIELDS[i].kind, FieldKind::Number { .. })
         {
             self.nudge_row(k, notches);
-            return;
+            return true;
         }
-        let pl = self.theme_panel_layout(panel);
-        let max = (self.theme_rows().len() as f32 * self.row_h() - pl.list.h()).max(0.0);
-        let step = 3.0 * self.theme.metrics.row_height;
-        if let Some(ed) = self.theme_editor.as_mut() {
-            ed.scroll = (ed.scroll - notches as f32 * step).clamp(0.0, max);
-        }
-        self.invalidate();
+        false
     }
 
     /// Esc：收起展開的選單；沒有展開時回傳 false
     pub fn theme_escape(&mut self) -> bool {
-        match self.theme_editor.as_mut() {
+        match self.theme_editor_mut() {
             Some(ed) if ed.expanded.is_some() => {
                 ed.expanded = None;
                 self.invalidate();
@@ -553,10 +540,11 @@ impl App {
     }
 
     fn begin_theme_field_edit(&mut self, k: usize, i: usize) {
-        let Some(panel) = self.layout.theme_panel else { return };
-        let Some(ed) = self.theme_editor.as_ref() else { return };
-        let pl = self.theme_panel_layout(panel);
-        let rr = self.theme_row_rects(pl.list, k, ed.scroll);
+        let Some(panel) = self.layout.side_panel else { return };
+        if self.side_reveal(k).is_none() {
+            return;
+        }
+        let rr = self.theme_row_rects(self.theme_panel_layout(panel).list, k, self.side_scroll());
         let r = match FIELDS[i].kind {
             FieldKind::Color => rr.text,
             FieldKind::Number { .. } => Rect::new(rr.plus.r + 2.0, rr.row.t, rr.value.r, rr.row.b),
@@ -568,18 +556,18 @@ impl App {
     }
 
     fn begin_rule_edit(&mut self, k: usize, r: usize) {
-        let Some(panel) = self.layout.theme_panel else { return };
-        let Some(ed) = self.theme_editor.as_ref() else { return };
-        let Some(rule) = self.theme.color.file_rule.get(r) else { return };
-        let pl = self.theme_panel_layout(panel);
-        let rr = self.theme_row_rects(pl.list, k, ed.scroll);
-        let text = rule.pattern.clone();
+        let Some(panel) = self.layout.side_panel else { return };
+        let Some(text) = self.theme.color.file_rule.get(r).map(|rule| rule.pattern.clone()) else { return };
+        if self.side_reveal(k).is_none() {
+            return;
+        }
+        let rr = self.theme_row_rects(self.theme_panel_layout(panel).list, k, self.side_scroll());
         let len = text.encode_utf16().count();
         window::begin_edit(self, Rect::new(rr.text.l, rr.row.t, rr.tail.l - 4.0, rr.row.b), &text, len, EditKind::ThemeRule { rule: r });
     }
 
     pub fn begin_theme_save_as(&mut self) {
-        let Some(panel) = self.layout.theme_panel else { return };
+        let Some(panel) = self.layout.side_panel else { return };
         let pl = self.theme_panel_layout(panel);
         let b = pl.buttons[0];
         let r = Rect::new(pl.list.l, b.t - 8.0 - self.row_h(), pl.list.r, b.t - 8.0);
@@ -617,7 +605,7 @@ impl App {
     }
 
     pub fn paint_theme_editor(&self, r: Rect) {
-        let Some(ed) = self.theme_editor.as_ref() else { return };
+        let Some(ed) = self.theme_editor() else { return };
         let c = &self.theme.color;
         let g = &self.gfx;
         let radius = self.theme.metrics.radius;
@@ -773,17 +761,7 @@ impl App {
             }
         }
         g.pop_clip();
-        for (k, b) in pl.buttons.iter().enumerate() {
-            let primary = k == 0;
-            let hot = self.hover == Hit::ThemeButton(k);
-            let fill = if primary { c.accent } else if hot { c.hover } else { c.background };
-            g.fill_round(*b, radius, if primary && hot { c.accent.with_alpha(220) } else { fill });
-            g.stroke_round(*b, radius, if primary { c.accent } else { c.border }, 1.0);
-            let label = tr(BUTTONS[k]);
-            let w = g.measure(label, Font::Text);
-            let l = b.l + ((b.w() - w) / 2.0).max(4.0);
-            g.text(label, Font::Text, Rect::new(l, b.t, b.r - 4.0, b.b), if primary { contrast(c.accent) } else { c.text });
-        }
+        self.paint_footer_buttons(&pl.buttons, BUTTONS, Some(0), |k| self.hover == Hit::ThemeButton(k));
         for (k, b) in pl.links.iter().enumerate() {
             let label = tr(LINKS[k]);
             let w = g.measure(label, Font::Small);

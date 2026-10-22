@@ -689,18 +689,8 @@ fn keys_pos(cmd: &str, part: usize) -> Option<(f32, f32)> {
     use crate::keyspanel::Row;
     with_app(|a| {
         a.layout = a.compute_layout();
-        let panel = a.layout.keys_panel?;
-        let rows = a.keys_rows();
-        let k = rows.iter().position(|r| matches!(r, Row::Cmd(c, _) if c == cmd))?;
-        let (_, list, _, _) = a.keys_layout(panel);
-        let rh = a.row_h() + 6.0;
-        let kp = a.keys_panel.as_mut()?;
-        let top = k as f32 * rh;
-        if top < kp.scroll + rh || top + rh > kp.scroll + list.h() {
-            kp.scroll = (top - list.h() / 2.0).max(0.0);
-        }
-        let scroll = kp.scroll;
-        let r = a.keys_row_rect(list, k, scroll);
+        let k = a.keys_rows().iter().position(|r| matches!(r, Row::Cmd(c, _) if c == cmd))?;
+        let r = a.side_reveal(k)?;
         let (_, p) = a.key_parts(cmd, r).into_iter().find(|(i, _)| *i == part)?;
         Some(((p.l + p.r) / 2.0, (p.t + p.b) / 2.0))
     })
@@ -712,9 +702,9 @@ fn keys_special_pos(conflict: bool, part: usize) -> Option<(f32, f32)> {
     use crate::keyspanel::Row;
     with_app(|a| {
         a.layout = a.compute_layout();
-        let panel = a.layout.keys_panel?;
+        let panel = a.layout.side_panel?;
         let (_, list, _, _) = a.keys_layout(panel);
-        let scroll = a.keys_panel.as_ref()?.scroll;
+        let scroll = a.keys_panel()?.scroll;
         let r = if conflict {
             let k = a.keys_rows().iter().position(|r| *r == Row::Conflict)?;
             a.conflict_parts(a.keys_row_rect(list, k, scroll))[part]
@@ -729,7 +719,7 @@ fn keys_special_pos(conflict: bool, part: usize) -> Option<(f32, f32)> {
 fn keys_button_pos(k: usize) -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
-        let (_, _, _, b) = a.keys_layout(a.layout.keys_panel?);
+        let (_, _, _, b) = a.keys_layout(a.layout.side_panel?);
         Some(((b[k].l + b[k].r) / 2.0, (b[k].t + b[k].b) / 2.0))
     })
     .flatten()
@@ -740,22 +730,13 @@ fn bar_edit_pos(cmd: &str, avail: bool, part: Option<usize>) -> Option<(f32, f32
     use crate::cmdbaredit::Row;
     with_app(|a| {
         a.layout = a.compute_layout();
-        let panel = a.layout.cmdbar_panel?;
         let rows = a.cmdbar_edit_rows();
         let k = rows.iter().position(|r| match r {
             Row::Avail(c, _) => avail && c == cmd,
             Row::Item(i) => !avail && a.config.cmdbar[*i].cmd == cmd,
             _ => false,
         })?;
-        let (_, list, _) = a.cmdbar_edit_layout(panel);
-        let rh = a.row_h() + 4.0;
-        let ed = a.cmdbar_editor.as_mut()?;
-        let top = k as f32 * rh;
-        if top < ed.scroll || top + rh > ed.scroll + list.h() {
-            ed.scroll = (top - list.h() / 2.0).max(0.0);
-        }
-        let scroll = ed.scroll;
-        let r = a.bar_row_rect(list, k, scroll);
+        let r = a.side_reveal(k)?;
         let p = match part {
             Some(p) => a.bar_parts(&rows[k], r)[p],
             None => crate::gfx::Rect::new(r.l + 60.0, r.t, r.l + 80.0, r.b),
@@ -862,18 +843,10 @@ fn host_visible(a: &App, want: bool) -> Result<(), String> {
 fn theme_pos(want: crate::themepanel::Row, pick: impl Fn(&crate::themepanel::RowRects) -> (f32, f32)) -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
-        let panel = a.layout.theme_panel?;
         let k = a.theme_rows().iter().position(|r| *r == want)?;
-        let pl = a.theme_panel_layout(panel);
-        let rh = a.row_h();
-        let ed = a.theme_editor.as_mut()?;
-        let top = k as f32 * rh;
-        if top < ed.scroll || top + rh > ed.scroll + pl.list.h() {
-            ed.scroll = (top - pl.list.h() / 2.0).max(0.0);
-        }
-        let scroll = ed.scroll;
-        a.invalidate();
-        Some(pick(&a.theme_row_rects(pl.list, k, scroll)))
+        a.side_reveal(k)?;
+        let list = a.theme_panel_layout(a.layout.side_panel?).list;
+        Some(pick(&a.theme_row_rects(list, k, a.side_scroll())))
     })
     .flatten()
 }
@@ -923,7 +896,7 @@ fn settings_category_pos(group: &str) -> Option<(f32, f32)> {
 fn settings_title_pos() -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
-        let t = a.settings_layout(a.layout.settings_panel?).title;
+        let t = a.settings_layout(a.layout.side_panel?).title;
         Some((t.l + 30.0, (t.t + t.b) / 2.0))
     })
     .flatten()
@@ -932,18 +905,10 @@ fn settings_title_pos() -> Option<(f32, f32)> {
 fn settings_pos(want: crate::prefspage::Row, value: bool) -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
-        let panel = a.layout.settings_panel?;
-        let k = a.settings_page.as_ref()?.rows().iter().position(|r| *r == want)?;
-        let pl = a.settings_layout(panel);
-        let rh = a.row_h();
-        let page = a.settings_page.as_mut()?;
-        let top = k as f32 * rh;
-        if top < page.scroll || top + rh > page.scroll + pl.list.h() {
-            page.scroll = (top - pl.list.h() / 2.0).max(0.0);
-        }
-        let scroll = page.scroll;
-        a.invalidate();
-        let (row, v) = a.settings_row_rects(pl.list, k, scroll);
+        let k = a.settings_page()?.rows().iter().position(|r| *r == want)?;
+        a.side_reveal(k)?;
+        let list = a.settings_layout(a.layout.side_panel?).list;
+        let (row, v) = a.settings_row_rects(list, k, a.side_scroll());
         let y = (row.t + row.b) / 2.0;
         Some(if value { (v.l + 20.0, y) } else { (row.l + 20.0, y) })
     })
@@ -958,7 +923,7 @@ fn theme_option_pos(t: crate::themepanel::Target, o: usize) -> Option<(f32, f32)
 fn theme_button_pos(k: usize) -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
-        let panel = a.layout.theme_panel?;
+        let panel = a.layout.side_panel?;
         let b = a.theme_panel_layout(panel).buttons[k];
         Some(((b.l + b.r) / 2.0, (b.t + b.b) / 2.0))
     })
@@ -1974,8 +1939,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     // ------------------------------------------------ 快速鍵編輯面板（隔離模式不寫 keys.toml）
     let kc = |s: &str| zing_core::keymap::KeyChord::parse(s).unwrap();
     v.push(step("快速鍵：開啟編輯面板", |_| exec("keys.edit"), |_, a| {
-        expect("面板", a.keys_panel.is_some(), true)?;
-        expect("位置", a.layout.keys_panel.is_some(), true)
+        expect("面板", a.keys_panel().is_some(), true)?;
+        expect("位置", a.layout.side_panel.is_some(), true)
     }));
     v.push(step("快速鍵：搜尋「重新整理」", |_| with_app(|a| a.keys_query("重新整理".into())).unwrap_or(()), |_, a| {
         let rows = a.keys_rows();
@@ -1984,7 +1949,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("沒有不相關的", rows.iter().any(|r| matches!(r, crate::keyspanel::Row::Cmd(c, _) if c == "file.copy")), false)
     }));
     v.push(step("快速鍵：點 ＋ 開始錄製", |c| click(c, "", keys_pos("nav.refresh", crate::keyspanel::PART_ADD)), |_, a| {
-        expect("錄製中", a.keys_panel.as_ref().and_then(|k| k.recording.clone()).as_deref(), Some("nav.refresh"))
+        expect("錄製中", a.keys_panel().and_then(|k| k.recording.clone()).as_deref(), Some("nav.refresh"))
     }));
     v.push(step("截圖：快速鍵編輯面板（錄製中）", |_| {}, |c, _| screenshot(c, "13-快速鍵編輯器")));
     v.push(step("快速鍵：按下新的組合鍵（保留原本的 F5）", |c| key(c, "cs", VIRTUAL_KEY(0x78)), move |_, a| {
@@ -1996,12 +1961,12 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         click(c, "", keys_pos("nav.refresh", crate::keyspanel::PART_ADD));
         key(c, "c", letter('c'));
     }, move |_, a| {
-        expect("衝突", a.keys_panel.as_ref().and_then(|k| k.conflict.as_ref()).map(|x| x.2.clone()).as_deref(), Some("file.copy"))?;
+        expect("衝突", a.keys_panel().and_then(|k| k.conflict.as_ref()).map(|x| x.2.clone()).as_deref(), Some("file.copy"))?;
         expect("還沒搶走", a.config.command_for(kc("Ctrl+C")), Some("file.copy"))
     }));
     v.push(step("快速鍵：取代", |c| click(c, "", keys_special_pos(true, crate::keyspanel::PART_REPLACE)), move |_, a| {
         expect("Ctrl+C", a.config.command_for(kc("Ctrl+C")), Some("nav.refresh"))?;
-        expect("衝突列消失", a.keys_panel.as_ref().is_some_and(|k| k.conflict.is_none()), true)
+        expect("衝突列消失", a.keys_panel().is_some_and(|k| k.conflict.is_none()), true)
     }));
     v.push(step("快速鍵：點按鍵方塊移除 Ctrl+Shift+F9", |c| click(c, "", keys_pos("nav.refresh", 1)), move |_, a| {
         expect("Ctrl+Shift+F9", a.config.command_for(kc("Ctrl+Shift+F9")), None)?;
@@ -2026,7 +1991,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         click(c, "", keys_button_pos(0));
         key(c, "", VK_ESCAPE);
     }, |_, a| {
-        expect("面板關閉", a.keys_panel.is_none(), true)?;
+        expect("面板關閉", a.keys_panel().is_none(), true)?;
         let sorted = |v: &[(zing_core::keymap::KeyChord, String)]| {
             let mut v: Vec<(String, String)> = v.iter().map(|(k, c)| (k.to_string(), c.clone())).collect();
             v.sort();
@@ -2195,7 +2160,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         exec("cmdbar.edit");
         click(c, "", bar_edit_pos("sel.invert", true, None));
     }, |_, a| {
-        expect("面板", a.cmdbar_editor.is_some(), true)?;
+        expect("面板", a.cmdbar_editor().is_some(), true)?;
         expect("已加入", a.config.cmdbar.iter().any(|i| i.cmd == "sel.invert"), true)
     }));
     v.push(step("自訂命令列：↑ 往前移", |c| click(c, "", bar_edit_pos("sel.invert", false, Some(crate::cmdbaredit::PART_UP))), |_, a| {
@@ -2206,11 +2171,11 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         click(c, "", bar_edit_pos("sel.invert", false, None));
         let at = with_app(|a| {
             a.layout = a.compute_layout();
-            let panel = a.layout.cmdbar_panel?;
+            let panel = a.layout.side_panel?;
             let rows = a.cmdbar_edit_rows();
             let k = rows.iter().position(|r| matches!(r, crate::cmdbaredit::Row::Icons(_, 0)))?;
             let (_, list, _) = a.cmdbar_edit_layout(panel);
-            let r = a.bar_row_rect(list, k, a.cmdbar_editor.as_ref()?.scroll);
+            let r = a.bar_row_rect(list, k, a.cmdbar_editor()?.scroll);
             let cell = a.bar_parts(&rows[k], r)[2];
             Some(((cell.l + cell.r) / 2.0, (cell.t + cell.b) / 2.0))
         })
@@ -2234,13 +2199,13 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("自訂命令列：點 × 清除搜尋", |c| {
         let at = with_app(|a| {
             a.layout = a.compute_layout();
-            let s = a.bar_search_rect(a.layout.cmdbar_panel?);
+            let s = a.bar_search_rect(a.layout.side_panel?);
             Some((s.r - s.h() / 2.0, (s.t + s.b) / 2.0))
         })
         .flatten();
         click(c, "", at);
     }, |_, a| {
-        expect("清除", a.cmdbar_editor.as_ref().map(|e| e.query.as_str()), Some(""))?;
+        expect("清除", a.cmdbar_editor().map(|e| e.query.as_str()), Some(""))?;
         expect("又看到目前的按鈕", a.cmdbar_edit_rows().iter().any(|r| matches!(r, crate::cmdbaredit::Row::Item(_))), true)
     }));
     v.push(step("自訂命令列：還原預設後 Esc 關閉", |c| {
@@ -2250,7 +2215,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         });
         key(c, "", VK_ESCAPE);
     }, |_, a| {
-        expect("面板關閉", a.cmdbar_editor.is_none(), true)?;
+        expect("面板關閉", a.cmdbar_editor().is_none(), true)?;
         expect("預設", a.config.cmdbar == zing_core::cmdbar::defaults(), true)
     }));
 
@@ -2329,18 +2294,18 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
 
     // ------------------------------------------------ 設定頁（隔離模式只改記憶體中的設定，不寫 config.toml）
     use crate::prefspage::Row;
-    let category = |a: &App| a.settings_page.as_ref().and_then(|p| p.category);
+    let category = |a: &App| a.settings_page().and_then(|p| p.category);
     let group_index = |g: &str| zing_core::prefs::groups().iter().position(|x| *x == g);
     v.push(step("設定：Ctrl+, 開啟設定頁（分類清單）", |c| key(c, "c", VIRTUAL_KEY(0xBC)), move |_, a| {
-        expect("設定頁", a.settings_page.is_some(), true)?;
-        expect("面板位置", a.layout.settings_panel.is_some(), true)?;
+        expect("設定頁", a.settings_page().is_some(), true)?;
+        expect("面板位置", a.layout.side_panel.is_some(), true)?;
         expect("分類清單", category(a), None)?;
-        expect("第一列", a.settings_page.as_ref().and_then(|p| p.rows().first().copied()), Some(Row::Category(0)))
+        expect("第一列", a.settings_page().and_then(|p| p.rows().first().copied()), Some(Row::Category(0)))
     }));
     v.push(step("截圖：設定的分類", |_| {}, |c, _| screenshot(c, "22-設定分類")));
     v.push(step("設定：點「一般」", |c| click(c, "", settings_category_pos("一般")), move |_, a| {
         expect("分類", category(a), group_index("一般"))?;
-        expect("只有這個分類的項目", a.settings_page.as_ref().is_some_and(|p| p.rows().contains(&Row::Field(3))), false)
+        expect("只有這個分類的項目", a.settings_page().is_some_and(|p| p.rows().contains(&Row::Field(3))), false)
     }));
     v.push(step("設定：點開關顯示隱藏檔案", |c| click(c, "", settings_row_pos("show_hidden", None, true)), |_, a| {
         expect("顯示隱藏檔案", a.show_hidden, true)?;
@@ -2360,22 +2325,22 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     }));
     v.push(step("設定：展開樹狀列位置", |c| click(c, "", settings_row_pos("layout.tree", None, false)), |_, a| {
         let i = zing_core::prefs::PREFS.iter().position(|p| p.key == "layout.tree");
-        expect("展開", a.settings_page.as_ref().and_then(|p| p.expanded), i)
+        expect("展開", a.settings_page().and_then(|p| p.expanded), i)
     }));
     v.push(step("截圖：設定頁", |_| {}, |c, _| screenshot(c, "16-設定頁")));
     v.push(step("設定：選右側", |c| click(c, "", settings_row_pos("layout.tree", Some(1), true)), |_, a| {
         expect("樹狀列", a.tree_side, zing_core::config::TreeSide::Right)?;
-        expect("收起", a.settings_page.as_ref().and_then(|p| p.expanded), None)?;
+        expect("收起", a.settings_page().and_then(|p| p.expanded), None)?;
         expect("版面", a.layout.tree.zip(a.layout.panes.first()).is_some_and(|(t, p)| t.l > p.list.l), true)
     }));
     v.push(step("設定：Esc 回到分類清單", |c| key(c, "", VK_ESCAPE), move |_, a| {
-        expect("設定頁", a.settings_page.is_some(), true)?;
+        expect("設定頁", a.settings_page().is_some(), true)?;
         expect("分類清單", category(a), None)
     }));
     // 緩慢的擴充功能表格：隔離模式的記錄只在記憶體中，放一個假的
     const SLOW_CLSID: &str = "{5a1e7e57-0000-4000-8000-00000000c0de}";
     let slow_row = || {
-        with_app(|a| a.settings_page.as_ref().and_then(|p| p.rows().into_iter().find(|r| matches!(r, Row::Slow(..)))))
+        with_app(|a| a.settings_page().and_then(|p| p.rows().into_iter().find(|r| matches!(r, Row::Slow(..)))))
             .flatten()
     };
     let allowed = |a: &App| a.config.context_menu.allow_slow.iter().any(|c| c == SLOW_CLSID);
@@ -2388,7 +2353,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
         move |_, a| {
             expect("分類", category(a), group_index("右鍵選單"))?;
-            let page = a.settings_page.as_ref().ok_or("設定頁")?;
+            let page = a.settings_page().ok_or("設定頁")?;
             let e = page.slow.iter().find(|e| e.clsid == SLOW_CLSID).ok_or("表格中沒有 SlowTest")?;
             expect("類型", e.kinds.as_slice(), ["檔案", "空白處"].as_slice())?;
             expect("耗時", e.ms, 120)
@@ -2397,7 +2362,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step(
         "設定：表格中切換為放在第一層",
         move |c| {
-            let k = with_app(|a| a.settings_page.as_ref().and_then(|p| p.slow.iter().position(|e| e.clsid == SLOW_CLSID))).flatten();
+            let k = with_app(|a| a.settings_page().and_then(|p| p.slow.iter().position(|e| e.clsid == SLOW_CLSID))).flatten();
             let row = slow_row().and_then(|r| match r {
                 Row::Slow(i, _) => Some(Row::Slow(i, k?)),
                 _ => None,
@@ -2438,7 +2403,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             key(c, "", VK_ESCAPE);
         },
         |_, a| {
-            expect("設定頁", a.settings_page.is_none(), true)?;
+            expect("設定頁", a.settings_page().is_none(), true)?;
             expect("樹狀列", a.tree_side, zing_core::config::TreeSide::Left)?;
             expect("顯示隱藏檔案", a.show_hidden, false)?;
             expect("start_path", a.config.start_path.as_str(), "")?;
@@ -2451,8 +2416,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         let r = a.layout.settings_btn;
         ((r.l + r.r) / 2.0, (r.t + r.b) / 2.0)
     });
-    v.push(step("設定：點工具列的齒輪開啟", move |c| click(c, "", gear()), |_, a| expect("設定頁", a.settings_page.is_some(), true)));
-    v.push(step("設定：再點一次關閉", move |c| click(c, "", gear()), |_, a| expect("設定頁", a.settings_page.is_none(), true)));
+    v.push(step("設定：點工具列的齒輪開啟", move |c| click(c, "", gear()), |_, a| expect("設定頁", a.settings_page().is_some(), true)));
+    v.push(step("設定：再點一次關閉", move |c| click(c, "", gear()), |_, a| expect("設定頁", a.settings_page().is_none(), true)));
     // 重新載入設定（config.reload）與設定頁走同一條套用路徑（App::apply_config）
     let reload_with = |f: fn(&mut zing_core::config::Config)| {
         with_app(|a| {
@@ -3331,7 +3296,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
 
     // ------------------------------------------------ 主題編輯器
     v.push(step("主題：開啟編輯面板", |_| exec("theme.edit"), |_, a| {
-        if a.theme_editor.is_none() || a.layout.theme_panel.is_none() {
+        if a.theme_editor().is_none() || a.layout.side_panel.is_none() {
             return Err("面板沒有開啟".into());
         }
         expect("目前主題", a.theme_name.as_str(), "dark")
@@ -3341,14 +3306,14 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     }));
     v.push(step("主題：展開網址列的選單", |c| click(c, "", theme_row_pos("網址列", true)), |_, a| {
         let t = crate::themepanel::Target::Field(theme_field("網址列"));
-        expect("展開", a.theme_editor.as_ref().and_then(|e| e.expanded), Some(t))
+        expect("展開", a.theme_editor().and_then(|e| e.expanded), Some(t))
     }));
     v.push(step(
         "主題：選麵包屑",
         |c| click(c, "", theme_option_pos(crate::themepanel::Target::Field(theme_field("網址列")), 1)),
         |_, a| {
             expect("網址列", a.theme.chrome.address, zing_core::theme::AddressStyle::Breadcrumb)?;
-            expect("收起", a.theme_editor.as_ref().and_then(|e| e.expanded), None)
+            expect("收起", a.theme_editor().and_then(|e| e.expanded), None)
         },
     ));
     v.push(step("主題：按 ＋ 加大圓角", |c| click(c, "", theme_pos(crate::themepanel::Row::Field(theme_field("圓角")), |r| mid(r.plus))), |_, a| {
@@ -3453,7 +3418,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             click(c, "", theme_button_pos(1));
         },
         |_, a| {
-            expect("面板關閉", a.theme_editor.is_none(), true)?;
+            expect("面板關閉", a.theme_editor().is_none(), true)?;
             expect("列高", a.theme.metrics.row_height, 23.0)
         },
     ));

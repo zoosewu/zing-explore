@@ -167,13 +167,8 @@ pub struct App {
     pub batch: Option<crate::batch::Batch>,
     /// 目前主題的名稱（內建名稱或 themes 資料夾中的檔名）
     pub theme_name: String,
-    pub theme_editor: Option<crate::themepanel::ThemeEditor>,
-    /// 設定頁（settings.open）
-    pub settings_page: Option<crate::prefspage::SettingsPage>,
-    /// 自訂命令列的面板（cmdbar.edit）
-    pub cmdbar_editor: Option<crate::cmdbaredit::CmdBarEditor>,
-    /// 快速鍵編輯面板（keys.edit）
-    pub keys_panel: Option<crate::keyspanel::KeysPanel>,
+    /// 右側面板（設定頁、主題編輯、自訂命令列、快速鍵），一次只開一個（sidepanel.rs）
+    pub side: Option<crate::sidepanel::SidePanel>,
     /// 開啟中的下拉選單（menu.rs）
     pub menu: Option<crate::menu::Menu>,
     /// 游標停留提示（tooltip.rs）
@@ -285,10 +280,7 @@ impl App {
             tree_visible: session.tree_visible,
             batch: None,
             theme_name,
-            theme_editor: None,
-            settings_page: None,
-            cmdbar_editor: None,
-            keys_panel: None,
+            side: None,
             menu: None,
             tip: None,
             bar_focus: None,

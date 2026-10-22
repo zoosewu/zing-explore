@@ -56,13 +56,8 @@ pub struct Layout {
     pub buttons: Vec<Rect>,
     pub tree: Option<Rect>,
     pub tree_splitter: Option<Rect>,
-    /// 主題編輯面板（窗格區域最右側）
-    pub theme_panel: Option<Rect>,
-    /// 設定頁（與主題編輯面板同一個位置）
-    pub settings_panel: Option<Rect>,
-    /// 自訂命令列、快速鍵編輯面板（同一個位置）
-    pub cmdbar_panel: Option<Rect>,
-    pub keys_panel: Option<Rect>,
+    /// 右側面板（窗格區域最右側；設定頁、主題編輯、自訂命令列、快速鍵）
+    pub side_panel: Option<Rect>,
     /// 命令列（工具列下方）
     pub cmdbar: Option<crate::cmdbar::BarLayout>,
     /// 預覽窗格（窗格區域右側）
@@ -254,21 +249,9 @@ impl App {
                 panes_area.l = tw + 1.0;
             }
         }
-        if self.theme_editor.is_some() {
-            let l = panes_area.r - crate::themepanel::PANEL_W.min(panes_area.w() * 0.5);
-            lay.theme_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
-            panes_area.r = l - 1.0;
-        } else if self.settings_page.is_some() {
-            let l = panes_area.r - crate::prefspage::PANEL_W.min(panes_area.w() * 0.6);
-            lay.settings_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
-            panes_area.r = l - 1.0;
-        } else if self.cmdbar_editor.is_some() {
-            let l = panes_area.r - crate::cmdbaredit::PANEL_W.min(panes_area.w() * 0.6);
-            lay.cmdbar_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
-            panes_area.r = l - 1.0;
-        } else if self.keys_panel.is_some() {
-            let l = panes_area.r - crate::keyspanel::PANEL_W.min(panes_area.w() * 0.6);
-            lay.keys_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
+        if let Some(w) = self.side_width(panes_area.w()) {
+            let l = panes_area.r - w;
+            lay.side_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
             panes_area.r = l - 1.0;
         }
         if self.preview.visible {
@@ -399,17 +382,8 @@ impl App {
         if lay.tree_splitter.is_some_and(|r| r.contains(x, y)) {
             return Hit::TreeSplitter;
         }
-        if let Some(tp) = lay.theme_panel.filter(|r| r.contains(x, y)) {
-            return self.theme_hit(tp, x, y);
-        }
-        if let Some(sp) = lay.settings_panel.filter(|r| r.contains(x, y)) {
-            return self.settings_hit(sp, x, y);
-        }
-        if let Some(cp) = lay.cmdbar_panel.filter(|r| r.contains(x, y)) {
-            return self.cmdbar_edit_hit(cp, x, y);
-        }
-        if let Some(kp) = lay.keys_panel.filter(|r| r.contains(x, y)) {
-            return self.keys_hit(kp, x, y);
+        if let Some(sp) = lay.side_panel.filter(|r| r.contains(x, y)) {
+            return self.side_hit(sp, x, y);
         }
         if let Some(bl) = lay.cmdbar.as_ref().filter(|b| b.bar.contains(x, y)) {
             return bl
@@ -525,21 +499,8 @@ impl App {
             let x = if self.tree_side == TreeSide::Right { tr.l - 1.0 } else { tr.r };
             self.gfx.vline(x, tr.t, tr.b, c.border);
         }
-        if let Some(tp) = lay.theme_panel {
-            self.paint_theme_editor(tp);
-            self.gfx.vline(tp.l - 1.0, tp.t, tp.b, c.border);
-        }
-        if let Some(sp) = lay.settings_panel {
-            self.paint_settings(sp);
-            self.gfx.vline(sp.l - 1.0, sp.t, sp.b, c.border);
-        }
-        if let Some(cp) = lay.cmdbar_panel {
-            self.paint_cmdbar_editor(cp);
-            self.gfx.vline(cp.l - 1.0, cp.t, cp.b, c.border);
-        }
-        if let Some(kp) = lay.keys_panel {
-            self.paint_keys_panel(kp);
-            self.gfx.vline(kp.l - 1.0, kp.t, kp.b, c.border);
+        if let Some(sp) = lay.side_panel {
+            self.paint_side(sp);
         }
         if let Some(pr) = lay.preview {
             self.paint_preview(pr);
@@ -621,7 +582,7 @@ impl App {
         if self.hover == Hit::SettingsGear {
             g.fill_round(lay.settings_btn, self.theme.metrics.radius, c.hover);
         }
-        let gear = if self.settings_page.is_some() { c.accent } else { c.text };
+        let gear = if self.settings_page().is_some() { c.accent } else { c.text };
         g.text(glyph::SETTINGS, Font::Glyph, lay.settings_btn, gear);
         for (i, r) in lay.buttons.iter().enumerate() {
             g.fill_round(*r, self.theme.metrics.radius, if self.hover == Hit::Button(i) { c.hover } else { c.surface });

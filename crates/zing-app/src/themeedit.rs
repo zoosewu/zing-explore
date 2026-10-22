@@ -96,11 +96,11 @@ impl App {
     pub fn on_theme_loaded(&mut self, name: String, result: Result<Theme, String>) {
         match result {
             Ok(theme) => {
-                self.theme_name = name;
+                self.theme_name = name.clone();
                 // 編輯面板開著：存檔後的狀態成為新的還原點
-                if let Some(ed) = self.theme_editor.as_mut() {
+                if let Some(ed) = self.theme_editor_mut() {
                     ed.original = theme.clone();
-                    ed.original_name = self.theme_name.clone();
+                    ed.original_name = name;
                 }
                 self.apply_theme(theme);
             }

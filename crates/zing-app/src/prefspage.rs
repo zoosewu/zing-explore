@@ -16,6 +16,7 @@ use crate::gfx::{Font, Rect};
 use crate::services::Msg;
 use crate::settings;
 use crate::shellext::SlowExt;
+use crate::sidepanel::{footer_buttons, row_rect};
 use crate::view::Hit;
 use crate::window;
 
@@ -112,18 +113,11 @@ impl SettingsPage {
 
 impl App {
     pub fn open_settings(&mut self) {
-        if self.settings_page.is_none() {
-            self.close_side_panels();
-            self.settings_page = Some(SettingsPage::default());
+        if self.settings_page().is_none() {
+            self.open_side(crate::sidepanel::SidePanel::Settings(SettingsPage::default()));
             let n = self.notifier.clone();
             self.pool.spawn(move || n.send(Msg::UserThemes(settings::user_themes())));
         }
-        self.invalidate();
-    }
-
-    pub fn close_settings(&mut self) {
-        self.settings_page = None;
-        self.end_pref_edit();
         self.invalidate();
     }
 
@@ -136,14 +130,14 @@ impl App {
     }
 
     pub fn on_user_themes(&mut self, themes: Vec<String>) {
-        if let Some(page) = self.settings_page.as_mut() {
+        if let Some(page) = self.settings_page_mut() {
             page.user_themes = themes;
             self.invalidate();
         }
     }
 
     pub fn on_slow_menu_exts(&mut self, list: Vec<SlowExt>) {
-        if let Some(page) = self.settings_page.as_mut() {
+        if let Some(page) = self.settings_page_mut() {
             page.slow = list;
             self.invalidate();
         }
@@ -152,7 +146,7 @@ impl App {
     /// 進入分類（None：回到分類清單）
     pub fn settings_category(&mut self, category: Option<usize>) {
         self.end_pref_edit();
-        let Some(page) = self.settings_page.as_mut() else { return };
+        let Some(page) = self.settings_page_mut() else { return };
         page.category = category;
         page.scroll = 0.0;
         page.expanded = None;
@@ -169,22 +163,17 @@ impl App {
         let rh = self.row_h();
         let inner = r.inset(12.0, 10.0);
         let title = Rect::new(inner.l, inner.t, inner.r, inner.t + rh);
-        let bh = (rh + 6.0).max(26.0);
-        let row = Rect::new(inner.l, inner.b - bh, inner.r, inner.b);
-        let half = (inner.w() - 6.0) / 2.0;
-        let buttons = [Rect::new(row.l, row.t, row.l + half, row.b), Rect::new(row.l + half + 6.0, row.t, row.r, row.b)];
-        let note = Rect::new(inner.l, row.t - 6.0 - rh, inner.r, row.t - 6.0);
+        let buttons = footer_buttons(inner, rh);
+        let note = Rect::new(inner.l, buttons[0].t - 6.0 - rh, inner.r, buttons[0].t - 6.0);
         let list = Rect::new(inner.l, title.b + 6.0, inner.r, note.t - 4.0);
         PanelLayout { title, list, note, buttons }
     }
 
     /// 第 k 列的位置與其中數值的範圍
     pub fn settings_row_rects(&self, list: Rect, k: usize, scroll: f32) -> (Rect, Rect) {
-        let rh = self.row_h();
-        let y = list.t + k as f32 * rh - scroll;
-        let row = Rect::new(list.l, y, list.r, y + rh);
+        let row = row_rect(list, k, self.row_h(), scroll, 0);
         let value_l = list.l + (list.w() * 0.5).min(200.0);
-        (row, Rect::new(value_l, y, list.r, y + rh))
+        (row, Rect::new(value_l, row.t, list.r, row.b))
     }
 
     /// 緩慢的擴充功能表格的欄：名稱、類型、耗時、開關的左緣
@@ -198,7 +187,7 @@ impl App {
     }
 
     pub fn settings_hit(&self, panel: Rect, x: f32, y: f32) -> Hit {
-        let Some(page) = self.settings_page.as_ref() else { return Hit::None };
+        let Some(page) = self.settings_page() else { return Hit::None };
         let pl = self.settings_layout(panel);
         if let Some(k) = pl.buttons.iter().position(|r| r.contains(x, y)) {
             return Hit::SettingsButton(k);
@@ -226,12 +215,12 @@ impl App {
     pub fn settings_click(&mut self, hit: Hit) {
         match hit {
             Hit::SettingsRow(k) => {
-                let Some(page) = self.settings_page.as_ref() else { return };
+                let Some(page) = self.settings_page() else { return };
                 match page.rows().get(k).copied() {
                     Some(Row::Category(g)) => self.settings_category(Some(g)),
                     Some(Row::Field(i)) => match PREFS[i].kind {
                         Kind::Choice(_) | Kind::Theme => {
-                            if let Some(page) = self.settings_page.as_mut() {
+                            if let Some(page) = self.settings_page_mut() {
                                 page.expanded = if page.expanded == Some(i) { None } else { Some(i) };
                             }
                             self.invalidate();
@@ -246,7 +235,7 @@ impl App {
                     },
                     Some(Row::Option(i, o)) => {
                         let value = page.options(i).get(o).map(|(v, _)| v.clone());
-                        if let Some(page) = self.settings_page.as_mut() {
+                        if let Some(page) = self.settings_page_mut() {
                             page.expanded = None;
                         }
                         if let Some(v) = value {
@@ -269,41 +258,31 @@ impl App {
             }
             Hit::SettingsBack => self.settings_category(None),
             Hit::SettingsButton(0) => self.exec("config.edit"),
-            Hit::SettingsButton(1) => self.close_settings(),
+            Hit::SettingsButton(1) => self.close_side_panels(),
             _ => {}
         }
     }
 
-    pub fn settings_wheel(&mut self, panel: Rect, delta: i16) {
-        let pl = self.settings_layout(panel);
-        let rh = self.row_h();
-        let step = 3.0 * self.theme.metrics.row_height;
-        if let Some(page) = self.settings_page.as_mut() {
-            let max = (page.rows().len() as f32 * rh - pl.list.h()).max(0.0);
-            page.scroll = (page.scroll - (delta as i32 / 120).signum() as f32 * step).clamp(0.0, max);
-        }
-        self.invalidate();
-    }
-
     /// Esc：先收起展開的選項，再回到分類清單，最後關閉設定頁
     pub fn settings_escape(&mut self) {
-        match self.settings_page.as_mut() {
+        match self.settings_page_mut() {
             Some(page) if page.expanded.is_some() => {
                 page.expanded = None;
                 self.invalidate();
             }
             Some(page) if page.category.is_some() => self.settings_category(None),
-            Some(_) => self.close_settings(),
+            Some(_) => self.close_side_panels(),
             None => {}
         }
     }
 
     fn begin_pref_edit(&mut self, i: usize) {
-        let Some(panel) = self.layout.settings_panel else { return };
-        let Some(page) = self.settings_page.as_ref() else { return };
-        let pl = self.settings_layout(panel);
-        let Some(k) = page.rows().iter().position(|r| *r == Row::Field(i)) else { return };
-        let (_, value) = self.settings_row_rects(pl.list, k, page.scroll);
+        let Some(panel) = self.layout.side_panel else { return };
+        let Some(k) = self.settings_page().and_then(|p| p.rows().iter().position(|r| *r == Row::Field(i))) else { return };
+        if self.side_reveal(k).is_none() {
+            return;
+        }
+        let (_, value) = self.settings_row_rects(self.settings_layout(panel).list, k, self.side_scroll());
         let text = self.config.pref_value(PREFS[i].key);
         let len = text.encode_utf16().count();
         window::begin_edit(self, value, &text, len, EditKind::Pref { field: i });
@@ -357,7 +336,7 @@ impl App {
     }
 
     pub fn paint_settings(&self, r: Rect) {
-        let Some(page) = self.settings_page.as_ref() else { return };
+        let Some(page) = self.settings_page() else { return };
         let c = &self.theme.color;
         let g = &self.gfx;
         let radius = self.theme.metrics.radius;
@@ -477,14 +456,6 @@ impl App {
         }
         g.pop_clip();
         g.text(tr!("變更立即生效，並儲存到程式旁的 config.toml"), Font::Small, pl.note, c.text_secondary);
-        for (k, b) in pl.buttons.iter().enumerate() {
-            let fill = if self.hover == Hit::SettingsButton(k) { c.hover } else { c.background };
-            g.fill_round(*b, radius, fill);
-            g.stroke_round(*b, radius, c.border, 1.0);
-            let label = zing_core::i18n::tr(BUTTONS[k]);
-            let w = g.measure(label, Font::Text);
-            let l = b.l + ((b.w() - w) / 2.0).max(4.0);
-            g.text(label, Font::Text, Rect::new(l, b.t, b.r - 4.0, b.b), c.text);
-        }
+        self.paint_footer_buttons(&pl.buttons, BUTTONS, None, |k| self.hover == Hit::SettingsButton(k));
     }
 }

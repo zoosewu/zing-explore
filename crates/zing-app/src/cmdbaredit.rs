@@ -54,34 +54,12 @@ pub const PART_IMAGE: usize = 0;
 pub const PART_DEFAULT_ICON: usize = 1;
 
 impl App {
-    /// 關閉右側的面板（設定頁、主題、命令列、快速鍵）
-    pub fn close_side_panels(&mut self) {
-        if self.settings_page.is_some() {
-            self.close_settings();
-        }
-        if self.theme_editor.is_some() {
-            self.close_theme_editor(false);
-        }
-        self.cmdbar_editor = None;
-        if self.keys_panel.is_some() {
-            self.close_keys_panel();
-        }
-        if matches!(self.edit.as_ref().map(|e| &e.kind), Some(EditKind::BarLabel { .. } | EditKind::BarCustom | EditKind::BarSearch))
-            && let Some(e) = self.edit.take()
-        {
-            window::destroy_edit(e.hwnd);
-        }
-        self.invalidate();
-    }
-
     pub fn open_cmdbar_editor(&mut self) {
-        self.close_side_panels();
-        self.cmdbar_editor = Some(CmdBarEditor::default());
-        self.invalidate();
+        self.open_side(crate::sidepanel::SidePanel::BarEdit(CmdBarEditor::default()));
     }
 
     pub fn cmdbar_edit_rows(&self) -> Vec<Row> {
-        let Some(ed) = self.cmdbar_editor.as_ref() else { return Vec::new() };
+        let Some(ed) = self.cmdbar_editor() else { return Vec::new() };
         let q = ed.query.trim().to_lowercase();
         if !q.is_empty() {
             return self.bar_search_rows(&q);
@@ -143,18 +121,13 @@ impl App {
         let rh = self.row_h();
         let inner = r.inset(12.0, 10.0);
         let title = Rect::new(inner.l, inner.t, inner.r, inner.t + rh * 2.0);
-        let bh = (rh + 6.0).max(28.0);
-        let row = Rect::new(inner.l, inner.b - bh, inner.r, inner.b);
-        let half = (inner.w() - 6.0) / 2.0;
-        let buttons = [Rect::new(row.l, row.t, row.l + half, row.b), Rect::new(row.l + half + 6.0, row.t, row.r, row.b)];
-        let list = Rect::new(inner.l, self.bar_search_rect(r).b + 6.0, inner.r, row.t - 8.0);
+        let buttons = crate::sidepanel::footer_buttons(inner, rh);
+        let list = Rect::new(inner.l, self.bar_search_rect(r).b + 6.0, inner.r, buttons[0].t - 8.0);
         (title, list, buttons)
     }
 
     pub fn bar_row_rect(&self, list: Rect, k: usize, scroll: f32) -> Rect {
-        let rh = self.row_h() + 4.0;
-        let y = list.t + k as f32 * rh - scroll;
-        Rect::new(list.l, y, list.r, y + rh)
+        crate::sidepanel::row_rect(list, k, self.row_h() + 4.0, scroll, 0)
     }
 
     /// 列中各部分的位置：↑ ↓ × ⋮⋮（按鈕列）、圖示格（圖示列）、兩個按鈕（圖示動作列）
@@ -181,7 +154,7 @@ impl App {
     }
 
     pub fn cmdbar_edit_hit(&self, panel: Rect, x: f32, y: f32) -> Hit {
-        let Some(ed) = self.cmdbar_editor.as_ref() else { return Hit::None };
+        let Some(ed) = self.cmdbar_editor() else { return Hit::None };
         let (_, list, buttons) = self.cmdbar_edit_layout(panel);
         if let Some(k) = buttons.iter().position(|b| b.contains(x, y)) {
             return Hit::BarEditButton(k);
@@ -215,7 +188,7 @@ impl App {
         match hit {
             Hit::BarEditRow(k) => match rows.get(k).cloned() {
                 Some(Row::Item(i)) => {
-                    if let Some(ed) = self.cmdbar_editor.as_mut() {
+                    if let Some(ed) = self.cmdbar_editor_mut() {
                         ed.expanded = if ed.expanded == Some(i) { None } else { Some(i) };
                     }
                 }
@@ -237,7 +210,7 @@ impl App {
                     PART_UP => self.bar_edit_move(i, -1),
                     PART_DOWN => self.bar_edit_move(i, 1),
                     PART_REMOVE => {
-                        if let Some(ed) = self.cmdbar_editor.as_mut() {
+                        if let Some(ed) = self.cmdbar_editor_mut() {
                             ed.expanded = None;
                         }
                         self.cmdbar_remove(i);
@@ -262,7 +235,7 @@ impl App {
             },
             Hit::BarEditButton(0) => {
                 self.config.cmdbar = core::defaults();
-                if let Some(ed) = self.cmdbar_editor.as_mut() {
+                if let Some(ed) = self.cmdbar_editor_mut() {
                     ed.expanded = None;
                 }
                 self.cmdbar_changed();
@@ -276,7 +249,7 @@ impl App {
     }
 
     fn begin_bar_search(&mut self) {
-        let (Some(panel), Some(ed)) = (self.layout.cmdbar_panel, self.cmdbar_editor.as_ref()) else { return };
+        let (Some(panel), Some(ed)) = (self.layout.side_panel, self.cmdbar_editor()) else { return };
         let s = self.bar_search_rect(panel);
         let text = ed.query.clone();
         let len = text.encode_utf16().count();
@@ -285,7 +258,7 @@ impl App {
 
     /// 搜尋框內容改變（EN_CHANGE）
     pub fn bar_query(&mut self, text: String) {
-        if let Some(ed) = self.cmdbar_editor.as_mut() {
+        if let Some(ed) = self.cmdbar_editor_mut() {
             ed.query = text;
             ed.scroll = 0.0;
             ed.expanded = None;
@@ -299,7 +272,7 @@ impl App {
             return;
         }
         self.cmdbar_move(i, d);
-        if let Some(ed) = self.cmdbar_editor.as_mut()
+        if let Some(ed) = self.cmdbar_editor_mut()
             && ed.expanded == Some(i)
         {
             ed.expanded = Some(j as usize);
@@ -309,7 +282,7 @@ impl App {
     /// 拖曳中：移到游標所在的按鈕位置
     pub fn cmdbar_edit_drag(&mut self, y: f32) {
         let Some(Press::BarEditDrag { item }) = self.press else { return };
-        let (Some(panel), Some(ed)) = (self.layout.cmdbar_panel, self.cmdbar_editor.as_ref()) else { return };
+        let (Some(panel), Some(ed)) = (self.layout.side_panel, self.cmdbar_editor()) else { return };
         let (_, list, _) = self.cmdbar_edit_layout(panel);
         let rows = self.cmdbar_edit_rows();
         let target = rows.iter().enumerate().find_map(|(k, r)| match r {
@@ -320,28 +293,16 @@ impl App {
             let it = self.config.cmdbar.remove(item);
             self.config.cmdbar.insert(t, it);
             self.press = Some(Press::BarEditDrag { item: t });
-            if let Some(ed) = self.cmdbar_editor.as_mut() {
+            if let Some(ed) = self.cmdbar_editor_mut() {
                 ed.expanded = None;
             }
             self.cmdbar_changed();
         }
     }
 
-    pub fn cmdbar_edit_wheel(&mut self, panel: Rect, delta: i16) {
-        let (_, list, _) = self.cmdbar_edit_layout(panel);
-        let max = (self.cmdbar_edit_rows().len() as f32 * (self.row_h() + 4.0) - list.h()).max(0.0);
-        let step = 3.0 * self.row_h();
-        if let Some(ed) = self.cmdbar_editor.as_mut() {
-            ed.scroll = (ed.scroll - (delta as i32 / 120).signum() as f32 * step).clamp(0.0, max);
-        }
-        self.invalidate();
-    }
-
-    fn edit_rect(&self, k: usize) -> Option<Rect> {
-        let panel = self.layout.cmdbar_panel?;
-        let ed = self.cmdbar_editor.as_ref()?;
-        let (_, list, _) = self.cmdbar_edit_layout(panel);
-        let r = self.bar_row_rect(list, k, ed.scroll);
+    /// 第 k 列的輸入框位置（先捲到看得見）
+    fn edit_rect(&mut self, k: usize) -> Option<Rect> {
+        let r = self.side_reveal(k)?;
         Some(Rect::new(r.l + 90.0, r.t + 1.0, r.r, r.b - 1.0))
     }
 
@@ -376,7 +337,7 @@ impl App {
         let bar = &mut self.config.cmdbar;
         let at = bar.iter().position(|i| i.cmd == core::MENU_MORE).unwrap_or(bar.len());
         bar.insert(at, Item { cmd: cmd.to_string(), label, icon: String::new() });
-        if let Some(ed) = self.cmdbar_editor.as_mut() {
+        if let Some(ed) = self.cmdbar_editor_mut() {
             ed.expanded = Some(at);
         }
         self.cmdbar_changed();
@@ -391,7 +352,7 @@ impl App {
     }
 
     pub fn paint_cmdbar_editor(&self, r: Rect) {
-        let Some(ed) = self.cmdbar_editor.as_ref() else { return };
+        let Some(ed) = self.cmdbar_editor() else { return };
         let c = &self.theme.color;
         let g = &self.gfx;
         let radius = self.theme.metrics.radius;
@@ -504,15 +465,6 @@ impl App {
             }
         }
         g.pop_clip();
-        for (k, b) in buttons.iter().enumerate() {
-            let primary = k == 1;
-            let hot = self.hover == Hit::BarEditButton(k);
-            g.fill_round(*b, radius, if primary { c.accent } else if hot { c.hover } else { c.background });
-            g.stroke_round(*b, radius, if primary { c.accent } else { c.border }, 1.0);
-            let label = zing_core::i18n::tr(BUTTONS[k]);
-            let w = g.measure(label, Font::Text);
-            let col = if primary { crate::themepanel::contrast(c.accent) } else { c.text };
-            g.text(label, Font::Text, Rect::new(b.l + ((b.w() - w) / 2.0).max(4.0), b.t, b.r, b.b), col);
-        }
+        self.paint_footer_buttons(&buttons, BUTTONS, Some(1), |k| self.hover == Hit::BarEditButton(k));
     }
 }

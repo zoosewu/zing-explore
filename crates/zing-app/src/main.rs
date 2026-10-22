@@ -26,6 +26,7 @@ mod settings;
 mod shell;
 mod shellext;
 mod shellhost;
+mod sidepanel;
 mod script;
 mod search;
 mod sizes;

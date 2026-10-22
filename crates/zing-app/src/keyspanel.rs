@@ -92,23 +92,11 @@ impl App {
     }
 
     pub fn open_keys_panel(&mut self) {
-        self.close_side_panels();
-        self.keys_panel = Some(KeysPanel::default());
-        self.invalidate();
-    }
-
-    pub fn close_keys_panel(&mut self) {
-        self.keys_panel = None;
-        if matches!(self.edit.as_ref().map(|e| &e.kind), Some(EditKind::KeysSearch))
-            && let Some(e) = self.edit.take()
-        {
-            window::destroy_edit(e.hwnd);
-        }
-        self.invalidate();
+        self.open_side(crate::sidepanel::SidePanel::Keys(KeysPanel::default()));
     }
 
     pub fn keys_rows(&self) -> Vec<Row> {
-        let Some(kp) = self.keys_panel.as_ref() else { return Vec::new() };
+        let Some(kp) = self.keys_panel() else { return Vec::new() };
         let q = kp.query.trim().to_lowercase();
         let mut groups: Vec<(&'static str, Vec<(String, String)>)> = Vec::new();
         for (cmd, title) in self.key_commands() {
@@ -144,20 +132,15 @@ impl App {
         let rh = self.row_h();
         let inner = r.inset(12.0, 10.0);
         let title = Rect::new(inner.l, inner.t, inner.r, inner.t + rh * 2.0);
-        let bh = (rh + 6.0).max(28.0);
-        let row = Rect::new(inner.l, inner.b - bh, inner.r, inner.b);
-        let half = (inner.w() - 6.0) / 2.0;
-        let buttons = [Rect::new(row.l, row.t, row.l + half, row.b), Rect::new(row.l + half + 6.0, row.t, row.r, row.b)];
-        let note = Rect::new(inner.l, row.t - 6.0 - rh, inner.r, row.t - 6.0);
+        let buttons = crate::sidepanel::footer_buttons(inner, rh);
+        let note = Rect::new(inner.l, buttons[0].t - 6.0 - rh, inner.r, buttons[0].t - 6.0);
         let list = Rect::new(inner.l, title.b + 4.0, inner.r, note.t - 4.0);
         (title, list, note, buttons)
     }
 
     pub fn keys_row_rect(&self, list: Rect, k: usize, scroll: f32) -> Rect {
-        let rh = self.row_h() + 6.0;
         // 搜尋列固定在最上方
-        let y = if k == 0 { list.t } else { list.t + k as f32 * rh - scroll };
-        Rect::new(list.l, y, list.r, y + rh)
+        crate::sidepanel::row_rect(list, k, self.row_h() + 6.0, scroll, 1)
     }
 
     /// 按鍵方塊（由右往左排）與 ＋、↺ 的位置
@@ -197,7 +180,7 @@ impl App {
     }
 
     pub fn keys_hit(&self, panel: Rect, x: f32, y: f32) -> Hit {
-        let Some(kp) = self.keys_panel.as_ref() else { return Hit::None };
+        let Some(kp) = self.keys_panel() else { return Hit::None };
         let (_, list, _, buttons) = self.keys_layout(panel);
         if let Some(k) = buttons.iter().position(|b| b.contains(x, y)) {
             return Hit::KeysButton(k);
@@ -232,7 +215,7 @@ impl App {
 
     pub fn keys_click(&mut self, hit: Hit) {
         let rows = self.keys_rows();
-        let Some(kp) = self.keys_panel.as_mut() else { return };
+        let Some(kp) = self.keys_panel_mut() else { return };
         match hit {
             Hit::KeysPart(0, PART_QUERY) => {
                 kp.awaiting_filter = false;
@@ -276,7 +259,7 @@ impl App {
                         let other = keyedit::add(&mut self.config.keys, &cmd, chord);
                         let msg = tr!("{chord} 已從「{other}」移除，改為「{title}」", chord = chord.to_string(), other = self.cmd_title(&other.unwrap_or_default()), title = self.cmd_title(&cmd));
                         self.keys_changed(msg, false);
-                    } else if let Some(kp) = self.keys_panel.as_mut() {
+                    } else if let Some(kp) = self.keys_panel_mut() {
                         kp.message = None;
                     }
                 }
@@ -292,7 +275,7 @@ impl App {
                 self.config.keys = self.config.config_keys.clone();
                 self.keys_changed(tr!("已還原所有快速鍵").to_string(), false);
             }
-            Hit::KeysButton(_) => self.close_keys_panel(),
+            Hit::KeysButton(_) => self.close_side_panels(),
             _ => {}
         }
         self.invalidate();
@@ -315,7 +298,7 @@ impl App {
 
     /// 錄製或依按鍵搜尋中（按鍵交給面板）
     pub fn keys_capturing(&self) -> bool {
-        self.keys_panel.as_ref().is_some_and(|k| k.recording.is_some() || k.awaiting_filter)
+        self.keys_panel().is_some_and(|k| k.recording.is_some() || k.awaiting_filter)
     }
 
     /// 錄製中按下的鍵
@@ -324,7 +307,7 @@ impl App {
         if matches!(vk, 0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5 | 0x14 | 0x90 | 0x91) {
             return;
         }
-        let Some(kp) = self.keys_panel.as_mut() else { return };
+        let Some(kp) = self.keys_panel_mut() else { return };
         let plain = !mods.ctrl && !mods.alt && !mods.shift;
         if plain && vk == 0x1B {
             kp.recording = None;
@@ -351,7 +334,7 @@ impl App {
             }
             Some(other) => {
                 let other_title = self.cmd_title(&other);
-                if let Some(kp) = self.keys_panel.as_mut() {
+                if let Some(kp) = self.keys_panel_mut() {
                     kp.conflict = Some((cmd, chord, other));
                     kp.message = Some((tr!("{chord} 已被「{other}」使用", chord = chord.to_string(), other = other_title), true));
                 }
@@ -367,7 +350,7 @@ impl App {
 
     /// 按鍵改變後：顯示結果，並在背景寫入 keys.toml
     fn keys_changed(&mut self, msg: String, warn: bool) {
-        if let Some(kp) = self.keys_panel.as_mut() {
+        if let Some(kp) = self.keys_panel_mut() {
             kp.recording = None;
             kp.message = Some((msg, warn));
         }
@@ -385,17 +368,17 @@ impl App {
     }
 
     fn begin_keys_search(&mut self) {
-        let (Some(panel), Some(kp)) = (self.layout.keys_panel, self.keys_panel.as_ref()) else { return };
-        let (_, list, _, _) = self.keys_layout(panel);
-        let q = self.search_parts(self.keys_row_rect(list, 0, kp.scroll))[PART_QUERY];
+        let (Some(panel), Some(kp)) = (self.layout.side_panel, self.keys_panel()) else { return };
         let text = kp.query.clone();
+        let Some(row) = self.side_row(panel, 0) else { return };
+        let q = self.search_parts(row)[PART_QUERY];
         let len = text.encode_utf16().count();
         window::begin_edit(self, Rect::new(q.l + 26.0, q.t + 1.0, q.r - q.h(), q.b - 1.0), &text, len, EditKind::KeysSearch);
     }
 
     /// 搜尋框內容改變（EN_CHANGE）
     pub fn keys_query(&mut self, text: String) {
-        if let Some(kp) = self.keys_panel.as_mut() {
+        if let Some(kp) = self.keys_panel_mut() {
             kp.query = text;
             kp.key_filter = None;
             kp.scroll = 0.0;
@@ -403,18 +386,8 @@ impl App {
         }
     }
 
-    pub fn keys_wheel(&mut self, panel: Rect, delta: i16) {
-        let (_, list, _, _) = self.keys_layout(panel);
-        let max = (self.keys_rows().len() as f32 * (self.row_h() + 6.0) - list.h()).max(0.0);
-        let step = 3.0 * self.row_h();
-        if let Some(kp) = self.keys_panel.as_mut() {
-            kp.scroll = (kp.scroll - (delta as i32 / 120).signum() as f32 * step).clamp(0.0, max);
-        }
-        self.invalidate();
-    }
-
     pub fn paint_keys_panel(&self, r: Rect) {
-        let Some(kp) = self.keys_panel.as_ref() else { return };
+        let Some(kp) = self.keys_panel() else { return };
         let c = &self.theme.color;
         let g = &self.gfx;
         let radius = self.theme.metrics.radius;
@@ -523,15 +496,6 @@ impl App {
         if let Some((m, warn)) = &kp.message {
             g.text(m, Font::Small, note, if *warn { c.error } else { c.text_secondary });
         }
-        for (k, b) in buttons.iter().enumerate() {
-            let primary = k == 1;
-            let hot = self.hover == Hit::KeysButton(k);
-            g.fill_round(*b, radius, if primary { c.accent } else if hot { c.hover } else { c.background });
-            g.stroke_round(*b, radius, if primary { c.accent } else { c.border }, 1.0);
-            let label = zing_core::i18n::tr(BUTTONS[k]);
-            let w = g.measure(label, Font::Text);
-            let col = if primary { crate::themepanel::contrast(c.accent) } else { c.text };
-            g.text(label, Font::Text, Rect::new(b.l + ((b.w() - w) / 2.0).max(4.0), b.t, b.r, b.b), col);
-        }
+        self.paint_footer_buttons(&buttons, BUTTONS, Some(1), |k| self.hover == Hit::KeysButton(k));
     }
 }

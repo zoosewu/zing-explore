@@ -171,6 +171,10 @@ impl App {
             }
             return;
         }
+        if hit.side_panel() {
+            self.side_click(hit, x, y);
+            return;
+        }
         match hit {
             Hit::Nav(i) => self.exec(NAV_COMMANDS[i]),
             Hit::Crumb(p) => {
@@ -185,11 +189,9 @@ impl App {
                 }
             }
             Hit::CmdBar | Hit::MenuItem(..) | Hit::Menu => {}
-            Hit::BarEditRow(_) | Hit::BarEditPart(..) | Hit::BarEditButton(_) | Hit::BarEditPanel | Hit::BarEditSearch(_) => self.cmdbar_edit_click(hit, y),
-            Hit::KeysRow(_) | Hit::KeysPart(..) | Hit::KeysButton(_) | Hit::KeysPanel => self.keys_click(hit),
             Hit::SettingsGear => {
-                if self.settings_page.is_some() {
-                    self.close_settings();
+                if self.settings_page().is_some() {
+                    self.close_side_panels();
                 } else {
                     self.open_settings();
                 }
@@ -210,17 +212,6 @@ impl App {
             }
             Hit::TreeEmpty => self.focus = Focus::Tree,
             Hit::Preview => {}
-            Hit::ThemeRow(_)
-            | Hit::ThemeText(_)
-            | Hit::ThemeCell(..)
-            | Hit::ThemeReset(_)
-            | Hit::ThemeStep(..)
-            | Hit::ThemeSlider(_)
-            | Hit::ThemeDelete(_)
-            | Hit::ThemeButton(_)
-            | Hit::ThemeLink(_)
-            | Hit::ThemePanel => self.theme_click(hit, x),
-            Hit::SettingsRow(_) | Hit::SettingsBack | Hit::SettingsButton(_) | Hit::SettingsPanel => self.settings_click(hit),
             // 批次重新命名面板開啟時在函式開頭處理
             Hit::BatchChip(_) | Hit::BatchField(_) | Hit::BatchRun | Hit::BatchCancel | Hit::Batch => {}
             Hit::PreviewSplitter => {
@@ -290,6 +281,8 @@ impl App {
             Hit::JobsClear => self.jobs_clear(),
             Hit::JobsClose | Hit::JobsIndicator => self.jobs_toggle(),
             Hit::None | Hit::PaletteRow(_) | Hit::Palette | Hit::JobsPanel => {}
+            // 右側面板的命中在 match 之前已交給 side_click
+            _ => {}
         }
         if self.press.is_some() {
             unsafe { SetCapture(self.hwnd) };
@@ -440,20 +433,16 @@ impl App {
             self.close_menu();
             return;
         }
-        if let Some(cp) = self.layout.cmdbar_panel.filter(|r| r.contains(x, y)) {
-            self.cmdbar_edit_wheel(cp, delta);
-            return;
-        }
-        if let Some(kp) = self.layout.keys_panel.filter(|r| r.contains(x, y)) {
-            self.keys_wheel(kp, delta);
-            return;
-        }
         if self.batch.is_some() {
             self.batch_command(crate::batch::CMD_SCROLL, -3 * delta as isize / 120);
             return;
         }
         if self.palette_contains(x, y) {
             self.palette_move(-3 * delta as isize / 120);
+            return;
+        }
+        if let Some(sp) = self.layout.side_panel.filter(|r| r.contains(x, y)) {
+            self.side_wheel(sp, x, y, delta);
             return;
         }
         if ctrl && let Some(p) = self.layout.panes.iter().position(|pl| pl.list.contains(x, y)) {
@@ -463,14 +452,6 @@ impl App {
         }
         let lines = 3.0 * delta as f32 / 120.0;
         let step = lines * self.row_h();
-        if let Some(tp) = self.layout.theme_panel.filter(|r| r.contains(x, y)) {
-            self.theme_wheel(tp, x, y, delta);
-            return;
-        }
-        if let Some(sp) = self.layout.settings_panel.filter(|r| r.contains(x, y)) {
-            self.settings_wheel(sp, delta);
-            return;
-        }
         if let Some(pr) = self.layout.preview.filter(|r| r.contains(x, y)) {
             let (_, content, _) = self.preview_rects(pr);
             let max = self.preview_max_scroll(content.h());
@@ -529,18 +510,8 @@ impl App {
         const VK_BACK: u16 = 0x08;
         let plain = !mods.ctrl && !mods.alt && !mods.shift;
 
-        // 設定頁開著：Esc 收起選項或關閉設定頁（篩選與選取之前）
-        if plain && vk == VK_ESCAPE.0 && self.settings_page.is_some() {
-            self.settings_escape();
-            return true;
-        }
-        // 主題編輯面板：Esc 收起展開的選單或色票
-        if plain && vk == VK_ESCAPE.0 && self.theme_escape() {
-            return true;
-        }
-        // 自訂命令列、快速鍵面板：Esc 關閉
-        if plain && vk == VK_ESCAPE.0 && (self.cmdbar_editor.is_some() || self.keys_panel.is_some()) {
-            self.close_side_panels();
+        // 右側面板：Esc 收起展開的選項、回上一層或關閉面板（篩選與選取之前）
+        if plain && vk == VK_ESCAPE.0 && self.side_escape() {
             return true;
         }
 
