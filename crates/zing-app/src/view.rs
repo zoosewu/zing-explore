@@ -107,8 +107,9 @@ pub enum Hit {
     ThemeButton(usize),
     ThemeLink(usize),
     ThemePanel,
-    /// 設定頁：列（`SettingsPage::rows` 的索引）、底部按鈕、面板其他位置
+    /// 設定頁：列（`SettingsPage::rows` 的索引）、標題列（回到分類清單）、底部按鈕、面板其他位置
     SettingsRow(usize),
+    SettingsBack,
     /// 工具列的設定按鈕
     SettingsGear,
     /// 命令列：第幾個顯示中的按鈕（`BarLayout::buttons` 的索引）、命令列的空白處

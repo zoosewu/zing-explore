@@ -16,6 +16,8 @@ pub enum Kind {
     Theme,
     /// 不是設定值：執行命令（開啟快速鍵編輯器等）
     Action(&'static str),
+    /// 緩慢的右鍵選單擴充功能的表格（每個可單獨切換；值是照樣顯示的 CLSID，以逗號分隔）
+    SlowList,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -76,17 +78,17 @@ pub const PREFS: &[Pref] = &[
         hint: "",
         kind: Kind::Choice(PALETTE_POSITIONS),
     },
-    Pref { key: "command_bar.visible", group: tr_key!("外觀"), label: tr_key!("顯示命令列"), hint: "", kind: Kind::Bool },
+    Pref { key: "command_bar.visible", group: tr_key!("命令列"), label: tr_key!("顯示命令列"), hint: "", kind: Kind::Bool },
     Pref {
         key: "command_bar.labels",
-        group: tr_key!("外觀"),
+        group: tr_key!("命令列"),
         label: tr_key!("命令列按鈕顯示文字"),
         hint: tr_key!("關閉後只顯示圖示（游標停在按鈕上會顯示名稱）"),
         kind: Kind::Bool,
     },
     Pref {
         key: "",
-        group: tr_key!("外觀"),
+        group: tr_key!("命令列"),
         label: tr_key!("自訂命令列…"),
         hint: tr_key!("選擇要顯示的按鈕、順序、名稱與圖示"),
         kind: Kind::Action("cmdbar.edit"),
@@ -99,11 +101,18 @@ pub const PREFS: &[Pref] = &[
         kind: Kind::Choice(MENU_STYLES),
     },
     Pref {
-        key: "context_menu.show_slow",
+        key: "context_menu.hide_slow",
         group: tr_key!("右鍵選單"),
-        label: tr_key!("顯示緩慢的擴充功能項目"),
-        hint: tr_key!("關閉時，讓選單變慢的第三方項目只在「顯示更多選項」中"),
+        label: tr_key!("隱藏緩慢的擴充功能項目"),
+        hint: tr_key!("讓選單變慢的第三方項目（自動偵測）只在「顯示更多選項」中"),
         kind: Kind::Bool,
+    },
+    Pref {
+        key: "context_menu.allow_slow",
+        group: tr_key!("右鍵選單"),
+        label: tr_key!("緩慢的擴充功能"),
+        hint: tr_key!("開啟的項目照樣放在第一層；7 天後重新量"),
+        kind: Kind::SlowList,
     },
     Pref {
         key: "folder_sizes.auto",
@@ -130,6 +139,17 @@ pub const PREFS: &[Pref] = &[
         kind: Kind::Action("config.edit"),
     },
 ];
+
+/// 設定的分類（`Pref::group`，依 `PREFS` 中第一次出現的順序）
+pub fn groups() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for p in PREFS {
+        if !out.contains(&p.group) {
+            out.push(p.group);
+        }
+    }
+    out
+}
 
 fn tree_side_code(t: TreeSide) -> &'static str {
     match t {
@@ -178,7 +198,8 @@ impl Config {
             "command_bar.visible" => self.command_bar.visible.to_string(),
             "command_bar.labels" => self.command_bar.labels.to_string(),
             "context_menu.style" => menu_style_code(self.context_menu.style).into(),
-            "context_menu.show_slow" => self.context_menu.show_slow.to_string(),
+            "context_menu.hide_slow" => self.context_menu.hide_slow.to_string(),
+            "context_menu.allow_slow" => self.context_menu.allow_slow.join(","),
             _ => String::new(),
         }
     }
@@ -200,7 +221,11 @@ impl Config {
             "command_bar.visible" => self.command_bar.visible = value.parse().map_err(|_| bad())?,
             "command_bar.labels" => self.command_bar.labels = value.parse().map_err(|_| bad())?,
             "context_menu.style" => self.context_menu.style = toml_enum(value).ok_or_else(bad)?,
-            "context_menu.show_slow" => self.context_menu.show_slow = value.parse().map_err(|_| bad())?,
+            "context_menu.hide_slow" => self.context_menu.hide_slow = value.parse().map_err(|_| bad())?,
+            "context_menu.allow_slow" => {
+                self.context_menu.allow_slow =
+                    value.split(',').map(|c| c.trim().to_ascii_lowercase()).filter(|c| !c.is_empty()).collect()
+            }
             _ => return Err(bad()),
         }
         Ok(())
@@ -219,6 +244,10 @@ fn toml_enum<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {
 pub fn toml_literal(pref: &Pref, value: &str) -> String {
     match pref.kind {
         Kind::Bool => value.to_string(),
+        Kind::SlowList => toml::Value::Array(
+            value.split(',').filter(|c| !c.is_empty()).map(|c| toml::Value::String(c.to_string())).collect(),
+        )
+        .to_string(),
         _ => toml::Value::String(value.to_string()).to_string(),
     }
 }
@@ -399,6 +428,7 @@ mod tests {
                     Kind::Choice(list) => list[1].0,
                     Kind::Bool => "true",
                     Kind::Theme => "fluent-dark",
+                    Kind::SlowList => "{a},{b}",
                     _ => "C:\\Users",
                 };
                 src = write_pref(&src, p.key, &toml_literal(p, value)).unwrap_or_else(|e| panic!("{lang:?} {}: {e}", p.key));
@@ -423,5 +453,15 @@ mod tests {
         assert!(cfg.set_pref("show_hidden", "maybe").is_err());
         assert_eq!(choice_label(&PREFS[5], "right"), "右側");
         assert_eq!(choice_label(&PREFS[3], "我的主題"), "我的主題");
+        cfg.set_pref("context_menu.allow_slow", "{AB},,{cd}").unwrap();
+        assert_eq!(cfg.context_menu.allow_slow, ["{ab}", "{cd}"]);
+        assert!(Config::load(None).0.context_menu.hide_slow);
+    }
+
+    #[test]
+    fn groups_keep_order() {
+        let g = groups();
+        assert_eq!(g.first(), Some(&PREFS[0].group));
+        assert_eq!(g.len(), PREFS.iter().map(|p| p.group).collect::<std::collections::HashSet<_>>().len());
     }
 }

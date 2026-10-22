@@ -128,8 +128,8 @@ impl App {
         }
         let (items, folder) = target.clone();
         self.menu_prepared = Some(target);
-        let (show_slow, persist) = (self.config.context_menu.show_slow, !self.isolated);
-        self.shell_host.submit(crate::shellhost::ShellJob::Prepare { items, folder, show_slow, persist });
+        let (slow, persist) = (crate::shellext::SlowPolicy::new(&self.config.context_menu), !self.isolated);
+        self.shell_host.submit(crate::shellhost::ShellJob::Prepare { items, folder, slow, persist });
     }
 
     pub fn on_mouse_leave(&mut self) {
@@ -220,7 +220,7 @@ impl App {
             | Hit::ThemeButton(_)
             | Hit::ThemeLink(_)
             | Hit::ThemePanel => self.theme_click(hit, x),
-            Hit::SettingsRow(_) | Hit::SettingsButton(_) | Hit::SettingsPanel => self.settings_click(hit),
+            Hit::SettingsRow(_) | Hit::SettingsBack | Hit::SettingsButton(_) | Hit::SettingsPanel => self.settings_click(hit),
             // 批次重新命名面板開啟時在函式開頭處理
             Hit::BatchChip(_) | Hit::BatchField(_) | Hit::BatchRun | Hit::BatchCancel | Hit::Batch => {}
             Hit::PreviewSplitter => {

@@ -903,14 +903,36 @@ fn theme_row_pos(label: &str, value: bool) -> Option<(f32, f32)> {
 /// 設定頁中某個設定的列（`option` 為 Some 時是展開的第幾個選項）；`value` 為 true 時是數值處
 fn settings_row_pos(key: &str, option: Option<usize>, value: bool) -> Option<(f32, f32)> {
     use crate::prefspage::Row;
+    let i = zing_core::prefs::PREFS.iter().position(|p| p.key == key)?;
+    settings_pos(
+        match option {
+            Some(o) => Row::Option(i, o),
+            None => Row::Field(i),
+        },
+        value,
+    )
+}
+
+/// 設定頁的分類清單中的一個分類
+fn settings_category_pos(group: &str) -> Option<(f32, f32)> {
+    let g = zing_core::prefs::groups().iter().position(|g| *g == group)?;
+    settings_pos(crate::prefspage::Row::Category(g), false)
+}
+
+/// 設定頁的標題列（在分類中時是「‹ 分類」，點了回到分類清單）
+fn settings_title_pos() -> Option<(f32, f32)> {
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let t = a.settings_layout(a.layout.settings_panel?).title;
+        Some((t.l + 30.0, (t.t + t.b) / 2.0))
+    })
+    .flatten()
+}
+
+fn settings_pos(want: crate::prefspage::Row, value: bool) -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
         let panel = a.layout.settings_panel?;
-        let i = zing_core::prefs::PREFS.iter().position(|p| p.key == key)?;
-        let want = match option {
-            Some(o) => Row::Option(i, o),
-            None => Row::Field(i),
-        };
         let k = a.settings_page.as_ref()?.rows().iter().position(|r| *r == want)?;
         let pl = a.settings_layout(panel);
         let rh = a.row_h();
@@ -2306,13 +2328,35 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     ));
 
     // ------------------------------------------------ 設定頁（隔離模式只改記憶體中的設定，不寫 config.toml）
-    v.push(step("設定：Ctrl+, 開啟設定頁", |c| key(c, "c", VIRTUAL_KEY(0xBC)), |_, a| {
+    use crate::prefspage::Row;
+    let category = |a: &App| a.settings_page.as_ref().and_then(|p| p.category);
+    let group_index = |g: &str| zing_core::prefs::groups().iter().position(|x| *x == g);
+    v.push(step("設定：Ctrl+, 開啟設定頁（分類清單）", |c| key(c, "c", VIRTUAL_KEY(0xBC)), move |_, a| {
         expect("設定頁", a.settings_page.is_some(), true)?;
-        expect("面板位置", a.layout.settings_panel.is_some(), true)
+        expect("面板位置", a.layout.settings_panel.is_some(), true)?;
+        expect("分類清單", category(a), None)?;
+        expect("第一列", a.settings_page.as_ref().and_then(|p| p.rows().first().copied()), Some(Row::Category(0)))
+    }));
+    v.push(step("截圖：設定的分類", |_| {}, |c, _| screenshot(c, "22-設定分類")));
+    v.push(step("設定：點「一般」", |c| click(c, "", settings_category_pos("一般")), move |_, a| {
+        expect("分類", category(a), group_index("一般"))?;
+        expect("只有這個分類的項目", a.settings_page.as_ref().is_some_and(|p| p.rows().contains(&Row::Field(3))), false)
     }));
     v.push(step("設定：點開關顯示隱藏檔案", |c| click(c, "", settings_row_pos("show_hidden", None, true)), |_, a| {
         expect("顯示隱藏檔案", a.show_hidden, true)?;
         expect("設定", a.config.show_hidden, true)
+    }));
+    v.push(step(
+        "設定：輸入啟動時開啟的資料夾",
+        |c| {
+            click(c, "", settings_row_pos("start_path", None, true));
+            edit_commit("C:\\Windows");
+        },
+        |_, a| expect("start_path", a.config.start_path.as_str(), "C:\\Windows"),
+    ));
+    v.push(step("設定：點標題回到分類清單", |c| click(c, "", settings_title_pos()), move |_, a| expect("分類清單", category(a), None)));
+    v.push(step("設定：點「外觀」", |c| click(c, "", settings_category_pos("外觀")), move |_, a| {
+        expect("分類", category(a), group_index("外觀"))
     }));
     v.push(step("設定：展開樹狀列位置", |c| click(c, "", settings_row_pos("layout.tree", None, false)), |_, a| {
         let i = zing_core::prefs::PREFS.iter().position(|p| p.key == "layout.tree");
@@ -2324,30 +2368,82 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("收起", a.settings_page.as_ref().and_then(|p| p.expanded), None)?;
         expect("版面", a.layout.tree.zip(a.layout.panes.first()).is_some_and(|(t, p)| t.l > p.list.l), true)
     }));
+    v.push(step("設定：Esc 回到分類清單", |c| key(c, "", VK_ESCAPE), move |_, a| {
+        expect("設定頁", a.settings_page.is_some(), true)?;
+        expect("分類清單", category(a), None)
+    }));
+    // 緩慢的擴充功能表格：隔離模式的記錄只在記憶體中，放一個假的
+    const SLOW_CLSID: &str = "{5a1e7e57-0000-4000-8000-00000000c0de}";
+    let slow_row = || {
+        with_app(|a| a.settings_page.as_ref().and_then(|p| p.rows().into_iter().find(|r| matches!(r, Row::Slow(..)))))
+            .flatten()
+    };
+    let allowed = |a: &App| a.config.context_menu.allow_slow.iter().any(|c| c == SLOW_CLSID);
     v.push(step(
-        "設定：輸入啟動時開啟的資料夾",
+        "設定：「右鍵選單」列出緩慢的擴充功能",
         |c| {
-            click(c, "", settings_row_pos("start_path", None, true));
-            edit_commit("C:\\Windows");
+            crate::shellext::test_mark_slow(SLOW_CLSID, "SlowTest", "file", 120);
+            crate::shellext::test_mark_slow(SLOW_CLSID, "SlowTest", "background", 80);
+            click(c, "", settings_category_pos("右鍵選單"));
         },
-        |_, a| expect("start_path", a.config.start_path.as_str(), "C:\\Windows"),
+        move |_, a| {
+            expect("分類", category(a), group_index("右鍵選單"))?;
+            let page = a.settings_page.as_ref().ok_or("設定頁")?;
+            let e = page.slow.iter().find(|e| e.clsid == SLOW_CLSID).ok_or("表格中沒有 SlowTest")?;
+            expect("類型", e.kinds.as_slice(), ["檔案", "空白處"].as_slice())?;
+            expect("耗時", e.ms, 120)
+        },
     ));
     v.push(step(
-        "設定：還原後 Esc 關閉",
+        "設定：表格中切換為放在第一層",
+        move |c| {
+            let k = with_app(|a| a.settings_page.as_ref().and_then(|p| p.slow.iter().position(|e| e.clsid == SLOW_CLSID))).flatten();
+            let row = slow_row().and_then(|r| match r {
+                Row::Slow(i, _) => Some(Row::Slow(i, k?)),
+                _ => None,
+            });
+            click(c, "", row.and_then(|r| settings_pos(r, true)));
+        },
+        move |_, a| expect("allow_slow", allowed(a), true),
+    ));
+    v.push(step("截圖：右鍵選單的設定", |_| {}, |c, _| screenshot(c, "23-右鍵選單設定")));
+    v.push(step("設定：關閉「隱藏緩慢的擴充功能項目」", |c| click(c, "", settings_row_pos("context_menu.hide_slow", None, true)), |_, a| {
+        expect("hide_slow", a.config.context_menu.hide_slow, false)
+    }));
+    v.push(step(
+        "設定：表格變成灰階、不能切換",
+        move |c| click(c, "", slow_row().and_then(|r| settings_pos(r, true))),
+        move |_, a| {
+            expect("可切換", a.slow_table_enabled(), false)?;
+            expect("allow_slow 不變", allowed(a), true)
+        },
+    ));
+    v.push(step("截圖：緩慢項目的表格（灰階）", |_| {}, |c, _| screenshot(c, "24-緩慢項目灰階")));
+    v.push(step(
+        "設定：還原後 Esc 兩次關閉",
         |c| {
             with_app(|a| {
-                for (key, value) in [("show_hidden", "false"), ("layout.tree", "left"), ("start_path", "")] {
+                for (key, value) in [
+                    ("show_hidden", "false"),
+                    ("layout.tree", "left"),
+                    ("start_path", ""),
+                    ("context_menu.hide_slow", "true"),
+                    ("context_menu.allow_slow", ""),
+                ] {
                     let i = zing_core::prefs::PREFS.iter().position(|p| p.key == key).unwrap();
                     a.set_pref(i, value.into());
                 }
             });
+            key(c, "", VK_ESCAPE);
             key(c, "", VK_ESCAPE);
         },
         |_, a| {
             expect("設定頁", a.settings_page.is_none(), true)?;
             expect("樹狀列", a.tree_side, zing_core::config::TreeSide::Left)?;
             expect("顯示隱藏檔案", a.show_hidden, false)?;
-            expect("start_path", a.config.start_path.as_str(), "")
+            expect("start_path", a.config.start_path.as_str(), "")?;
+            expect("hide_slow", a.config.context_menu.hide_slow, true)?;
+            expect("allow_slow", a.config.context_menu.allow_slow.len(), 0)
         },
     ));
     let gear = || with_app(|a| {

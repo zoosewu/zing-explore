@@ -954,6 +954,7 @@ impl App {
             Msg::ThemeFileTime { name, mtime } => self.on_theme_file_time(name, mtime),
             Msg::ThemeImport(result) => self.on_theme_import(result),
             Msg::UserThemes(themes) => self.on_user_themes(themes),
+            Msg::SlowMenuExts(list) => self.on_slow_menu_exts(list),
             Msg::Fonts(fonts) => self.on_fonts(fonts),
             Msg::CmdBarImage { path, pixels } => self.on_cmdbar_image(path, pixels),
             Msg::AddressResolved { pane, target, normalized, is_dir, cwd } => {

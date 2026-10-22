@@ -71,6 +71,8 @@ pub enum Msg {
     ThemeImport(Result<(String, String, bool), String>),
     /// themes 資料夾中的使用者主題名稱（設定頁）
     UserThemes(Vec<String>),
+    /// 設定頁：緩慢的右鍵選單擴充功能
+    SlowMenuExts(Vec<crate::shellext::SlowExt>),
     /// 系統字型（主題編輯器的字型選單）：（英文名稱, 顯示名稱）
     Fonts(Vec<(String, String)>),
     /// 命令列的圖片圖示讀取完成

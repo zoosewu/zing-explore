@@ -30,7 +30,7 @@ cargo build --release
 - Right-click menu (two levels, like Windows 11): common items that appear instantly (Open, Open with, Cut, Copy, Rename, Delete, Copy path,
   open in new tab, favorites, "Batch rename" when several items are selected, Properties…) plus third-party items such as 7-Zip, WinRAR and PowerToys;
   "Show more options" or Shift+right-click opens the full Windows menu. Third-party items that slow the menu down move to "Show more options" automatically
-  (the settings page can show them anyway, or switch back to the full Windows menu). Shift+F10 / the menu key also open it. Drag and drop in and out
+  (the settings page can keep them one by one or all of them, or switch back to the full Windows menu). Shift+F10 / the menu key also open it. Drag and drop in and out
 - System file icons (loaded in the background; executables and shortcuts show their own icons)
 - Preview pane (`Alt+P`): text files (UTF-8 / UTF-16 / Big5 detected automatically); PDF, Office, video and so on through Windows preview handlers
   (same as File Explorer; a large thumbnail is shown when there is none or it does not respond), picture thumbnails, item counts for folders,
@@ -44,7 +44,7 @@ cargo build --release
 - Folder contents update automatically when they change
 - Three built-in styles, each with dark / light variants that can follow the system: Compact (default; dense, square corners, full path), Fluent (roomy, rounded) and
   Balanced (Fluent look, medium density); switch with "Theme: …" in the command palette; `Ctrl+Shift+T` toggles dark/light while keeping the style; custom theme files can be loaded
-- Settings page (`Ctrl+,` or the gear at the top right of the toolbar): UI language, theme, tree and command palette position, hidden files, startup folder, folder sizes and other common settings;
+- Settings page (`Ctrl+,` or the gear at the top right of the toolbar; pick a category, then a setting): UI language, theme, tree and command palette position, hidden files, startup folder, folder sizes and other common settings;
   changes apply immediately and are written back to the matching line of `config.toml` (the file's comments and layout are kept). The shortcut editor, theme editor and config file can also be opened from here
 - Everything can be done with the mouse, no commands to remember: the command bar below the toolbar (Windows 11 File Explorer style) has New▾, Cut, Copy, Paste, Rename, Delete,
   Sort▾ and View▾, and everything else is under "⋯" (grouped submenus, including Lua script commands). Unavailable buttons are grayed out; hovering a button shows its name,

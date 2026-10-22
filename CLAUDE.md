@@ -85,7 +85,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 清單的右鍵選單預設是兩層（`ctxmenu.rs`，設定 `context_menu.style`）：第一層用 `menu.rs` 自繪（程式的命令＋`entry_menu_extras`＋
   第三方擴充功能），立即出現；「顯示更多選項」、Shift+右鍵、「此電腦」才開完整的 Windows 選單。第三方擴充功能在 `shellext.rs`：
   預先準備時在 ShellHost 載入、計時、讀出項目（`Msg::MenuExtensions`），選了再以同一個物件執行（`ShellJob::InvokeExt`）；
-  還沒準備好就不放（選單不會在顯示後變長）。緩慢的（依檔案／資料夾／背景分開判斷）不放進第一層，除非 `context_menu.show_slow`。
+  還沒準備好就不放（選單不會在顯示後變長）。緩慢的（依檔案／資料夾／背景分開判斷）不放進第一層（`context_menu.hide_slow`），`allow_slow` 列出的 CLSID 除外
+  （設定頁的表格逐一切換，`hide_slow` 關閉時表格為灰階）。
   這台電腦會放進第一層的項目與耗時：`cargo test --release -p zing-app ext_items_here -- --ignored --nocapture`。
 - `ShellHost` 的視窗必須是 message-only，執行緒上不可留下頂層視窗：系統啟用視窗時會同步送 WM_ACTIVATEAPP 給程序內所有頂層視窗，主機卡住會連帶卡住 UI。選單的擁有者視窗只在選單顯示期間存在。
 - 拖曳出去與放置目標受 COM 限制必須在 UI 執行緒，透過 `App::modal` 在釋放 App 借用後執行；放置目標每次拖曳只解析一次路徑（快取）。
@@ -96,7 +97,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   新增或修改原文時同步補上 `crates/zing-core/i18n/en.toml`、`ja.toml`，`cargo test -p zing-core i18n` 會檢查缺漏、多餘與參數名稱
   （`ZING_I18N_MISSING=1` 列出缺少的條目）。不翻譯：記錄檔、測試、`guard::io` 的說明、協定字串（`indexproto::UNPARSABLE`）。
   隔離模式（效能、冒煙測試）固定用繁體中文；冒煙測試另有切換成英文、日文的步驟（截圖 `14-英文介面`、`15-日文介面`）。
-- 設定頁（`prefspage.rs`，命令 `settings.open`）：項目定義在 `zing_core::prefs::PREFS`，新增設定時同步加上 `Config::pref_value`／
+- 設定頁（`prefspage.rs`，命令 `settings.open`）：先選分類（`Pref::group`，順序依 `PREFS`）再選項目。項目定義在
+  `zing_core::prefs::PREFS`，新增設定時同步加上 `Config::pref_value`／
   `set_pref` 與設定頁的立即套用（`App::set_pref`）。寫回 config.toml 只改那一行（`prefs::write_pref`，保留註解），改不了（行內表、
   多行字串）就回報錯誤、不寫入；隔離模式不寫檔。與主題編輯面板共用右側位置，兩者只開一個。
 - 介面要讓不會寫程式的人也能用：能用 UI 調整的就不要求改設定檔或寫命令（選單、開關、滑桿、色票，改了立即看到效果）；

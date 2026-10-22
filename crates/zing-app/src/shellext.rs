@@ -7,7 +7,8 @@
 //!
 //! 緩慢的擴充功能：同一個程序中第二次以後連續兩次超過 `SLOW_MS`（偶發的一次不算），或第一次（含載入 DLL）超過
 //! `SLOW_FIRST_MS`，就記在 `%LOCALAPPDATA%\zing-explore\slow-menu-extensions.tsv`（只屬於這台電腦），之後不再放進第一層、
-//! 也不載入（設定 `context_menu.show_slow` 可改為照樣顯示）；完整的 Windows 選單中照常有它們。
+//! 也不載入（設定 `context_menu.hide_slow` 關閉時全部照樣顯示，`allow_slow` 逐一指定照樣顯示的，設定頁的表格即
+//! `slow_list`）；完整的 Windows 選單中照常有它們。
 //! 記錄 `SLOW_EXPIRE` 後失效、重新量（擴充功能更新後可能變快）。
 
 use std::collections::{HashMap, HashSet};
@@ -74,6 +75,72 @@ impl Drop for LoadedExt {
             let _ = DestroyMenu(self.menu);
         }
     }
+}
+
+/// 緩慢的擴充功能的處理方式（設定 `context_menu.hide_slow`、`allow_slow`）
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlowPolicy {
+    pub hide: bool,
+    /// 照樣顯示的 CLSID（小寫）
+    pub allow: Vec<String>,
+}
+
+impl SlowPolicy {
+    pub fn new(cfg: &zing_core::config::ContextMenuConfig) -> Self {
+        SlowPolicy { hide: cfg.hide_slow, allow: cfg.allow_slow.clone() }
+    }
+
+    fn hides(&self, clsid: &str) -> bool {
+        self.hide && !self.allow.iter().any(|a| a == clsid)
+    }
+}
+
+/// 設定頁表格的一列：一個緩慢的擴充功能（同一個 CLSID 的各類型合併）
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlowExt {
+    /// 小寫
+    pub clsid: String,
+    pub name: String,
+    /// 在哪些類型上緩慢（`tr_key!` 的原文：檔案、資料夾、空白處）
+    pub kinds: Vec<&'static str>,
+    /// 最近一次量到的毫秒數（各類型中最大的）
+    pub ms: u32,
+}
+
+const KINDS: [(&str, &str); 3] = [("file", tr_key!("檔案")), ("folder", tr_key!("資料夾")), ("background", tr_key!("空白處"))];
+
+/// 目前判定為緩慢的擴充功能（設定頁的表格；依名稱排序）
+pub fn slow_list(persist: bool) -> Vec<SlowExt> {
+    guard::io("讀取緩慢的右鍵選單擴充功能");
+    let mut out: Vec<SlowExt> = Vec::new();
+    with_slow(persist, |s| {
+        for (key, (name, ms, _)) in &s.map {
+            let (clsid, kind) = key.split_once('|').unwrap_or((key, ""));
+            let kind = KINDS.iter().position(|(k, _)| *k == kind);
+            let e = match out.iter().position(|e| e.clsid == clsid) {
+                Some(k) => &mut out[k],
+                None => {
+                    out.push(SlowExt { clsid: clsid.to_string(), name: name.clone(), kinds: Vec::new(), ms: 0 });
+                    out.last_mut().unwrap()
+                }
+            };
+            e.ms = e.ms.max(*ms);
+            if let Some(k) = kind {
+                e.kinds.push(KINDS[k].1);
+            }
+        }
+    });
+    for e in &mut out {
+        e.kinds.sort_by_key(|k| KINDS.iter().position(|(_, l)| l == k));
+    }
+    out.sort_by_key(|e| e.name.to_lowercase());
+    out
+}
+
+/// 冒煙測試：把一個擴充功能記為緩慢（隔離模式只在記憶體中）
+#[cfg(feature = "smoke")]
+pub fn test_mark_slow(clsid: &str, name: &str, kind: &str, ms: u32) {
+    with_slow(false, |s| s.map.insert(format!("{clsid}|{kind}"), (name.to_string(), ms, now_secs())));
 }
 
 struct Slow {
@@ -331,8 +398,8 @@ pub struct Loaded {
     pub times: Vec<(String, f64)>,
 }
 
-/// 載入第三方擴充功能。`show_slow` 為 false 時跳過已知緩慢的；`persist` 為 false（隔離模式）時不讀寫記錄檔
-pub fn load(items: &[String], folder: &str, show_slow: bool, persist: bool) -> Loaded {
+/// 載入第三方擴充功能。依 `policy` 跳過已知緩慢的；`persist` 為 false（隔離模式）時不讀寫記錄檔
+pub fn load(items: &[String], folder: &str, policy: &SlowPolicy, persist: bool) -> Loaded {
     guard::io("載入右鍵選單擴充功能");
     let mut out = Loaded::default();
     let handlers = third_party_handlers(items);
@@ -351,7 +418,7 @@ pub fn load(items: &[String], folder: &str, show_slow: bool, persist: bool) -> L
     for (key, name, clsid) in handlers {
         let lower = clsid.to_ascii_lowercase();
         let slow_key = format!("{lower}|{kind}");
-        if !show_slow && with_slow(persist, |s| s.map.contains_key(&slow_key)) {
+        if policy.hides(&lower) && with_slow(persist, |s| s.map.contains_key(&slow_key)) {
             out.hidden.push(name);
             continue;
         }
@@ -373,7 +440,7 @@ pub fn load(items: &[String], folder: &str, show_slow: bool, persist: bool) -> L
             }
             slow
         });
-        if slow && !show_slow {
+        if slow && policy.hides(&lower) {
             out.hidden.push(name);
             continue;
         }
@@ -476,7 +543,7 @@ mod tests {
         for round in 0..4 {
             for items in &cases {
                 let t = Instant::now();
-                let r = load(items, &d, false, false);
+                let r = load(items, &d, &SlowPolicy { hide: true, allow: Vec::new() }, false);
                 println!("== 第 {} 輪 {:?}：{:.1} ms，隱藏 {:?}", round + 1, items.first().map(|s| s.rsplit('\\').next().unwrap_or("")), t.elapsed().as_secs_f64() * 1000.0, r.hidden);
                 println!("   {:?}", r.times.iter().map(|(n, ms)| format!("{n} {ms:.1}")).collect::<Vec<_>>());
                 if round == 0 {

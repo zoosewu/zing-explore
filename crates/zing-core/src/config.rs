@@ -123,12 +123,20 @@ pub enum MenuStyle {
     Full,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContextMenuConfig {
     pub style: MenuStyle,
-    /// 精簡選單的第一層也顯示緩慢的第三方擴充功能（預設隱藏，只在「顯示更多選項」中）
-    pub show_slow: bool,
+    /// 緩慢的第三方擴充功能不放進精簡選單的第一層（只在「顯示更多選項」中）
+    pub hide_slow: bool,
+    /// 緩慢但照樣放進第一層的擴充功能（CLSID，小寫）；`hide_slow` 為 false 時不起作用
+    pub allow_slow: Vec<String>,
+}
+
+impl Default for ContextMenuConfig {
+    fn default() -> Self {
+        ContextMenuConfig { style: MenuStyle::default(), hide_slow: true, allow_slow: Vec::new() }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
