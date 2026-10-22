@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
+use zing_core::builtin::Cmd;
 use zing_core::command::{self, Invocation, quote_arg};
 use zing_core::config::{Config, TreeSide};
 use zing_core::enumerate::drives;
@@ -1075,87 +1076,98 @@ impl App {
     }
 
     fn run(&mut self, inv: &Invocation) -> Result<(), String> {
+        let Some(cmd) = Cmd::parse(&inv.name) else {
+            // Lua 腳本定義的命令（全域函式）
+            let other = inv.name.as_str();
+            if !self.scripts.has(other) {
+                return Err(tr!("未知命令：{other}", other));
+            }
+            let ctx = self.script_ctx();
+            let n = self.notifier.clone();
+            self.scripts.call(&n, other, ctx);
+            return Ok(());
+        };
         let p = self.active_pane;
-        match inv.name.as_str() {
-            "nav.back" => self.go_back(),
-            "nav.forward" => self.go_forward(),
-            "nav.up" => self.go_up(),
-            "nav.open" => self.open_focused(),
-            "nav.refresh" => {
+        match cmd {
+            Cmd::NavBack => self.go_back(),
+            Cmd::NavForward => self.go_forward(),
+            Cmd::NavUp => self.go_up(),
+            Cmd::NavOpen => self.open_focused(),
+            Cmd::NavRefresh => {
                 let t = self.panes[p].active;
                 self.refresh(p, t);
             }
-            "nav.home" => self.navigate(p, std::env::var("USERPROFILE").unwrap_or_default(), true),
-            "nav.goto" => {
+            Cmd::NavHome => self.navigate(p, std::env::var("USERPROFILE").unwrap_or_default(), true),
+            Cmd::NavGoto => {
                 let target = inv.flag("path").or_else(|| inv.positional().next()).ok_or(tr!("nav.goto 需要路徑"))?;
                 self.navigate(p, target.to_string(), true);
             }
-            "address.edit" => window::begin_address_edit(self),
-            "palette.open" => self.open_palette(),
-            "search.open" => self.open_search(),
-            "keys.edit" => self.open_keys_panel(),
-            "settings.open" => self.open_settings(),
-            "cmdbar.edit" => self.open_cmdbar_editor(),
-            "cmdbar.hide" => {
+            Cmd::AddressEdit => window::begin_address_edit(self),
+            Cmd::PaletteOpen => self.open_palette(),
+            Cmd::SearchOpen => self.open_search(),
+            Cmd::KeysEdit => self.open_keys_panel(),
+            Cmd::SettingsOpen => self.open_settings(),
+            Cmd::CmdbarEdit => self.open_cmdbar_editor(),
+            Cmd::CmdbarHide => {
                 if let Some(i) = zing_core::prefs::PREFS.iter().position(|p| p.key == "command_bar.visible") {
                     self.set_pref(i, "false".into());
                     self.set_status(tr!("已隱藏命令列；可在設定頁重新顯示"), false);
                 }
             }
-            "jobs.toggle" => self.jobs_toggle(),
-            "jobs.clear" => self.jobs_clear(),
-            "file.copy" | "file.cut" => {
+            Cmd::JobsToggle => self.jobs_toggle(),
+            Cmd::JobsClear => self.jobs_clear(),
+            Cmd::FileCopy | Cmd::FileCut => {
                 let paths = self.tab().target_paths();
                 if paths.is_empty() {
                     return Ok(());
                 }
-                let cut = inv.name == "file.cut";
+                let cut = cmd == Cmd::FileCut;
                 self.shell_host.submit(ShellJob::SetClipboard { paths, cut });
             }
-            "file.paste" => {
+            Cmd::FilePaste => {
                 let dest = self.tab().path.clone();
                 if dest.is_empty() {
                     return Err(tr!("無法貼到「此電腦」").into());
                 }
                 self.shell_host.submit(ShellJob::Paste { dest });
             }
-            "file.delete" => {
+            Cmd::FileDelete => {
                 let paths = self.tab().target_paths();
                 if !paths.is_empty() && !self.tab().path.is_empty() {
                     self.submit_op(FileOp::Delete { paths, permanent: inv.has("permanent") });
                 }
             }
             // 選取多個項目時開啟批次重新命名
-            "file.rename" => {
+            Cmd::FileRename => {
                 if !self.open_batch_rename() {
                     self.start_rename();
                 }
             }
-            "file.batchrename" => {
+            Cmd::FileBatchrename => {
                 if !self.open_batch_rename() {
                     return Err(tr!("請先選取兩個以上的項目").into());
                 }
             }
-            "file.newfolder" => {
+            Cmd::FileNewfolder => {
                 let dir = self.tab().path.clone();
                 if dir.is_empty() {
                     return Err(tr!("無法在「此電腦」建立資料夾").into());
                 }
                 self.submit_op(FileOp::NewFolder { dir });
             }
-            "file.newfile" => {
+            Cmd::FileNewfile => {
                 let dir = self.tab().path.clone();
                 if dir.is_empty() {
                     return Err(tr!("無法在「此電腦」建立檔案").into());
                 }
                 self.submit_op(FileOp::NewFile { dir });
             }
-            "file.properties" => {
+            Cmd::FileProperties => {
                 let paths = self.tab().target_paths();
                 let paths = if paths.is_empty() { vec![self.tab().path.clone()] } else { paths };
                 self.shell_host.submit(ShellJob::Properties { paths });
             }
-            "menu.context" => {
+            Cmd::MenuContext => {
                 // 鍵盤開啟右鍵選單：顯示在焦點項目下方
                 self.layout = self.compute_layout();
                 let tab = self.tab();
@@ -1175,12 +1187,12 @@ impl App {
                 }
                 self.open_context_menu(items, folder, x, y, pt);
             }
-            "file.copypath" => {
+            Cmd::FileCopypath => {
                 let paths = self.tab().target_paths();
                 let text = if paths.is_empty() { self.tab().path.clone() } else { paths.join("\r\n") };
                 self.shell_host.submit(ShellJob::SetText { text, status: tr!("已複製路徑").into(), reply: None });
             }
-            "copy" => {
+            Cmd::Copy => {
                 let dest = inv.flag("to").filter(|d| !d.is_empty()).ok_or(tr!("copy 需要 --to=目的地"))?;
                 let mut sources: Vec<String> = inv.positional().map(String::from).collect();
                 if sources.is_empty() {
@@ -1191,7 +1203,7 @@ impl App {
                 }
                 self.submit_op(FileOp::Transfer { sources, dest: dest.to_string(), mov: inv.has("move") });
             }
-            "run" => {
+            Cmd::Run => {
                 let mut args = inv.positional();
                 let program = args.next().ok_or(tr!("run 需要程式名稱"))?.to_string();
                 let params: Vec<String> = args.map(quote_arg).collect();
@@ -1200,40 +1212,40 @@ impl App {
                 let how = if inv.has("console") { services::Show::Normal } else { services::Show::HideConsole };
                 services::launch(&self.notifier, program, Some(params.join(" ")), Some(dir), None, how);
             }
-            "open" => {
+            Cmd::Open => {
                 for f in inv.positional() {
                     services::launch(&self.notifier, f.to_string(), None, None, None, services::Show::Normal);
                 }
             }
-            "sel.all" => self.tab_mut().select_all(),
-            "sel.none" => self.tab_mut().clear_selection(),
-            "sel.invert" => self.tab_mut().invert_selection(),
-            "tab.new" => {
+            Cmd::SelAll => self.tab_mut().select_all(),
+            Cmd::SelNone => self.tab_mut().clear_selection(),
+            Cmd::SelInvert => self.tab_mut().invert_selection(),
+            Cmd::TabNew => {
                 let target = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
                 self.open_in_new_tab(target);
             }
-            "tab.close" => self.close_tab(p, self.panes[p].active),
-            "tab.next" | "tab.prev" => {
+            Cmd::TabClose => self.close_tab(p, self.panes[p].active),
+            Cmd::TabNext | Cmd::TabPrev => {
                 let pane = &mut self.panes[p];
                 let n = pane.tabs.len();
-                pane.active = if inv.name == "tab.next" { (pane.active + 1) % n } else { (pane.active + n - 1) % n };
+                pane.active = if cmd == Cmd::TabNext { (pane.active + 1) % n } else { (pane.active + n - 1) % n };
                 self.sync_tree();
             }
-            "pane.split" => {
+            Cmd::PaneSplit => {
                 let target = self.tab().path.clone();
                 let tab = self.new_tab(target);
                 self.panes.insert(p + 1, Pane { tabs: vec![tab], active: 0 });
                 self.load(p + 1, 0);
                 self.active_pane = p + 1;
             }
-            "pane.close" => {
+            Cmd::PaneClose => {
                 if self.panes.len() > 1 {
                     self.panes.remove(p);
                     self.active_pane = p.min(self.panes.len() - 1);
                     self.sync_tree();
                 }
             }
-            "pane.focusnext" => {
+            Cmd::PaneFocusnext => {
                 let tree_visible = self.layout.tree.is_some();
                 match self.focus {
                     Focus::Tree => {
@@ -1246,7 +1258,7 @@ impl App {
                 }
                 self.sync_tree();
             }
-            "tree.toggle" => {
+            Cmd::TreeToggle => {
                 if self.tree_side == TreeSide::Hidden {
                     self.tree_side = TreeSide::Left;
                     self.tree_visible = true;
@@ -1257,7 +1269,7 @@ impl App {
                     self.focus = Focus::List;
                 }
             }
-            "view.sort" => {
+            Cmd::ViewSort => {
                 let asc = if inv.has("desc") { Some(false) } else if inv.has("asc") { Some(true) } else { None };
                 // 只有 --asc／--desc：維持目前的排序欄位
                 let key = match inv.flag("by") {
@@ -1267,12 +1279,12 @@ impl App {
                 };
                 self.set_sort(key, asc);
             }
-            "view.foldersizes" => self.compute_folder_sizes(p, false, false),
-            "view.preview" => self.toggle_preview(),
-            "theme.edit" => self.open_theme_editor(),
-            "theme.editfile" => self.open_theme_file(),
-            "theme.import" => self.modal = Some(Modal::ImportTheme),
-            "thumb.set" | "thumb.clear" => {
+            Cmd::ViewFoldersizes => self.compute_folder_sizes(p, false, false),
+            Cmd::ViewPreview => self.toggle_preview(),
+            Cmd::ThemeEdit => self.open_theme_editor(),
+            Cmd::ThemeEditfile => self.open_theme_file(),
+            Cmd::ThemeImport => self.modal = Some(Modal::ImportTheme),
+            Cmd::ThumbSet | Cmd::ThumbClear => {
                 let target = match inv.flag("path") {
                     Some(p) => p.to_string(),
                     None => {
@@ -1280,38 +1292,38 @@ impl App {
                         tab.focused_entry().filter(|_| !tab.view.is_empty()).map(|e| tab.full_path(e)).ok_or(tr!("沒有選取項目"))?
                     }
                 };
-                match (inv.name.as_str(), inv.flag("image")) {
-                    ("thumb.clear", _) => self.thumbs.set_custom(target, None),
+                match (cmd, inv.flag("image")) {
+                    (Cmd::ThumbClear, _) => self.thumbs.set_custom(target, None),
                     (_, Some(img)) => self.thumbs.set_custom(target, Some(img.to_string())),
                     _ => self.modal = Some(Modal::PickThumb { path: target }),
                 }
             }
-            "theme.export" => self.export_theme(),
-            "view.mode" => {
+            Cmd::ThemeExport => self.export_theme(),
+            Cmd::ViewMode => {
                 let mode = inv.flag("mode").or_else(|| inv.positional().next()).unwrap_or("list").to_string();
                 self.set_view_mode(p, &mode)?;
             }
-            "view.thumbsize" => {
+            Cmd::ViewThumbsize => {
                 let delta = inv.flag("delta").and_then(|d| d.parse::<i32>().ok()).ok_or(tr!("view.thumbsize 需要 --delta="))?;
                 self.zoom_thumbs(p, delta);
             }
-            "index.install" | "index.uninstall" | "index.status" => self.index_command(&inv.name),
-            "view.togglehidden" => {
+            Cmd::IndexInstall | Cmd::IndexUninstall | Cmd::IndexStatus => self.index_command(&inv.name),
+            Cmd::ViewTogglehidden => {
                 self.set_show_hidden(!self.show_hidden);
                 let show_hidden = self.show_hidden;
                 self.set_status(if show_hidden { tr!("顯示隱藏檔案") } else { tr!("不顯示隱藏檔案") }, false);
             }
-            "filter.clear" => self.set_filter(String::new()),
-            "filter.set" => self.set_filter(inv.flag("text").unwrap_or_default().to_string()),
-            "favorites.add" => {
+            Cmd::FilterClear => self.set_filter(String::new()),
+            Cmd::FilterSet => self.set_filter(inv.flag("text").unwrap_or_default().to_string()),
+            Cmd::FavoritesAdd => {
                 let target = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
                 self.add_favorite(target)?;
             }
-            "favorites.remove" => {
+            Cmd::FavoritesRemove => {
                 let target = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
                 self.remove_favorite(&target)?;
             }
-            "favorites.move" => {
+            Cmd::FavoritesMove => {
                 let by = inv.flag("by").and_then(|d| d.parse::<isize>().ok()).ok_or(tr!("favorites.move 需要 --by=（負數往上）"))?;
                 // 預設：樹狀列焦點所在的我的最愛，否則目前資料夾
                 let focused = self.tree.nodes.get(self.tree.focus).filter(|n| self.focus == Focus::Tree && n.kind == NodeKind::Favorite);
@@ -1321,17 +1333,17 @@ impl App {
                 };
                 self.move_favorite(&target, by)?;
             }
-            "theme.set" => {
+            Cmd::ThemeSet => {
                 let name = inv.flag("name").or_else(|| inv.positional().next()).ok_or(tr!("theme.set 需要 --name="))?.to_string();
                 self.load_theme_by_name(name);
             }
-            "theme.toggle" => {
+            Cmd::ThemeToggle => {
                 // 同一風格的另一種深淺色
                 let theme = self.theme.toggled();
                 self.theme_name = theme.name.clone();
                 self.apply_theme(theme);
             }
-            "config.edit" => {
+            Cmd::ConfigEdit => {
                 let n = self.notifier.clone();
                 self.pool.spawn(move || match settings::ensure_user_config() {
                     Ok(p) => services::launch(
@@ -1345,19 +1357,12 @@ impl App {
                     Err(e) => n.status(tr!("無法建立設定檔：{e}", e), true),
                 });
             }
-            "config.reload" => self.reload_config(),
-            "script.reload" => {
+            Cmd::ConfigReload => self.reload_config(),
+            Cmd::ScriptReload => {
                 let n = self.notifier.clone();
                 self.scripts.load(&n, self.isolated);
             }
-            "app.exit" => window::close(self.hwnd),
-            // Lua 腳本定義的命令（全域函式）
-            other if self.scripts.has(other) => {
-                let ctx = self.script_ctx();
-                let n = self.notifier.clone();
-                self.scripts.call(&n, other, ctx);
-            }
-            other => return Err(tr!("未知命令：{other}", other)),
+            Cmd::AppExit => window::close(self.hwnd),
         }
         Ok(())
     }

@@ -2,8 +2,9 @@
 //!
 //! `docs/lua.md`（使用者文件，另有 `lua.en.md`、`lua.ja.md`）與 `zing.d.lua`（Lua Language Server 的自動補全定義）
 //! 都由這裡產生；說明文字以 `tr_key!` 標記，翻譯在 `i18n/*.toml`。
-//! 測試會確認文件與這裡一致、zing-app 的命令分派與 `COMMANDS` 一致、內建函式庫的每個全域函式都有說明。
-//! 修改 API 時改這裡（並補上翻譯），再以 `ZING_UPDATE_DOCS=1 cargo test -p zing-core` 更新文件。
+//! 內建命令的說明在 `builtin`（命令表），這裡只有全域函式、函式庫與事件。
+//! 測試會確認文件與這裡一致、內建函式庫的每個全域函式都有說明。
+//! 修改 API 時改這裡或 `builtin`（並補上翻譯），再以 `ZING_UPDATE_DOCS=1 cargo test -p zing-core` 更新文件。
 
 use crate::i18n::{Lang, tr_in};
 
@@ -16,109 +17,12 @@ pub struct Spec {
     pub example: &'static str,
 }
 
-const fn spec(name: &'static str, sig: &'static [&'static str], summary: &'static str, example: &'static str) -> Spec {
+pub(crate) const fn spec(name: &'static str, sig: &'static [&'static str], summary: &'static str, example: &'static str) -> Spec {
     Spec { name, sig, summary, example }
 }
 
-/// 內建命令。在 Lua 中以函式呼叫：`nav.up()`、`view.mode("list")`、`copy{ to = "D:\\", move = true }`。
-/// 字串、數字參數是位置參數；表格中的整數鍵是位置參數（清單會展開），字串鍵是 `--鍵=值`（`true` 為 `--鍵`）。
-pub const COMMANDS: &[Spec] = &[
-    spec("nav.back", &[], tr_key!("上一頁"), "nav.back()"),
-    spec("nav.forward", &[], tr_key!("下一頁"), "nav.forward()"),
-    spec("nav.up", &[], tr_key!("上一層"), "nav.up()"),
-    spec("nav.open", &[], tr_key!("開啟焦點項目（資料夾進入、檔案以預設程式開啟）"), "nav.open()"),
-    spec("nav.refresh", &[], tr_key!("重新整理"), "nav.refresh()"),
-    spec("nav.home", &[], tr_key!("回到使用者資料夾"), "nav.home()"),
-    spec("nav.goto", &[tr_key!("path string 路徑")], tr_key!("切換到資料夾（同 `go`）"), tr_key!("nav[\"goto\"](\"C:\\\\Windows\") -- goto 是 Lua 的保留字，要這樣寫；也可以用 go()")),
-    spec("address.edit", &[], tr_key!("編輯網址列"), "address.edit()"),
-    spec("palette.open", &[], tr_key!("開啟命令面板"), "palette.open()"),
-    spec("search.open", &[], tr_key!("全磁碟搜尋：以名稱、路徑搜尋所有 NTFS 磁碟，可篩選與排序（語法見 README；需要 NTFS 索引服務）"), "search.open()"),
-    spec("jobs.toggle", &[], tr_key!("顯示／隱藏檔案作業面板"), "jobs.toggle()"),
-    spec("jobs.clear", &[], tr_key!("清除已完成的檔案作業"), "jobs.clear()"),
-    spec("file.copy", &[], tr_key!("複製選取項目到剪貼簿"), "file.copy()"),
-    spec("file.cut", &[], tr_key!("剪下選取項目到剪貼簿"), "file.cut()"),
-    spec("file.paste", &[], tr_key!("貼上剪貼簿的檔案到目前資料夾"), "file.paste()"),
-    spec("file.delete", &[tr_key!("opts? {permanent?: boolean} permanent 為 true 時不經資源回收筒")], tr_key!("刪除選取項目"), "file.delete{ permanent = true }"),
-    spec("file.rename", &[], tr_key!("重新命名（選取多個項目時為批次重新命名）"), "file.rename()"),
-    spec("file.batchrename", &[], tr_key!("批次重新命名選取的項目"), "file.batchrename()"),
-    spec("file.newfolder", &[], tr_key!("在目前資料夾建立新資料夾"), "file.newfolder()"),
-    spec("file.properties", &[], tr_key!("顯示選取項目的內容對話框"), "file.properties()"),
-    spec("menu.context", &[], tr_key!("顯示焦點項目的右鍵選單"), "menu.context()"),
-    spec("file.copypath", &[], tr_key!("複製選取項目的完整路徑"), "file.copypath()"),
-    spec(
-        "copy",
-        &[
-            tr_key!("args {to: string, move?: boolean, [integer]: string} to 為目的資料夾；位置參數為來源（省略時為選取項目）"),
-            "overload fun(sources: string[]|string, opts: {to: string, move?: boolean})",
-        ],
-        tr_key!("複製或移動到指定資料夾（經檔案作業佇列）"),
-        tr_key!("copy{ to = \"D:\\\\備份\", move = true }"),
-    ),
-    spec(
-        "run",
-        &[
-            tr_key!("program string 程式"),
-            tr_key!("... string|{wait?: boolean, console?: boolean} 參數；表格的 wait = true 等程式結束並回傳結束代碼（只在腳本中，等待不計入時間上限），console = true 顯示主控台視窗（互動式終端機）"),
-            tr_key!("return integer?, string? 結束代碼（wait 時）；無法啟動時為 nil 與錯誤訊息"),
-            "overload fun(args: {[integer]: string, wait?: boolean, console?: boolean}): integer?, string?",
-        ],
-        tr_key!("執行程式（在目前資料夾）。主控台程式（含 .bat、.cmd）不顯示主控台視窗，視窗程式照常顯示；設定檔中以 `run --console 程式` 顯示主控台"),
-        "run(\"code\", cwd())\nlocal code = run{ \"tar\", \"-xf\", \"a.zip\", \"-C\", \"D:\\\\out\", wait = true }\nrun{ \"pwsh\", console = true }",
-    ),
-    spec("open", &[tr_key!("... string 檔案")], tr_key!("以預設程式開啟檔案"), "open(\"C:\\\\a.pdf\")"),
-    spec("sel.all", &[], tr_key!("全選"), "sel.all()"),
-    spec("sel.none", &[], tr_key!("取消選取"), "sel.none()"),
-    spec("sel.invert", &[], tr_key!("反向選取"), "sel.invert()"),
-    spec("tab.new", &["opts? {path?: string}"], tr_key!("開新分頁（預設為目前資料夾）"), "tab.new{ path = \"C:\\\\\" }"),
-    spec("tab.close", &[], tr_key!("關閉分頁"), "tab.close()"),
-    spec("tab.next", &[], tr_key!("下一個分頁"), "tab.next()"),
-    spec("tab.prev", &[], tr_key!("上一個分頁"), "tab.prev()"),
-    spec("pane.split", &[], tr_key!("分割出新窗格"), "pane.split()"),
-    spec("pane.close", &[], tr_key!("關閉窗格"), "pane.close()"),
-    spec("pane.focusnext", &[], tr_key!("切換到下一個窗格"), "pane.focusnext()"),
-    spec("tree.toggle", &[], tr_key!("顯示／隱藏樹狀列"), "tree.toggle()"),
-    spec("view.sort", &[tr_key!("opts {by?: \"name\"|\"modified\"|\"type\"|\"size\", asc?: boolean, desc?: boolean} 只給 asc／desc 時維持目前的欄位")], tr_key!("排序"), "view.sort{ by = \"size\", desc = true }"),
-    spec("view.foldersizes", &[], tr_key!("計算資料夾大小"), "view.foldersizes()"),
-    spec(
-        "thumb.set",
-        &[tr_key!("opts? {path?: string, image?: string} path 預設為目前的項目；沒有 image 時開啟選擇圖片的對話框")],
-        tr_key!("手動指定縮圖（圖片複製到 %LOCALAPPDATA%，以 NTFS 檔案 ID 為鍵，改名或移動後仍有效）"),
-        tr_key!("thumb.set{ image = \"D:\\\\封面.jpg\" }"),
-    ),
-    spec("thumb.clear", &["opts? {path?: string}"], tr_key!("移除手動指定的縮圖"), "thumb.clear()"),
-    spec("cmdbar.edit", &[], tr_key!("開啟自訂命令列的面板（結果存在程式旁的 toolbar.toml）"), "cmdbar.edit()"),
-    spec("cmdbar.hide", &[], tr_key!("隱藏命令列（寫回 config.toml 的 command_bar.visible）"), "cmdbar.hide()"),
-    spec("file.newfile", &[], tr_key!("在目前的資料夾新增文字文件並進入重新命名"), "file.newfile()"),
-    spec("settings.open", &[], tr_key!("開啟設定頁（修改會寫回 config.toml 的對應行，保留註解）"), "settings.open()"),
-    spec("keys.edit", &[], tr_key!("開啟快速鍵編輯器（結果存在程式旁的 keys.toml）"), "keys.edit()"),
-    spec("view.preview", &[], tr_key!("顯示／隱藏預覽窗格"), "view.preview()"),
-    spec("view.mode", &["mode \"list\"|\"small\"|\"medium\"|\"large\"|\"thumbnails\""], tr_key!("切換清單／縮圖檢視"), "view.mode(\"medium\")"),
-    spec("view.thumbsize", &[tr_key!("opts {delta: integer} 加減的像素")], tr_key!("調整縮圖大小"), "view.thumbsize{ delta = 16 }"),
-    spec("view.togglehidden", &[], tr_key!("顯示／隱藏隱藏檔案"), "view.togglehidden()"),
-    spec("index.install", &[], tr_key!("啟用 NTFS 索引服務（需要系統管理員權限）"), "index.install()"),
-    spec("index.uninstall", &[], tr_key!("移除 NTFS 索引服務"), "index.uninstall()"),
-    spec("index.status", &[], tr_key!("顯示 NTFS 索引服務狀態"), "index.status()"),
-    spec("filter.clear", &[], tr_key!("清除篩選"), "filter.clear()"),
-    spec("filter.set", &[tr_key!("opts {text: string} 篩選文字（可用 * ? 萬用字元）")], tr_key!("設定篩選"), "filter.set{ text = \"*.jpg\" }"),
-    spec("favorites.add", &["opts? {path?: string}"], tr_key!("加入我的最愛（預設為目前資料夾）"), "favorites.add()"),
-    spec("favorites.remove", &["opts? {path?: string}"], tr_key!("從我的最愛移除"), "favorites.remove{ path = cwd() }"),
-    spec(
-        "favorites.move",
-        &[tr_key!("opts {by: integer, path?: string} by 為移動的位置數（負數往上）；path 預設為樹狀列焦點所在的我的最愛，否則目前資料夾")],
-        tr_key!("調整我的最愛的順序（記在 session.toml，設定檔中的也能調整）"),
-        "favorites.move{ by = -1 }",
-    ),
-    spec("theme.set", &[tr_key!("name string 主題名稱")], tr_key!("切換主題"), "theme.set(\"fluent\")"),
-    spec("theme.toggle", &[], tr_key!("切換深色／淺色（保留風格）"), "theme.toggle()"),
-    spec("theme.edit", &[], tr_key!("開啟主題編輯器"), "theme.edit()"),
-    spec("theme.editfile", &[], tr_key!("以文字編輯器開啟目前的主題檔"), "theme.editfile()"),
-    spec("theme.import", &[], tr_key!("匯入主題"), "theme.import()"),
-    spec("theme.export", &[], tr_key!("匯出目前的主題"), "theme.export()"),
-    spec("config.edit", &[], tr_key!("以文字編輯器開啟設定檔"), "config.edit()"),
-    spec("config.reload", &[], tr_key!("重新載入設定"), "config.reload()"),
-    spec("script.reload", &[], tr_key!("重新載入 Lua 腳本"), "script.reload()"),
-    spec("app.exit", &[], tr_key!("結束程式"), "app.exit()"),
-];
+/// 內建命令（`builtin::SPECS`）
+pub const COMMANDS: &[Spec] = crate::builtin::SPECS;
 
 /// 與目前狀態、使用者互動的全域函式
 pub const GLOBALS: &[Spec] = &[

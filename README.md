@@ -199,4 +199,4 @@ address = "path"        # path（完整路徑）| breadcrumb（麵包屑）
 
 介面文字以繁體中文為原文，翻譯在 `crates/zing-core/i18n/en.toml`、`ja.toml`（`"原文" = "翻譯"`）。
 `cargo test -p zing-core i18n` 會檢查每個原文都有翻譯、參數名稱一致；`ZING_I18N_MISSING=1` 時列出缺少的條目。
-Lua API 文件（`docs/lua*.md`）由 `scriptapi.rs` 與同一份翻譯產生。
+Lua API 文件（`docs/lua*.md`）由 `scriptapi.rs`、`builtin.rs`（內建命令）與同一份翻譯產生。

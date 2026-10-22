@@ -13,7 +13,7 @@ pub const MENU_SORT: &str = "menu.sort";
 pub const MENU_VIEW: &str = "menu.view";
 pub const MENU_MORE: &str = "menu.more";
 /// 在終端機開啟目前的資料夾（舊版預設工具列的「終端機」按鈕）
-pub const TERMINAL: &str = "run wt.exe -d {path}";
+pub use crate::builtin::TERMINAL;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
@@ -214,42 +214,12 @@ pub fn in_menus(cmd: &str) -> bool {
     [NEW_MENU, SORT_MENU, VIEW_MENU, MORE_MENU].iter().any(|m| walk(m, cmd))
 }
 
-/// 命令列與選單上的短名稱（命令面板的標題較長，會附說明）
+/// 下拉選單按鈕的名稱（命令的短名稱在 `builtin::PRESETS`）
 const LABELS: &[(&str, &str)] = &[
     (MENU_NEW, tr_key!("新增")),
     (MENU_SORT, tr_key!("排序")),
     (MENU_VIEW, tr_key!("檢視")),
     (MENU_MORE, tr_key!("更多")),
-    ("file.newfolder", tr_key!("資料夾")),
-    ("file.newfile", tr_key!("文字文件")),
-    ("file.delete", tr_key!("刪除")),
-    ("file.delete --permanent", tr_key!("永久刪除")),
-    ("file.batchrename", tr_key!("批次重新命名")),
-    ("view.sort --by=name", tr_key!("名稱")),
-    ("view.sort --by=modified", tr_key!("修改日期")),
-    ("view.sort --by=type", tr_key!("類型")),
-    ("view.sort --by=size", tr_key!("大小")),
-    ("view.sort --asc", tr_key!("遞增")),
-    ("view.sort --desc", tr_key!("遞減")),
-    ("view.mode list", tr_key!("清單")),
-    ("view.mode small", tr_key!("小縮圖")),
-    ("view.mode medium", tr_key!("中縮圖")),
-    ("view.mode large", tr_key!("大縮圖")),
-    ("view.preview", tr_key!("預覽窗格")),
-    ("tree.toggle", tr_key!("樹狀列")),
-    ("view.togglehidden", tr_key!("隱藏的項目")),
-    ("thumb.set", tr_key!("設定縮圖…")),
-    ("thumb.clear", tr_key!("移除自訂縮圖")),
-    (TERMINAL, tr_key!("在終端機開啟")),
-    ("search.open", tr_key!("全磁碟搜尋")),
-    ("jobs.toggle", tr_key!("檔案作業")),
-    ("index.status", tr_key!("NTFS 索引服務狀態")),
-    ("theme.toggle", tr_key!("切換深色／淺色")),
-    ("theme.edit", tr_key!("自訂主題…")),
-    ("cmdbar.edit", tr_key!("自訂命令列…")),
-    ("keys.edit", tr_key!("編輯快速鍵…")),
-    ("settings.open", tr_key!("設定")),
-    ("app.exit", tr_key!("結束")),
 ];
 
 /// 命令的顯示名稱：短名稱、命令面板的標題，都沒有就是命令本身
@@ -257,7 +227,7 @@ pub fn label_for(cmd: &str) -> &str {
     if let Some((_, l)) = LABELS.iter().find(|(c, _)| *c == cmd) {
         return crate::i18n::tr(l);
     }
-    crate::palette::BUILTIN.iter().find(|(c, _)| *c == cmd).map_or(cmd, |(_, t)| crate::i18n::tr(t))
+    crate::builtin::preset(cmd).and_then(|p| p.short.or(p.title)).map_or(cmd, |t| crate::i18n::tr(t))
 }
 
 /// Fluent 圖示（自訂按鈕時可選）：（名稱, 字元）
@@ -321,63 +291,21 @@ pub fn default_icon(cmd: &str) -> Option<&'static str> {
         MENU_SORT => "sort",
         MENU_VIEW => "view",
         MENU_MORE => "more",
-        "file.newfolder" => "new-folder",
-        "file.newfile" => "document",
-        "file.cut" => "cut",
-        "file.copy" | "copy --to={dest}" => "copy",
-        "file.paste" => "paste",
-        "file.rename" | "file.batchrename" => "rename",
-        "file.delete" | "file.delete --permanent" => "delete",
-        "file.properties" => "properties",
-        "file.copypath" => "link",
-        TERMINAL => "terminal",
-        "settings.open" => "settings",
-        "search.open" => "search",
-        "favorites.add" | "favorites.remove" => "star",
-        "nav.home" => "home",
-        "sel.all" | "sel.invert" | "sel.none" => "select-all",
-        "pane.split" | "pane.close" | "pane.focusnext" => "split",
-        "view.preview" => "preview",
-        "tree.toggle" => "tree",
-        "view.togglehidden" => "hidden",
-        "view.foldersizes" => "size",
-        "tab.new" | "tab.close" | "tab.next" | "tab.prev" => "tab",
-        "theme.toggle" | "theme.edit" => "edit",
-        "keys.edit" | "cmdbar.edit" => "settings",
-        "thumb.set" | "thumb.clear" => "photo",
-        "nav.refresh" => "sync",
-        c if c.starts_with("view.mode") => "view",
-        c if c.starts_with("view.sort") => "sort",
-        c if c.starts_with("run ") => "terminal",
-        _ => return None,
+        _ => crate::builtin::Cmd::of_script(cmd)?.icon()?,
     };
     glyph(name)
 }
 
-/// 命令的分組（原文，顯示時 `i18n::tr`）：自訂命令列與快速鍵編輯面板共用
-pub fn group_of(cmd: &str) -> &'static str {
-    let head = cmd.split(['.', ' ']).next().unwrap_or("");
-    match head {
-        "nav" | "address" => tr_key!("導覽"),
-        "file" | "copy" | "thumb" | "menu" => tr_key!("檔案"),
-        "sel" => tr_key!("選取"),
-        "view" | "tree" | "filter" => tr_key!("檢視"),
-        "tab" | "pane" | "jobs" => tr_key!("分頁與窗格"),
-        "favorites" => tr_key!("我的最愛"),
-        "theme" => tr_key!("外觀"),
-        "search" | "index" => tr_key!("工具"),
-        _ => tr_key!("其他"),
-    }
-}
+pub use crate::builtin::group_of;
 
 /// 自訂面板「可加入的命令」的分組：（分組名稱, 命令）。腳本的命令由程式另外加上
 pub fn catalog() -> Vec<(&'static str, Vec<&'static str>)> {
     let mut out: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
     let cmds = [MENU_NEW, MENU_SORT, MENU_VIEW, MENU_MORE, "file.newfile", TERMINAL, "cmdbar.edit"]
         .into_iter()
-        .chain(crate::palette::BUILTIN.iter().map(|(c, _)| *c));
+        .chain(crate::builtin::palette().map(|(c, _)| c));
     for cmd in cmds {
-        let g = if cmd.starts_with("menu.") { tr_key!("選單") } else { group_of(cmd) };
+        let g = if cmd.starts_with("menu.") && crate::builtin::Cmd::of_script(cmd).is_none() { tr_key!("選單") } else { group_of(cmd) };
         match out.iter_mut().find(|(n, _)| *n == g) {
             Some((_, v)) => {
                 if !v.contains(&cmd) {

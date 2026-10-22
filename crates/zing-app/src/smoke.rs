@@ -1560,7 +1560,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("命令面板：Ctrl+Shift+P 開啟", |c| key(c, "cs", letter('p')), |_, a| {
         palette_open(a)?;
         let n = a.palette.as_ref().map_or(0, |p| p.matches.len());
-        if n >= zing_core::palette::BUILTIN.len() { Ok(()) } else { Err(format!("只列出 {n} 個命令")) }
+        if n >= zing_core::builtin::palette().count() { Ok(()) } else { Err(format!("只列出 {n} 個命令")) }
     }));
     v.push(step("命令面板：輸入文字篩選", |_| palette_type("隱藏檔"), |_, a| {
         expect("第一項", palette_top(a).as_deref(), Some("view.togglehidden"))

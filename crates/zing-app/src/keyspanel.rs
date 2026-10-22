@@ -9,7 +9,6 @@
 
 use zing_core::keyedit;
 use zing_core::keymap::KeyChord;
-use zing_core::palette::BUILTIN;
 
 use crate::app::{App, EditKind};
 use crate::gfx::{Font, Rect};
@@ -60,7 +59,7 @@ impl App {
     /// 所有命令：（命令, 名稱）—內建、命令列的自訂按鈕、腳本、設定檔中綁定的其他命令
     fn key_commands(&self) -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> = vec![("palette.open".into(), tr!("命令面板").into())];
-        v.extend(BUILTIN.iter().map(|&(cmd, title)| (cmd.to_string(), zing_core::i18n::tr(title).to_string())));
+        v.extend(zing_core::builtin::palette().map(|(cmd, title)| (cmd.to_string(), zing_core::i18n::tr(title).to_string())));
         for it in self.config.cmdbar.iter().filter(|i| !i.is_separator() && !i.is_menu()) {
             if !v.iter().any(|(c, _)| *c == it.cmd) {
                 v.push((it.cmd.clone(), it.title()));

@@ -199,4 +199,4 @@ Every change must pass `pwsh tools/perf.ps1` and `pwsh tools/smoke.ps1` (thresho
 
 UI text is written in Traditional Chinese, which is the key; translations are in `crates/zing-core/i18n/en.toml` and `ja.toml` (`"source" = "translation"`).
 `cargo test -p zing-core i18n` checks that every source string is translated and that parameter names match; with `ZING_I18N_MISSING=1` it lists the missing entries.
-The Lua API documents (`docs/lua*.md`) are generated from `scriptapi.rs` with the same translations.
+The Lua API documents (`docs/lua*.md`) are generated from `scriptapi.rs` and `builtin.rs` (built-in commands) with the same translations.

@@ -1447,28 +1447,4 @@ mod tests {
         let t = titles("--- 整理相片\nfunction sort_photos()\nend\nlocal function helper() end\n--- 另一個\nother = function() end\nfunction no_doc() end");
         assert_eq!(t, vec![("sort_photos".to_string(), "整理相片".to_string()), ("other".to_string(), "另一個".to_string())]);
     }
-
-    #[test]
-    fn app_commands_match_scriptapi() {
-        // app.rs 的命令分派（"名稱" =>）與 scriptapi::COMMANDS 必須一致，文件才不會漏
-        let src = include_str!("app.rs").replace("\r\n", "\n");
-        let start = src.find("fn run(&mut self, inv: &Invocation)").unwrap();
-        let body = &src[start..];
-        let end = body.find("\n    }\n").unwrap();
-        let mut found = std::collections::BTreeSet::new();
-        for line in body[..end].lines() {
-            let t = line.trim_start();
-            if !t.starts_with('"') || !t.contains("=>") {
-                continue;
-            }
-            for part in t.split("=>").next().unwrap().split('|') {
-                let name = part.trim().trim_matches('"');
-                if !name.is_empty() && !name.contains(' ') {
-                    found.insert(name.to_string());
-                }
-            }
-        }
-        let want: std::collections::BTreeSet<String> = scriptapi::COMMANDS.iter().map(|c| c.name.to_string()).collect();
-        assert_eq!(found, want, "app.rs 的命令與 scriptapi::COMMANDS 不一致");
-    }
 }

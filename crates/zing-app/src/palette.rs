@@ -1,12 +1,12 @@
 //! 命令面板（Ctrl+Shift+P）。輸入框沿用 Win32 EDIT（支援輸入法），清單由 D2D 繪製。
 //!
-//! 清單：內建命令（zing_core::palette::BUILTIN）＋工具列按鈕＋設定檔中綁定的其他命令。
+//! 清單：內建命令（zing_core::builtin::palette）＋工具列按鈕＋設定檔中綁定的其他命令。
 //! 以 `>` 開頭的輸入直接當成命令腳本執行。
 //! 全磁碟搜尋（search.rs）也用這個面板：`search` 有值時清單是搜尋結果。
 //! 快速鍵編輯器（keys.rs）也是：`keys` 有值時 Enter 改為錄製新的按鍵，底部多一列說明。
 
 use zing_core::config::PalettePosition;
-use zing_core::palette::{BUILTIN, Entry, filter, touch_recent};
+use zing_core::palette::{Entry, filter, touch_recent};
 use zing_core::theme::Color;
 
 use crate::app::App;
@@ -71,7 +71,7 @@ impl App {
     fn palette_entries(&self) -> Vec<Entry> {
         let key = |cmd: &str| self.config.key_for(cmd).map(|k| k.to_string());
         let mut v: Vec<Entry> =
-            BUILTIN.iter().map(|&(cmd, title)| Entry { title: zing_core::i18n::tr(title).into(), cmd: cmd.into(), key: key(cmd) }).collect();
+            zing_core::builtin::palette().map(|(cmd, title)| Entry { title: zing_core::i18n::tr(title).into(), cmd: cmd.into(), key: key(cmd) }).collect();
         for b in &self.config.buttons {
             if !v.iter().any(|e| e.cmd == b.cmd) {
                 v.push(Entry { title: tr!("按鈕：{label}", label = zing_core::i18n::tr_str(&b.label)), cmd: b.cmd.clone(), key: key(&b.cmd) });

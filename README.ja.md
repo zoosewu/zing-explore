@@ -199,4 +199,4 @@ address = "path"        # path（フルパス）| breadcrumb（パンくずリ�
 
 画面の文字は繁体字中国語を原文（キー）とし、翻訳は `crates/zing-core/i18n/en.toml`、`ja.toml`（`"原文" = "翻訳"`）にあります。
 `cargo test -p zing-core i18n` で、すべての原文に翻訳があり引数の名前が一致しているかを確認します。`ZING_I18N_MISSING=1` を付けると不足している項目を一覧表示します。
-Lua API の文書（`docs/lua*.md`）は `scriptapi.rs` と同じ翻訳から生成されます。
+Lua API の文書（`docs/lua*.md`）は `scriptapi.rs`、`builtin.rs`（組み込みコマンド）と同じ翻訳から生成されます。

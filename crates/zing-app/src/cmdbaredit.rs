@@ -89,7 +89,7 @@ impl App {
 
     /// 搜尋結果：符合的命令（保留分組標題），最後是自訂命令
     fn bar_search_rows(&self, q: &str) -> Vec<Row> {
-        let long = |cmd: &str| zing_core::palette::BUILTIN.iter().find(|(c, _)| *c == cmd).map_or("", |(_, t)| zing_core::i18n::tr(t));
+        let long = |cmd: &str| zing_core::builtin::preset(cmd).and_then(|p| p.title).map_or("", zing_core::i18n::tr);
         let hit = |cmd: &str, title: &str| [cmd, title, long(cmd)].iter().any(|s| s.to_lowercase().contains(q));
         let mut out = vec![Row::Header(tr!("搜尋結果"))];
         let mut groups: Vec<(&'static str, Vec<Row>)> = core::catalog()
