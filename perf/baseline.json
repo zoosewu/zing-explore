@@ -1,13 +1,14 @@
 {
-  "exe_mb": 4.09,
+  "exe_mb": 4.248,
   "startup_ms": 50.01,
-  "private_working_set_mb": 18.16,
-  "first_screen_ms": 28.03,
-  "load_all_ms": 158.52,
-  "frame_p50_ms": 2.24,
-  "frame_p99_ms": 3.13,
-  "frame_max_ms": 20.31,
-  "theme_switch_ms": 2.67,
+  "private_working_set_mb": 18.87,
+  "first_screen_ms": 16.97,
+  "load_all_ms": 144.12,
+  "frame_p50_ms": 2.41,
+  "frame_p99_ms": 3.28,
+  "frame_max_ms": 18.47,
+  "frames_over_8ms": 1.0,
+  "theme_switch_ms": 3.1,
   "listing_mb": 10.0,
   "scroll_warp": 0.0
 }
