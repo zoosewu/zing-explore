@@ -29,6 +29,7 @@ use windows::core::{PCWSTR, w};
 use crate::app::{
     App, Edit, EditKind, Modal, TIMER_EXIT, TIMER_JOBS, TIMER_PERF, TIMER_PERF_GPU, TIMER_REFRESH, TIMER_SMOKE, TIMER_STATUS,
 };
+use crate::edit;
 use crate::input::Mods;
 use crate::services::{TabId, WM_APP_NOTIFY};
 use crate::shell::{self, DropTarget};
@@ -312,24 +313,16 @@ pub fn refresh_edit_style(app: &App) {
     }
 }
 
-/// 編輯框子類別資料：命令面板的輸入框（方向鍵轉給面板、失去焦點時取消）
-const EDIT_PALETTE: usize = 1;
-/// 批次重新命名的輸入框（按鍵轉給面板、失去焦點不結束）
-const EDIT_BATCH: usize = 2;
-/// Lua 腳本 ask() 的輸入框（失去焦點時視為取消）
-const EDIT_ASK: usize = 3;
+/// 編輯框子類別資料：批次重新命名的輸入框（按鍵轉給面板、失去焦點不結束）。
+/// `App::edit` 的輸入框用 `EditKind::subclass_data` 的旗標
+const EDIT_BATCH: usize = 0x100;
 
 /// 建立編輯框。`rect` 為 DIP；`sel_end` 為預設選取的結尾（UTF-16 單位）
 fn create_edit(app: &mut App, rect: crate::gfx::Rect, text: &str, sel_end: usize, kind: EditKind) {
     if let Some(old) = app.edit.take() {
         destroy_edit(old.hwnd);
     }
-    let data = match kind {
-        EditKind::Palette => EDIT_PALETTE,
-        EditKind::Ask => EDIT_ASK,
-        _ => 0,
-    };
-    if let Some(hwnd) = make_edit(app, rect, text, sel_end, data) {
+    if let Some(hwnd) = make_edit(app, rect, text, sel_end, kind.subclass_data()) {
         focus_edit(hwnd);
         app.edit = Some(Edit { hwnd, kind, frame: None, fit: None });
     }
@@ -557,7 +550,7 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 return LRESULT(0);
             }
             // 命令面板：上下鍵、PageUp/PageDown 移動清單選取
-            WM_KEYDOWN if data == EDIT_PALETTE && matches!(wparam.0, 0x21 | 0x22 | 0x26 | 0x28) => {
+            WM_KEYDOWN if data & edit::LIST_KEYS != 0 && matches!(wparam.0, 0x21 | 0x22 | 0x26 | 0x28) => {
                 let delta = match wparam.0 {
                     0x26 => -1,
                     0x28 => 1,
@@ -569,7 +562,7 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             }
             // 搜尋面板：Ctrl+1–5 依名稱、路徑、副檔名、大小、日期排序（再按一次反向），Ctrl+0 取消排序。
             // 改寫輸入框的內容（EN_CHANGE 會照常查詢）；在 with_app 之外設定，EN_CHANGE 才能再借用 App
-            WM_KEYDOWN if data == EDIT_PALETTE && (0x30..=0x35).contains(&wparam.0) && Mods::current().ctrl => {
+            WM_KEYDOWN if data & edit::LIST_KEYS != 0 && (0x30..=0x35).contains(&wparam.0) && Mods::current().ctrl => {
                 let key = wparam.0.checked_sub(0x31).map(|i| zing_core::namequery::SortKey::ALL[i]);
                 if let Some(Some(text)) = with_app(|a| a.search_sort_text(key)) {
                     let w = zing_core::text::wide_z(&text);
@@ -585,8 +578,8 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 return LRESULT(0);
             }
             WM_CHAR if wparam.0 == 0x0D || wparam.0 == 0x1B || wparam.0 == 0x01 => return LRESULT(0),
-            // 失去焦點：重新命名、網址列視為確認；命令面板視為取消
-            WM_KILLFOCUS => done(data != EDIT_PALETTE && data != EDIT_ASK),
+            // 失去焦點：重新命名、網址列、面板的欄位視為確認；命令面板、ask() 視為取消
+            WM_KILLFOCUS => done(data & edit::BLUR_CANCELS == 0),
             _ => {}
         }
         DefSubclassProc(hwnd, msg, wparam, lparam)
@@ -975,38 +968,15 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             with_app(|a| a.process_notifications());
             Some(LRESULT(0))
         }
-        // 命令面板輸入框內容改變
+        // 輸入框內容改變：依種類處理（edit.rs）
         WM_COMMAND if (wparam.0 >> 16) & 0xFFFF == EN_CHANGE as usize => {
             let edit = HWND(lparam.0 as _);
             let text = edit_text(edit);
-            if with_app(|a| a.batch_text_changed(edit, text)) == Some(true) {
-                return Some(LRESULT(0));
-            }
-            let kind = with_app(|a| {
-                a.edit.as_ref().filter(|e| e.hwnd == edit).map(|e| (matches!(e.kind, EditKind::Palette), matches!(e.kind, EditKind::Rename { .. })))
-            })
-            .flatten();
-            if with_app(|a| a.edit.as_ref().is_some_and(|e| e.hwnd == edit && matches!(e.kind, EditKind::KeysSearch))) == Some(true) {
-                let text = edit_text(edit);
-                with_app(|a| a.keys_query(text));
-                return Some(LRESULT(0));
-            }
-            if with_app(|a| a.edit.as_ref().is_some_and(|e| e.hwnd == edit && matches!(e.kind, EditKind::BarSearch))) == Some(true) {
-                let text = edit_text(edit);
-                with_app(|a| a.bar_query(text));
-                return Some(LRESULT(0));
-            }
-            match kind {
-                Some((true, _)) => {
-                    let text = edit_text(edit);
-                    with_app(|a| a.palette_query(text));
+            with_app(|a| {
+                if !a.batch_text_changed(edit, text.clone()) {
+                    a.edit_changed(edit, text);
                 }
-                Some((_, true)) => {
-                    let text = edit_text(edit);
-                    with_app(|a| rename_text_changed(a, &text));
-                }
-                _ => {}
-            }
+            });
             Some(LRESULT(0))
         }
         // 主視窗啟用時會蓋到預覽處理常式的視窗（另一條執行緒的頂層視窗）：放回上層（非同步）

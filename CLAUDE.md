@@ -56,6 +56,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 縮圖同樣只取看得到的格子（`thumbs.rs`）：繪製時登記，繪製結束時取消已不可見、還沒開始的請求；
   本機兩條、網路磁碟與光碟一條執行緒（背景模式）。清單與縮圖的幾何一律經 `App::grid`／`App::item_rect`，
   不要再自行以 `row_h` 換算位置。
+- 單行輸入框（`App::edit`，一次一個）的每種行為都在 `edit.rs` 的 `EditKind`：按鍵與失去焦點（`subclass_data`）、
+  內容改變（`edit_changed`）、結束（`finish_edit`）、是否屬於右側面板；那裡的 match 不用 `_`。window.rs 只建立輸入框、轉送訊息。
 - 批次重新命名（`batch.rs`、`zing_core::batchrename`）：兩個輸入框不佔用 `app.edit`；輸入框的按鍵以 `WM_APP_BATCH`
   post 給主視窗處理（不在輸入框自己的訊息處理中改變面板）。
 - 預覽窗格（`preview.rs`）：焦點停留 150 ms 才讀取，在專用的 STA 執行緒只處理最新的請求，以 generation 丟棄過時結果。

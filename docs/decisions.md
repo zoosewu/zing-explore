@@ -2,6 +2,19 @@
 
 技術取捨的原因，供日後查詢。新的在上面。
 
+## 2026-10-23　輸入框的行為依種類集中在 edit.rs
+
+**背景**：一種輸入框（例如命令面板）的行為分在 5 處：window.rs 的 `create_edit`（種類 → 子類別標記）、`edit_proc`
+（依標記處理按鍵與失去焦點）、`EN_CHANGE`（四次 `with_app` 各自 `matches!`）、app.rs 的 `finish_edit`、sidepanel.rs 的
+`in_side_panel`。新增一種輸入框要碰 3 個檔案，漏了只會在執行時表現錯誤。
+
+**決定**：
+- `EditKind`、`Edit` 移到 `edit.rs`，同一檔有 `subclass_data`（按鍵與失去焦點的旗標 `LIST_KEYS`、`BLUR_CANCELS`）、
+  `edit_changed`、`finish_edit`、`in_side_panel`，match 都窮舉不用 `_`：新增種類時編譯器逐項要求決定。
+- `edit_proc` 仍以子類別資料決定按鍵（在輸入框自己的訊息處理中不借用 App，也避免重入），只是旗標由 `EditKind` 產生。
+- 批次重新命名的兩個輸入框維持獨立（不佔用 `App::edit`，按鍵以 `WM_APP_BATCH` post），不併入 `EditKind`：
+  它們同時存在兩個、行為是整個面板的，硬塞進「一次一個」的模型反而要加特例。
+
 ## 2026-10-22　內建命令表（zing_core::builtin）
 
 **背景**：一個命令的事實散在約 11 處：`App::run` 的字串 match、`scriptapi::COMMANDS`（Lua 說明）、`palette::BUILTIN`

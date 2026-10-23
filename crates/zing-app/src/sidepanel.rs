@@ -5,7 +5,7 @@
 //! 各面板只提供自己的列、列的內容與動作；捲動、列的位置、捲到看得見（`side_reveal`）、底部兩個按鈕是共用的。
 //! 面板的命中仍是各自的 `Hit` 變體，`Hit::side_panel` 判斷屬於面板的命中。
 
-use crate::app::{App, EditKind};
+use crate::app::App;
 use crate::cmdbaredit::CmdBarEditor;
 use crate::gfx::{Font, Rect};
 use crate::keyspanel::KeysPanel;
@@ -80,23 +80,6 @@ impl Hit {
                 | Hit::KeysPart(..)
                 | Hit::KeysButton(_)
                 | Hit::KeysPanel
-        )
-    }
-}
-
-impl EditKind {
-    /// 面板裡的輸入框：關閉面板時一起關閉
-    fn in_side_panel(&self) -> bool {
-        matches!(
-            self,
-            EditKind::Pref { .. }
-                | EditKind::ThemeField { .. }
-                | EditKind::ThemeSaveAs
-                | EditKind::ThemeRule { .. }
-                | EditKind::BarLabel { .. }
-                | EditKind::BarCustom
-                | EditKind::BarSearch
-                | EditKind::KeysSearch
         )
     }
 }

@@ -6,6 +6,7 @@ mod batch;
 mod cmdbar;
 mod cmdbaredit;
 mod ctxmenu;
+mod edit;
 mod gfx;
 mod icons;
 mod index;
