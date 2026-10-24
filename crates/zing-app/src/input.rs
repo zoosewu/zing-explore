@@ -9,7 +9,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 use crate::app::{App, Focus, MENU_FAV_ADD, MENU_FAV_DOWN, MENU_FAV_UP, Modal, Press};
-use crate::model::NodeKind;
+use crate::model::{MenuTarget, NodeKind};
 use crate::view::{COLUMN_KEYS, Hit, clamp_col};
 
 #[derive(Clone, Copy, Default)]
@@ -30,6 +30,15 @@ impl Mods {
 
 const DRAG_THRESHOLD: f32 = 4.0;
 const NAV_COMMANDS: [&str; 4] = ["nav.back", "nav.forward", "nav.up", "nav.refresh"];
+
+/// 清單中的位置：（窗格, 可見的第幾列；空白處為 None）
+fn list_spot(hit: &Hit) -> Option<(usize, Option<usize>)> {
+    match *hit {
+        Hit::Row(p, i) => Some((p, Some(i))),
+        Hit::ListEmpty(p) => Some((p, None)),
+        _ => None,
+    }
+}
 
 impl App {
     fn fresh_hit(&mut self, x: f32, y: f32) -> Hit {
@@ -105,28 +114,22 @@ impl App {
         }
     }
 
-    /// 按下右鍵時會用的項目：游標所在列已選取就是所有選取項目，否則只有那一列（與 `on_rbutton_up` 相同）
-    pub fn menu_target_at(&self, hit: &Hit) -> Option<(Vec<String>, String)> {
-        match *hit {
-            Hit::Row(p, i) => {
-                let tab = self.panes.get(p)?.tab();
-                let items = if tab.is_selected_view(i) { tab.target_paths() } else { vec![tab.full_path(*tab.view.get(i)? as usize)] };
-                Some((items, tab.path.clone()))
-            }
-            Hit::ListEmpty(p) => Some((Vec::new(), self.panes.get(p)?.tab().path.clone())).filter(|(_, f)| !f.is_empty()),
-            _ => None,
-        }
+    /// 在 `hit` 按右鍵時選單的對象（`Tab::menu_target`）；不是清單就是 None
+    pub fn menu_target_at(&self, hit: &Hit) -> Option<MenuTarget> {
+        let (p, at) = list_spot(hit)?;
+        Some(self.panes.get(p)?.tab().menu_target(at))
     }
 
     pub fn on_menu_prepare_timer(&mut self) {
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(self.hwnd), crate::app::TIMER_MENU_PREPARE);
         }
-        let Some(target) = self.menu_target_at(&self.hover) else { return };
+        // 「此電腦」的空白處用完整的 Windows 選單，不必準備
+        let Some(target) = self.menu_target_at(&self.hover).filter(|t| !t.items.is_empty() || !t.folder.is_empty()) else { return };
         if self.menu_prepared.as_ref() == Some(&target) {
             return;
         }
-        let (items, folder) = target.clone();
+        let MenuTarget { items, folder } = target.clone();
         self.menu_prepared = Some(target);
         let (slow, persist) = (crate::shellext::SlowPolicy::new(&self.config.context_menu), !self.isolated);
         self.shell_host.submit(crate::shellhost::ShellJob::Prepare { items, folder, slow, persist });
@@ -350,23 +353,15 @@ impl App {
                 self.cmdbar_right_click(i, x, y);
             }
             Hit::CmdBar => self.cmdbar_right_click(None, x, y),
-            Hit::Row(p, i) => {
+            Hit::Row(..) | Hit::ListEmpty(_) => {
+                let Some((p, at)) = list_spot(&hit) else { return };
                 self.activate_pane(p);
+                // 對象與游標停住時預先準備的相同（同一個函式），選取改變之前先算
                 let tab = self.panes[p].tab_mut();
-                if !tab.is_selected_view(i) {
-                    tab.select_only(i);
-                }
-                tab.focus = i;
-                let (items, folder) = (tab.target_paths(), tab.path.clone());
+                let target = tab.menu_target(at);
+                tab.select_for_menu(at);
                 self.paint();
-                self.open_context_menu(items, folder, x, y, screen);
-            }
-            Hit::ListEmpty(p) => {
-                self.activate_pane(p);
-                self.panes[p].tab_mut().clear_selection();
-                let folder = self.panes[p].tab().path.clone();
-                self.paint();
-                self.open_context_menu(Vec::new(), folder, x, y, screen);
+                self.open_context_menu(target.items, target.folder, x, y, screen);
             }
             Hit::TreeRow(i) | Hit::TreeArrow(i) => {
                 let n = &self.tree.nodes[i];

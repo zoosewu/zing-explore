@@ -2090,7 +2090,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         before.set(crate::shellhost::PREPARED_COUNT.load(std::sync::atomic::Ordering::Relaxed));
         hover_at(c, row_pos("a2.txt"));
         with_app(|a| a.on_menu_prepare_timer());
-        let target = with_app(|a| a.menu_prepared.as_ref().map(|(items, _)| items.join("|"))).flatten().unwrap_or_default();
+        let target = with_app(|a| a.menu_prepared.as_ref().map(|t| t.items.join("|"))).flatten().unwrap_or_default();
         c.notes.push(("menu_prepared", target));
     }, move |c, a| {
         expect("項目", c.note("menu_prepared").is_some_and(|t| t.ends_with("a2.txt")), true)?;

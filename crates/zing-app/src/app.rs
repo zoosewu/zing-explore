@@ -149,7 +149,7 @@ pub struct App {
     /// 以鍵盤（F10）操作命令列時，焦點所在的按鈕（命令列索引）
     pub bar_focus: Option<usize>,
     /// 最後一次請 ShellHost 預先準備右鍵選單的（項目, 資料夾）
-    pub menu_prepared: Option<(Vec<String>, String)>,
+    pub menu_prepared: Option<crate::model::MenuTarget>,
     /// 精簡右鍵選單的「顯示更多選項」要開的完整選單（ctxmenu.rs）
     pub pending_shell_menu: Option<crate::ctxmenu::PendingShellMenu>,
     /// ShellHost 預先載入的第三方擴充功能項目（精簡右鍵選單的第一層）

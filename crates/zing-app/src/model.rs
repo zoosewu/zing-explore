@@ -13,6 +13,13 @@ use zing_core::text::Pattern;
 
 use crate::services::{TabId, Watcher};
 
+/// 右鍵選單的對象：項目（空白處為空）與所在的資料夾。預先準備的選單在項目、資料夾都相同時才會用上
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MenuTarget {
+    pub items: Vec<String>,
+    pub folder: String,
+}
+
 pub struct Tab {
     pub id: TabId,
     pub path: String,
@@ -179,6 +186,31 @@ impl Tab {
 
     pub fn target_paths(&self) -> Vec<String> {
         self.targets().into_iter().map(|i| self.full_path(i)).collect()
+    }
+
+    /// 在可見的第 `at` 列（None 為空白處）按右鍵時選單的對象：那一列已選取就是所有選取項目，否則只有那一列
+    /// （與檔案總管相同）。游標停住時的預先準備（`App::menu_target_at`）與按下右鍵（`on_rbutton_up`）都用這裡，
+    /// 兩者因此一定相同
+    pub fn menu_target(&self, at: Option<usize>) -> MenuTarget {
+        let items = match at {
+            Some(i) if self.is_selected_view(i) => self.target_paths(),
+            Some(i) => self.view.get(i).map(|&e| self.full_path(e as usize)).into_iter().collect(),
+            None => Vec::new(),
+        };
+        MenuTarget { items, folder: self.path.clone() }
+    }
+
+    /// 按下右鍵時的選取：沒選取的列改為只選它，空白處取消選取
+    pub fn select_for_menu(&mut self, at: Option<usize>) {
+        match at {
+            Some(i) => {
+                if !self.is_selected_view(i) {
+                    self.select_only(i);
+                }
+                self.focus = i;
+            }
+            None => self.clear_selection(),
+        }
     }
 
     /// listing 第 `entry` 個項目是否選取
@@ -773,6 +805,27 @@ mod tests {
         let sorted = zing_core::sort::sorted_order(&l, t.spec);
         t.apply_listing(Arc::new(l), sorted, true);
         t
+    }
+
+    #[test]
+    fn menu_target_matches_selection_after_right_click() {
+        let mut t = tab_with(&["a", "b", "c"]);
+        t.select_only(1);
+        t.toggle(2);
+        // 已選取的列：所有選取項目；選取不變
+        let target = t.menu_target(Some(2));
+        assert_eq!(target.items, [r"C:\x\b", r"C:\x\c"]);
+        t.select_for_menu(Some(2));
+        assert_eq!(t.target_paths(), target.items);
+        // 沒選取的列：只有那一列，按下後也只選它
+        let target = t.menu_target(Some(0));
+        assert_eq!(target, MenuTarget { items: vec![r"C:\x\a".into()], folder: r"C:\x".into() });
+        t.select_for_menu(Some(0));
+        assert_eq!(t.target_paths(), target.items);
+        // 空白處：沒有項目、取消選取
+        assert!(t.menu_target(None).items.is_empty());
+        t.select_for_menu(None);
+        assert_eq!(t.selection_count().0, 0);
     }
 
     #[test]
