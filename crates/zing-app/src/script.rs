@@ -1377,38 +1377,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 系統的 ANSI 字碼頁能否表示 `s`：tar.exe 等以窄字元讀命令列的程式，表示不了的字元會變成「?」
-    fn acp_can_encode(s: &str) -> bool {
-        use windows::Win32::Globalization::{CP_ACP, WideCharToMultiByte};
-        let w: Vec<u16> = s.encode_utf16().collect();
-        let mut used_default = windows::core::BOOL(0);
-        let n = unsafe { WideCharToMultiByte(CP_ACP, 0, &w, None, windows::core::PCSTR::null(), Some(&mut used_default)) };
-        n > 0 && !used_default.as_bool()
-    }
-
-    /// examples/scripts/extract.lua：以真的 tar.exe 解壓縮（中文路徑、子資料夾、損壞的檔案）。
-    /// tar.exe 的參數經過系統的 ANSI 字碼頁：英文版 Windows（如 CI）表示不了中文，改用英文名稱測同樣的流程
-    #[test]
-    fn example_extract_script() {
-        let _allow = zing_core::guard::allow_io("測試");
-        let cjk = acp_can_encode("測試來源甲乙壓縮資料壞掉說明輸出平放");
+    /// 解壓縮範例的測試資料夾：來源檔案與兩個壓縮檔（以 tar.exe 建立）。失敗時回傳 tar 的錯誤訊息
+    fn extract_fixture(cjk: bool) -> Result<std::path::PathBuf, String> {
         let n = |zh: &'static str, en: &'static str| if cjk { zh } else { en };
-        let (a, b, zip, tgz, broken) = (n("甲.txt", "a.txt"), n("乙.txt", "b.txt"), n("壓縮 1.zip", "pack 1.zip"), n("資料.tar.gz", "data.tar.gz"), n("壞掉.zip", "broken.zip"));
         let dir = zing_core::testdir::dir().join(format!("zing-extract-{}-{}", n("測試", "test"), std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join(n("來源", "src"));
         std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join(a), "a").unwrap();
-        std::fs::write(src.join(b), "b").unwrap();
+        std::fs::write(src.join(n("甲.txt", "a.txt")), "a").unwrap();
+        std::fs::write(src.join(n("乙.txt", "b.txt")), "b").unwrap();
         let tar = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap()).join(r"System32\tar.exe");
-        let pack = |out: &str, file: &str| {
-            let st = std::process::Command::new(&tar).arg("-a").arg("-cf").arg(dir.join(out)).arg("-C").arg(&src).arg(file).status();
-            assert!(st.unwrap().success(), "建立 {out} 失敗");
-        };
-        pack(zip, a);
-        pack(tgz, b);
-        std::fs::write(dir.join(broken), "not a zip").unwrap();
+        for (out, file) in [(n("壓縮 1.zip", "pack 1.zip"), n("甲.txt", "a.txt")), (n("資料.tar.gz", "data.tar.gz"), n("乙.txt", "b.txt"))] {
+            let o = std::process::Command::new(&tar).arg("-a").arg("-cf").arg(dir.join(out)).arg("-C").arg(&src).arg(file).output().map_err(|e| e.to_string())?;
+            if !o.status.success() {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(format!("建立 {out} 失敗（{}）：{}", o.status, String::from_utf8_lossy(&o.stderr).trim()));
+            }
+        }
+        std::fs::write(dir.join(n("壞掉.zip", "broken.zip")), "not a zip").unwrap();
         std::fs::write(dir.join(n("說明.txt", "readme.txt")), "x").unwrap();
+        Ok(dir)
+    }
+
+    /// examples/scripts/extract.lua：以真的 tar.exe 解壓縮（中文路徑、子資料夾、損壞的檔案）。
+    /// tar.exe 的參數經過系統的 ANSI 字碼頁：中文名稱建不了壓縮檔時（英文版 Windows，如 CI）改用英文名稱測同樣的流程
+    #[test]
+    fn example_extract_script() {
+        let _allow = zing_core::guard::allow_io("測試");
+        let (cjk, dir) = match extract_fixture(true) {
+            Ok(dir) => (true, dir),
+            Err(e) => {
+                eprintln!("中文名稱改用英文名稱：{e}");
+                (false, extract_fixture(false).unwrap_or_else(|e| panic!("{e}")))
+            }
+        };
+        let n = |zh: &'static str, en: &'static str| if cjk { zh } else { en };
+        let (a, b, zip, tgz, broken) = (n("甲.txt", "a.txt"), n("乙.txt", "b.txt"), n("壓縮 1.zip", "pack 1.zip"), n("資料.tar.gz", "data.tar.gz"), n("壞掉.zip", "broken.zip"));
 
         let l = example_lua("extract.lua", include_str!("../../../examples/scripts/extract.lua"));
         set_ctx(&l, &dir, &[zip, tgz, broken, n("說明.txt", "readme.txt")]);

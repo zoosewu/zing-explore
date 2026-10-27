@@ -38,7 +38,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   單元測試、release 的冒煙測試、效能檢查，全部通過才建立 GitHub Release（`zing-explore-windows-x64.zip`、`.sha256`、`perf.json`；
   檔名不含版本，`releases/latest/download/` 永遠是最新版）。CI 的效能基準是上一個 Release 附的 `perf.json`（不是
   `perf/baseline.json`，機器不同），相對容差 15%；刻意接受的退步以手動執行（選標籤、勾選 allow_regression）發佈。
-  工具鏈固定在 `rust-toolchain.toml`。
+  工具鏈固定在 `rust-toolchain.toml`。測試、冒煙測試、效能失敗時 `tools/ci-annotate.ps1` 把原因輸出成錯誤摘要
+  （不登入也能從 API 讀：`/repos/<owner>/<repo>/check-runs/<job id>/annotations`；日誌要登入才能下載）。
 - 測試資料（單元測試、冒煙測試、效能測試的 10 萬檔資料夾、隔離模式的快取）放在環境變數 `ZING_TEST_DIR` 指定的資料夾，
   沒有設定時用系統暫存資料夾；Rust 端一律經 `zing_core::testdir::dir()`，不要直接用 `std::env::temp_dir()`。
 - 效能模式的視窗固定在 (100, 100)、1280×800，結果才可重現。

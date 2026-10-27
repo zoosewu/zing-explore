@@ -68,9 +68,16 @@ jobs:
           cargo clippy -p zing-app --all-targets --features smoke -- -D warnings
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      # 測試、冒煙測試、效能的輸出另存一份，失敗時以 tools/ci-annotate.ps1 把原因輸出成錯誤摘要
+      # （執行頁面上直接看得到，不登入也能從 API 讀取）
       - name: 單元測試
-        # 一個 crate 失敗時其他 crate 照樣跑，一次看到所有失敗
-        run: cargo test --workspace --no-fail-fast
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'test.log'
+          # 一個 crate 失敗時其他 crate 照樣跑，一次看到所有失敗
+          cargo test --workspace --no-fail-fast 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          pwsh -NoProfile tools/ci-annotate.ps1 -Log $log -Kind test -ExitCode $code
+          exit $code
 
       - name: 安裝 Lua Language Server（冒煙測試前檢查 Lua API）
         run: |
@@ -81,7 +88,12 @@ jobs:
           "LUALS=$(Join-Path $dir 'bin\lua-language-server.exe')" >> $env:GITHUB_ENV
 
       - name: 冒煙測試（release）
-        run: pwsh -NoProfile tools/smoke.ps1 -Release -TimeoutSec 600
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'smoke.log'
+          pwsh -NoProfile tools/smoke.ps1 -Release -TimeoutSec 600 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          pwsh -NoProfile tools/ci-annotate.ps1 -Log $log -Kind smoke -ExitCode $code
+          exit $code
 
       - name: 上一個 Release 的效能結果（CI 的基準）
         run: |
@@ -102,8 +114,12 @@ jobs:
           New-Item -ItemType Directory -Force $dist | Out-Null
           $extra = if ('${{ inputs.allow_regression }}' -eq 'true') { @('-AllowRegression') } else { @() }
           # 每次分到的機器不同，相對容差比本機（5%）寬
-          pwsh -NoProfile tools/perf.ps1 -BaselineFile $env:PERF_BASELINE -RelTolerance 0.15 -Out (Join-Path $dist 'perf.json') @extra
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $log = Join-Path $env:RUNNER_TEMP 'perf.log'
+          pwsh -NoProfile tools/perf.ps1 -BaselineFile $env:PERF_BASELINE -RelTolerance 0.15 -Out (Join-Path $dist 'perf.json') @extra 2>&1 |
+            ForEach-Object { "$_" } | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          pwsh -NoProfile tools/ci-annotate.ps1 -Log $log -Kind perf -ExitCode $code
+          exit $code
 
       - name: 建置與打包
         run: |
