@@ -21,7 +21,7 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use crate::gfx::Gfx;
 use crate::icons::Icons;
 use crate::jobs::Jobs;
-use crate::model::{Children, Expand, NodeKind, Pane, Reveal, Tab, Tree};
+use crate::model::{Children, Expand, MenuTarget, NodeKind, Pane, Reveal, Tab, Tree};
 use crate::palette::Palette;
 use crate::perf::Perf;
 use crate::services::{TreeLoad, self, Msg, Notifier, Pool, TabId};
@@ -57,6 +57,8 @@ pub const TIMER_SEARCH: usize = 13;
 pub const TIMER_TIP: usize = 14;
 /// 游標在清單停住後預先準備右鍵選單（shellhost.rs）
 pub const TIMER_MENU_PREPARE: usize = 15;
+/// 清單的按鍵停住後預先準備鍵盤開啟的右鍵選單
+pub const TIMER_KEY_MENU_PREPARE: usize = 16;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -149,7 +151,7 @@ pub struct App {
     /// 以鍵盤（F10）操作命令列時，焦點所在的按鈕（命令列索引）
     pub bar_focus: Option<usize>,
     /// 最後一次請 ShellHost 預先準備右鍵選單的（項目, 資料夾）
-    pub menu_prepared: Option<crate::model::MenuTarget>,
+    pub menu_prepared: Option<MenuTarget>,
     /// 精簡右鍵選單的「顯示更多選項」要開的完整選單（ctxmenu.rs）
     pub pending_shell_menu: Option<crate::ctxmenu::PendingShellMenu>,
     /// ShellHost 預先載入的第三方擴充功能項目（精簡右鍵選單的第一層）
@@ -1144,7 +1146,8 @@ impl App {
                 self.layout = self.compute_layout();
                 let tab = self.tab();
                 let pl = &self.layout.panes[p];
-                let (items, folder) = (tab.target_paths(), tab.path.clone());
+                // 與按鍵停住時預先準備的相同（`Tab::key_menu_target`）
+                let MenuTarget { items, folder } = tab.key_menu_target();
                 let item = self.item_rect(p, tab.focus);
                 let y = match item {
                     Some(r) if !items.is_empty() => r.b,

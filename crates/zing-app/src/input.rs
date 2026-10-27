@@ -124,8 +124,39 @@ impl App {
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(self.hwnd), crate::app::TIMER_MENU_PREPARE);
         }
+        if let Some(target) = self.menu_target_at(&self.hover) {
+            self.prepare_menu(target);
+        }
+    }
+
+    /// 清單有焦點時按了鍵（移動焦點、選取、篩選…）：停住 150 ms 後預先準備鍵盤開啟的右鍵選單
+    fn schedule_key_menu_prepare(&self) {
+        if self.perf.is_some() || self.focus != Focus::List || self.menu.is_some() {
+            return;
+        }
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), crate::app::TIMER_KEY_MENU_PREPARE, 150, None);
+        }
+    }
+
+    pub fn on_key_menu_prepare_timer(&mut self) {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(self.hwnd), crate::app::TIMER_KEY_MENU_PREPARE);
+        }
+        // 計時期間焦點可能移走、或選單已經開了
+        if self.focus != Focus::List || self.menu.is_some() {
+            return;
+        }
+        let target = self.tab().key_menu_target();
+        self.prepare_menu(target);
+    }
+
+    /// 送出預先準備（與上次相同就不送）。滑鼠停住、按鍵停住共用；ShellHost 只保留最後一份
+    fn prepare_menu(&mut self, target: MenuTarget) {
         // 「此電腦」的空白處用完整的 Windows 選單，不必準備
-        let Some(target) = self.menu_target_at(&self.hover).filter(|t| !t.items.is_empty() || !t.folder.is_empty()) else { return };
+        if target.items.is_empty() && target.folder.is_empty() {
+            return;
+        }
         if self.menu_prepared.as_ref() == Some(&target) {
             return;
         }
@@ -476,6 +507,7 @@ impl App {
     pub fn on_key(&mut self, vk: u16, mods: Mods) -> bool {
         self.suppress_char = false;
         self.hide_tip();
+        self.schedule_key_menu_prepare();
         if self.menu.is_some() {
             self.suppress_char = true;
             return self.menu_key(vk);

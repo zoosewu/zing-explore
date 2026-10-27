@@ -1040,6 +1040,9 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 crate::app::TIMER_MENU_PREPARE => {
                     with_app(|a| a.on_menu_prepare_timer());
                 }
+                crate::app::TIMER_KEY_MENU_PREPARE => {
+                    with_app(|a| a.on_key_menu_prepare_timer());
+                }
                 crate::app::TIMER_PREVIEW => {
                     with_app(|a| a.on_preview_timer());
                 }

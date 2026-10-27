@@ -2107,6 +2107,22 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     // 第一次要載入 Shell 擴充功能，可能要數秒
     s.timeout = Duration::from_secs(15);
     v.push(s);
+    let key_before = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let before = key_before.clone();
+    v.push(step("右鍵選單：按鍵停住後預先準備鍵盤開啟的選單", move |c| {
+        before.set(crate::shellhost::PREPARED_COUNT.load(std::sync::atomic::Ordering::Relaxed));
+        with_app(|a| a.focus = crate::app::Focus::List);
+        key(c, "", VK_HOME);
+        with_app(|a| a.on_key_menu_prepare_timer());
+    }, move |_, a| {
+        let want = a.tab().key_menu_target();
+        expect("只有焦點項目", want.items.len(), 1)?;
+        expect("準備的對象", a.menu_prepared.as_ref() == Some(&want), true)?;
+        if crate::shellhost::PREPARED_COUNT.load(std::sync::atomic::Ordering::Relaxed) <= key_before.get() {
+            return Err("ShellHost 還沒建好選單".into());
+        }
+        Ok(())
+    }));
     // 精簡的右鍵選單是程式自己畫的，可以測；「顯示更多選項」會開 Windows 的選單（搶前景），不在這裡測
     v.push(step("右鍵選單：在檔案上按右鍵立即顯示精簡選單", |c| right_click(c, row_pos("a2.txt")), |_, a| {
         let m = a.menu.as_ref().ok_or("選單沒開")?;

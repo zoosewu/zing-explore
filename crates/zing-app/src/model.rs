@@ -200,6 +200,12 @@ impl Tab {
         MenuTarget { items, folder: self.path.clone() }
     }
 
+    /// 以鍵盤（Shift+F10、選單鍵，命令 `menu.context`）開啟時選單的對象：選取的項目，沒有選取就是焦點項目。
+    /// 按鍵停住時的預先準備（`App::on_key_menu_prepare_timer`）也用這裡
+    pub fn key_menu_target(&self) -> MenuTarget {
+        MenuTarget { items: self.target_paths(), folder: self.path.clone() }
+    }
+
     /// 按下右鍵時的選取：沒選取的列改為只選它，空白處取消選取
     pub fn select_for_menu(&mut self, at: Option<usize>) {
         match at {
@@ -826,6 +832,12 @@ mod tests {
         assert!(t.menu_target(None).items.is_empty());
         t.select_for_menu(None);
         assert_eq!(t.selection_count().0, 0);
+        // 鍵盤：沒有選取就是焦點項目，否則是選取的項目
+        t.focus = 1;
+        assert_eq!(t.key_menu_target().items, [r"C:\x\b"]);
+        t.select_only(0);
+        t.toggle(2);
+        assert_eq!(t.key_menu_target().items, [r"C:\x\a", r"C:\x\c"]);
     }
 
     #[test]
