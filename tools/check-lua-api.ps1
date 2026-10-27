@@ -4,7 +4,7 @@
     把 examples/scripts/*.lua 與 docs/lua.md（及 lua.en.md、lua.ja.md）的每個範例放在一起，用 `lua-language-server --check` 檢查，
     應該沒有任何問題（自動補全與型別提示才正確）。修改 scriptapi.rs 或 prelude.lua 後執行。
 
-    需要 VS Code 的 Lua 擴充功能（sumneko.lua），或以 -Server 指定 lua-language-server.exe。
+    需要 VS Code 的 Lua 擴充功能（sumneko.lua），或以 -Server（或環境變數 LUALS，CI 用）指定 lua-language-server.exe。
     tools/smoke.ps1 每次都會以 -IfAvailable 執行：沒有安裝時只顯示警告。
 
 .EXAMPLE
@@ -13,6 +13,7 @@
 param([string]$Server, [switch]$IfAvailable)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+if (-not $Server) { $Server = $env:LUALS }
 if (-not $Server) {
     $Server = Get-ChildItem "$env:USERPROFILE\.vscode\extensions", "$env:USERPROFILE\.vscode-insiders\extensions" -Directory -Filter 'sumneko.lua-*' -ErrorAction SilentlyContinue |
         Sort-Object Name -Descending |

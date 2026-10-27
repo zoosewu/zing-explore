@@ -1,0 +1,137 @@
+# 發佈：push v* 標籤時測試（clippy、單元測試、冒煙測試、效能）、建置並建立 GitHub Release。
+# 也可以手動執行（Actions → release → Run workflow）：在分支上只測試與建置不發佈，選標籤時會發佈。
+# 最新版固定在 https://github.com/<owner>/<repo>/releases/latest/download/zing-explore-windows-x64.zip
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      allow_regression:
+        description: '效能退步只顯示、不擋發佈（刻意接受的取捨；門檻超標仍然失敗）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # 冒煙測試、效能測試的測試資料（zing_core::testdir）
+  ZING_TEST_DIR: ${{ github.workspace }}\..\zing-test
+  ASSET: zing-explore-windows-x64.zip
+  LUALS_VERSION: '3.13.6'
+  GH_TOKEN: ${{ github.token }}
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 確認標籤與版本號、標籤在 master 上
+        if: github.ref_type == 'tag'
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $ver = ($meta.packages | Where-Object name -eq 'zing-app').version
+          if ($tag -ne "v$ver") { throw "標籤 $tag 與 Cargo.toml 的版本 $ver 不一致" }
+          git fetch origin master
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/master
+          if ($LASTEXITCODE -ne 0) { throw "標籤 $tag 的 commit 不在 master 上" }
+
+      - name: 安裝 rust-toolchain.toml 指定的工具鏈
+        run: |
+          $channel = [regex]::Match((Get-Content rust-toolchain.toml -Raw), 'channel\s*=\s*"([^"]+)"').Groups[1].Value
+          rustup toolchain install $channel --profile minimal --component clippy
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: clippy
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo clippy -p zing-app --all-targets --features smoke -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: 單元測試
+        run: cargo test --workspace
+
+      - name: 安裝 Lua Language Server（冒煙測試前檢查 Lua API）
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'luals'
+          gh release download $env:LUALS_VERSION --repo LuaLS/lua-language-server --pattern '*-win32-x64.zip' --dir $dir
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Expand-Archive (Get-ChildItem $dir -Filter *.zip).FullName $dir
+          "LUALS=$(Join-Path $dir 'bin\lua-language-server.exe')" >> $env:GITHUB_ENV
+
+      - name: 冒煙測試（release）
+        run: pwsh -NoProfile tools/smoke.ps1 -Release -TimeoutSec 600
+
+      - name: 上一個 Release 的效能結果（CI 的基準）
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'baseline'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          # 沒有 Release 或舊的 Release 沒有附結果時只檢查門檻
+          $latest = gh release view --repo $env:GITHUB_REPOSITORY --json tagName -q .tagName 2>$null
+          if ($LASTEXITCODE -eq 0 -and $latest) {
+            gh release download $latest --repo $env:GITHUB_REPOSITORY --pattern perf.json --dir $dir 2>$null
+            Write-Host "基準：$latest"
+          }
+          $global:LASTEXITCODE = 0
+          "PERF_BASELINE=$(Join-Path $dir 'perf.json')" >> $env:GITHUB_ENV
+
+      - name: 效能檢查
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP 'dist'
+          New-Item -ItemType Directory -Force $dist | Out-Null
+          $extra = if ('${{ inputs.allow_regression }}' -eq 'true') { @('-AllowRegression') } else { @() }
+          # 每次分到的機器不同，相對容差比本機（5%）寬
+          pwsh -NoProfile tools/perf.ps1 -BaselineFile $env:PERF_BASELINE -RelTolerance 0.15 -Out (Join-Path $dist 'perf.json') @extra
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: 建置與打包
+        run: |
+          # perf.ps1 已重新建置不含冒煙測試的 zing.exe；這裡補上 zing-index
+          cargo build --release -p zing-app -p zing-index
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # 確認不是冒煙測試的版本：收到 --smoke-* 參數時結束代碼為 2
+          $p = Start-Process target\release\zing.exe -ArgumentList '--smoke-out=x' -PassThru -Wait
+          if ($p.ExitCode -ne 2) { throw "zing.exe 含有冒煙測試功能（結束代碼 $($p.ExitCode)）" }
+          $dist = Join-Path $env:RUNNER_TEMP 'dist'
+          $zip = Join-Path $dist $env:ASSET
+          Compress-Archive -Path target\release\zing.exe, target\release\zing-index.exe, LICENSE -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          Set-Content "$zip.sha256" "$hash  $env:ASSET" -NoNewline -Encoding ascii
+          Get-ChildItem $dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zing-explore
+          path: |
+            ${{ runner.temp }}\dist
+            target\smoke
+          if-no-files-found: ignore
+
+      - name: 建立 Release
+        if: github.ref_type == 'tag'
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP 'dist'
+          gh release create '${{ github.ref_name }}' --repo $env:GITHUB_REPOSITORY --generate-notes `
+            (Join-Path $dist $env:ASSET) (Join-Path $dist "$env:ASSET.sha256") (Join-Path $dist 'perf.json')
+          if ($LASTEXITCODE -ne 0) { exit 1 }

@@ -34,6 +34,11 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   結束時剪貼簿上仍有標記就還原（不論步驟成敗），沒有標記但已改變（使用者自己複製）就不動。目前只測文字（Lua `clipboard()`、
   複製路徑）；檔案的複製／貼上（OLE 資料物件）、右鍵選單、刪除（會搶前景、留東西在資源回收筒）仍需手動測試。
 - 只有在確認是改善（或刻意接受的取捨）時才執行 `pwsh tools/perf.ps1 -UpdateBaseline` 更新 `perf/baseline.json`，並在說明中寫明原因。
+- 發佈：在 master 上把 `Cargo.toml` 的 `version` 改好、push `v<版本>` 標籤，`.github/workflows/release.yml` 會跑 clippy、
+  單元測試、release 的冒煙測試、效能檢查，全部通過才建立 GitHub Release（`zing-explore-windows-x64.zip`、`.sha256`、`perf.json`；
+  檔名不含版本，`releases/latest/download/` 永遠是最新版）。CI 的效能基準是上一個 Release 附的 `perf.json`（不是
+  `perf/baseline.json`，機器不同），相對容差 15%；刻意接受的退步以手動執行（選標籤、勾選 allow_regression）發佈。
+  工具鏈固定在 `rust-toolchain.toml`。
 - 測試資料（單元測試、冒煙測試、效能測試的 10 萬檔資料夾、隔離模式的快取）放在環境變數 `ZING_TEST_DIR` 指定的資料夾，
   沒有設定時用系統暫存資料夾；Rust 端一律經 `zing_core::testdir::dir()`，不要直接用 `std::env::temp_dir()`。
 - 效能模式的視窗固定在 (100, 100)、1280×800，結果才可重現。

@@ -5,18 +5,28 @@
 .EXAMPLE
     pwsh tools/perf.ps1                 # 建置 release 並量測
     pwsh tools/perf.ps1 -UpdateBaseline # 量測後把結果存成新基準（確認改善後才更新）
+    # CI：和上一個 Release 附的結果比較，機器每次不同所以容差較寬
+    pwsh tools/perf.ps1 -BaselineFile 上一版\perf.json -RelTolerance 0.15 -Out perf.json
 #>
 param(
     [int]$Runs = 10,
     [switch]$UpdateBaseline,
     [switch]$SkipBuild,
-    [int]$Files = 100000
+    [int]$Files = 100000,
+    # 基準檔（預設 perf\baseline.json）；檔案不存在時只檢查門檻
+    [string]$BaselineFile,
+    # 退步判定的相對容差（同時要超過各指標的絕對容差）
+    [double]$RelTolerance = 0.05,
+    # 退步只顯示、不算失敗（刻意接受的取捨；門檻超標仍然失敗）
+    [switch]$AllowRegression,
+    # 另外把結果寫到這個檔案（perf\results\latest.json 照樣寫）
+    [string]$Out
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'target\release\zing.exe'
-$baselinePath = Join-Path $root 'perf\baseline.json'
+$baselinePath = if ($BaselineFile) { $BaselineFile } else { Join-Path $root 'perf\baseline.json' }
 $resultsDir = Join-Path $root 'perf\results'
 New-Item -ItemType Directory -Force $resultsDir | Out-Null
 
@@ -29,7 +39,7 @@ $limits = [ordered]@{
     exe_mb                 = 10
     theme_switch_ms        = 50
 }
-# 退步判定：同時超過 5% 與絕對容差才算（避免極小數值的雜訊）
+# 退步判定：同時超過相對容差（預設 5%）與絕對容差才算（避免極小數值的雜訊）
 $tolerance = @{
     startup_ms = 5; private_working_set_mb = 1; first_screen_ms = 15; load_all_ms = 20
     # frame_p99 受 OS/GPU 偶發停頓影響，同一版本重跑會差約 ±1.5 ms；繪製成本的退步由 p50 把關
@@ -106,8 +116,8 @@ $rows = foreach ($k in $results.Keys) {
     $base = if ($baseline -and $null -ne $baseline.$k) { [double]$baseline.$k } else { $null }
     $status = 'OK'
     if ($null -ne $limit -and $v -ge $limit) { $status = '超標'; $failed = $true }
-    elseif ($null -ne $base -and $tolerance.ContainsKey($k) -and $v -gt $base * 1.05 -and ($v - $base) -gt $tolerance[$k]) {
-        $status = '退步'; $failed = $true
+    elseif ($null -ne $base -and $tolerance.ContainsKey($k) -and $v -gt $base * (1 + $RelTolerance) -and ($v - $base) -gt $tolerance[$k]) {
+        if ($AllowRegression) { $status = '退步（允許）' } else { $status = '退步'; $failed = $true }
     }
     [pscustomobject]@{ 指標 = $k; 數值 = $v; 門檻 = $limit; 基準 = $base; 狀態 = $status }
 }
@@ -115,6 +125,7 @@ $rows | Format-Table -AutoSize | Out-String | Write-Host
 
 $json = $results | ConvertTo-Json
 Set-Content (Join-Path $resultsDir 'latest.json') $json -Encoding utf8
+if ($Out) { Set-Content $Out $json -Encoding utf8 }
 if ($UpdateBaseline) {
     Set-Content $baselinePath $json -Encoding utf8
     Write-Host "已更新基準：$baselinePath"

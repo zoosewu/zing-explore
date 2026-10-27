@@ -1,0 +1,5 @@
+# 固定工具鏈：CI（.github/workflows/release.yml）與本機相同，新版 clippy 的警告不會讓發佈突然失敗。升級時改這裡
+[toolchain]
+channel = "1.99.0"
+components = ["clippy"]
+profile = "minimal"

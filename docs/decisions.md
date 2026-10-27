@@ -2,6 +2,21 @@
 
 技術取捨的原因，供日後查詢。新的在上面。
 
+## 2026-10-27　GitHub Actions：只在打標籤時測試並發佈
+
+**決定**：
+- 一個 workflow（`.github/workflows/release.yml`），push `v*` 標籤時觸發；一般的 push、PR 不跑（測試在本機做，
+  Windows 機器的分鐘數較貴）。也可以手動執行：在分支上只測試與建置（artifact），選標籤時會發佈。
+- 依序在同一台機器上：確認標籤等於 `Cargo.toml` 的版本且 commit 在 master 上 → clippy（兩種設定，警告即失敗）→
+  `cargo test` → release 的冒煙測試（含 LuaLS 檢查 Lua API）→ 效能 → 建置不含冒煙測試的 `zing.exe` 與 `zing-index.exe`
+  （以 `--smoke-out` 確認結束代碼為 2）→ 打包 → Release。任一步失敗就不發佈，修正後重打標籤或用下一個版本號。
+- 冒煙測試只跑 release 的那份（最接近發佈的執行檔）；debug 那份與 I/O 防呆在本機跑。
+- 效能基準：CI 機器每次不同，不能和 `perf/baseline.json` 比；改為和上一個 Release 附的 `perf.json` 比，相對容差 15%
+  （本機 5%），絕對容差相同，門檻相同。沒有上一版時只檢查門檻。基準跟著發佈前進，不必讓 CI 寫回 repo。
+- 發佈的檔名不含版本（`zing-explore-windows-x64.zip`），`releases/latest/download/` 的網址固定，方便抓最新版；
+  附 SHA-256 檢查碼。只有 x64（ARM64 無法在 x64 機器上測）。沒有程式碼簽章。
+- 工具鏈固定在 `rust-toolchain.toml`，新版 clippy 的警告不會讓發佈突然失敗；升級時手動改。
+
 ## 2026-10-27　樹狀列就地重新命名；移走資料夾前暫停它底下的監看
 
 **背景**：樹狀列沒有就地重新命名。實作時發現：資料夾底下有開啟中的變更通知（`FindFirstChangeNotification`）時，
