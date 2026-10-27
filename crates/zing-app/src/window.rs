@@ -448,9 +448,28 @@ pub fn begin_rename(app: &mut App, tab: TabId, full: String) {
         Some(k) if k > 0 && !is_dir => name[..k].encode_utf16().count(),
         _ => name.encode_utf16().count(),
     };
+    open_rename_edit(app, frame, fit, &name, sel_end, EditKind::Rename { tab, path: full });
+}
+
+/// 樹狀列的節點 `i` 就地重新命名（只限一般資料夾）：框線從名稱的位置開始、寬度跟著文字
+pub fn begin_tree_rename(app: &mut App, i: usize) {
+    app.layout = app.compute_layout();
+    let Some(tr) = app.layout.tree else { return };
+    let Some(n) = app.tree.nodes.get(i).filter(|n| n.kind == crate::model::NodeKind::Folder) else { return };
+    let (name, full) = (n.name.clone(), n.path.clone());
+    let rh = app.row_h();
+    let y = tr.t + 4.0 + i as f32 * rh - app.tree.scroll;
+    let x = tr.l + 6.0 + n.depth as f32 * 14.0;
+    let f = crate::gfx::Rect::new(x + 44.0 - RENAME_PAD, y + 1.0, tr.r - 4.0, y + rh - 1.0);
+    let frame = rename_frame(app, f, f.r, &name);
+    let len = name.encode_utf16().count();
+    open_rename_edit(app, frame, Some(f.r), &name, len, EditKind::TreeRename { path: full });
+}
+
+fn open_rename_edit(app: &mut App, frame: crate::gfx::Rect, fit: Option<f32>, name: &str, sel_end: usize, kind: EditKind) {
     // 輸入框在框線內；右邊多留一點，文字不會被框線蓋住
     let inner = crate::gfx::Rect::new(frame.l + RENAME_PAD, frame.t + 1.0, frame.r - RENAME_PAD + 3.0, frame.b - 1.0);
-    create_edit(app, inner, &name, sel_end, EditKind::Rename { tab, path: full });
+    create_edit(app, inner, name, sel_end, kind);
     if let Some(e) = app.edit.as_mut() {
         e.frame = Some(frame);
         e.fit = fit;

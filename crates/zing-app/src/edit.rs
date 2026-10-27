@@ -14,6 +14,8 @@ use crate::window;
 
 pub enum EditKind {
     Rename { tab: TabId, path: String },
+    /// 樹狀列的節點（資料夾）
+    TreeRename { path: String },
     Address,
     Palette,
     /// 主題編輯器：欄位的值、另存新主題的名稱
@@ -54,6 +56,7 @@ impl EditKind {
             EditKind::Palette => LIST_KEYS | BLUR_CANCELS,
             EditKind::Ask => BLUR_CANCELS,
             EditKind::Rename { .. }
+            | EditKind::TreeRename { .. }
             | EditKind::Address
             | EditKind::ThemeField { .. }
             | EditKind::ThemeSaveAs
@@ -77,7 +80,7 @@ impl EditKind {
             | EditKind::BarCustom
             | EditKind::BarSearch
             | EditKind::KeysSearch => true,
-            EditKind::Rename { .. } | EditKind::Address | EditKind::Palette | EditKind::Ask => false,
+            EditKind::Rename { .. } | EditKind::TreeRename { .. } | EditKind::Address | EditKind::Palette | EditKind::Ask => false,
         }
     }
 }
@@ -90,7 +93,7 @@ impl App {
             EditKind::Palette => self.palette_query(text),
             EditKind::KeysSearch => self.keys_query(text),
             EditKind::BarSearch => self.bar_query(text),
-            EditKind::Rename { .. } => window::rename_text_changed(self, &text),
+            EditKind::Rename { .. } | EditKind::TreeRename { .. } => window::rename_text_changed(self, &text),
             EditKind::Address
             | EditKind::ThemeField { .. }
             | EditKind::ThemeSaveAs
@@ -130,6 +133,13 @@ impl App {
                     let new_name = text.trim().to_string();
                     let old_name = path::file_name(&full).to_string();
                     if !new_name.is_empty() && new_name != old_name && self.find_tab(tab).is_some() {
+                        self.submit_op(FileOp::Rename { path: full, new_name });
+                    }
+                }
+                // 改名後開在它裡面的分頁、我的最愛跟著換（`on_renamed`），節點由樹狀列的監看更新
+                EditKind::TreeRename { path: full } => {
+                    let new_name = text.trim().to_string();
+                    if !new_name.is_empty() && new_name != path::file_name(&full) {
                         self.submit_op(FileOp::Rename { path: full, new_name });
                     }
                 }

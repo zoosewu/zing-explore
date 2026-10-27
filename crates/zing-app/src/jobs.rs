@@ -182,6 +182,7 @@ fn format_duration(d: Duration) -> String {
 impl App {
     /// 送出檔案作業；耗時的作業加入佇列介面
     pub fn submit_op(&mut self, op: FileOp) {
+        self.pause_watches(op.vacated());
         let (title, glyph) = describe(&op);
         if let Some((id, ctl)) = self.fileops.submit(op) {
             self.jobs.list.push(Job {

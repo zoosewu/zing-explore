@@ -136,6 +136,8 @@ pub struct App {
     pub probes_enabled: bool,
     /// 監看樹狀列展開中的節點；第一次有展開的節點時才建立
     pub tree_watch: Option<services::TreeWatch>,
+    /// 檔案作業正要移走的項目（`FileOp::vacated`，作業結束時移除）：它們之下的監看暫停
+    pub watch_pause: Vec<String>,
     /// 有變更、等著重新載入的樹狀列節點
     pub tree_dirty: Vec<String>,
     pub tree_visible: bool,
@@ -283,6 +285,7 @@ impl App {
             tree_pool: None,
             probes_enabled: false,
             tree_watch: None,
+            watch_pause: Vec::new(),
             tree_dirty: Vec::new(),
             focus: Focus::List,
             favorites,
@@ -444,6 +447,7 @@ impl App {
     /// 開始載入分頁目前的路徑（取消先前的載入）
     fn load(&mut self, p: usize, t: usize) {
         let notifier = self.notifier.clone();
+        let paused = self.watch_paused(&self.panes[p].tabs[t].path);
         let tab = &mut self.panes[p].tabs[t];
         tab.cancel.store(true, Ordering::Relaxed);
         tab.cancel = Arc::new(AtomicBool::new(false));
@@ -453,8 +457,53 @@ impl App {
         services::load_dir(&self.pool, &notifier, tab.id, tab.generation, tab.path.clone(), tab.spec, tab.cancel.clone());
         if !tab.refreshing {
             tab.nav_generation += 1;
-            tab.watcher = services::watch(&tab.path, &notifier, tab.id, tab.nav_generation);
+            tab.watcher = if paused { None } else { services::watch(&tab.path, &notifier, tab.id, tab.nav_generation) };
         }
+    }
+
+    /// `p` 在檔案作業正要移走的資料夾之下（不含它本身：監看資料夾自己不妨礙它被改名、移動）
+    fn watch_paused(&self, p: &str) -> bool {
+        self.watch_pause.iter().any(|v| !v.eq_ignore_ascii_case(p) && crate::model::within(p, v))
+    }
+
+    /// 檔案作業送出前：暫停 `vacated` 之下的分頁與樹狀列監看（Windows 拒絕移走底下有開啟中監看的資料夾）
+    pub fn pause_watches(&mut self, vacated: Vec<String>) {
+        if vacated.is_empty() {
+            return;
+        }
+        self.watch_pause.extend(vacated);
+        for p in 0..self.panes.len() {
+            for t in 0..self.panes[p].tabs.len() {
+                if self.watch_paused(&self.panes[p].tabs[t].path) {
+                    self.panes[p].tabs[t].watcher = None;
+                }
+            }
+        }
+        self.sync_tree_watch();
+    }
+
+    /// 檔案作業結束：恢復暫停的監看（作業失敗、取消時分頁仍在原處，要重新監看）
+    fn resume_watches(&mut self, vacated: &[String]) {
+        if vacated.is_empty() {
+            return;
+        }
+        for v in vacated {
+            if let Some(k) = self.watch_pause.iter().position(|w| w == v) {
+                self.watch_pause.swap_remove(k);
+            }
+        }
+        let notifier = self.notifier.clone();
+        for p in 0..self.panes.len() {
+            for t in 0..self.panes[p].tabs.len() {
+                let paused = self.watch_paused(&self.panes[p].tabs[t].path);
+                let tab = &mut self.panes[p].tabs[t];
+                if tab.watcher.is_none() && !tab.path.is_empty() && !paused {
+                    tab.nav_generation += 1;
+                    tab.watcher = services::watch(&tab.path, &notifier, tab.id, tab.nav_generation);
+                }
+            }
+        }
+        self.sync_tree_watch();
     }
 
     pub fn navigate(&mut self, p: usize, target: String, record: bool) {
@@ -612,7 +661,13 @@ impl App {
 
     /// 監看展開中的節點（資料夾監看只看清單中的資料夾，樹狀列的子資料夾要另外看）
     fn sync_tree_watch(&mut self) {
-        let dirs: Vec<&str> = self.tree.nodes.iter().filter(|n| n.expanded && !n.path.is_empty()).map(|n| n.path.as_str()).collect();
+        let dirs: Vec<&str> = self
+            .tree
+            .nodes
+            .iter()
+            .filter(|n| n.expanded && !n.path.is_empty() && !self.watch_paused(&n.path))
+            .map(|n| n.path.as_str())
+            .collect();
         if dirs.is_empty() && self.tree_watch.is_none() {
             return;
         }
@@ -879,10 +934,11 @@ impl App {
                     }
                 }
             }
-            Msg::FileOpDone { dirs, error, select, renamed } => {
+            Msg::FileOpDone { dirs, error, select, renamed, vacated } => {
                 if let Some(e) = error {
                     self.set_status(e, true);
                 }
+                self.resume_watches(&vacated);
                 if let Some((old, new)) = renamed {
                     self.on_renamed(&old, &new);
                 }
@@ -1169,7 +1225,10 @@ impl App {
             }
             // 選取多個項目時開啟批次重新命名
             Cmd::FileRename => {
-                if !self.open_batch_rename() {
+                if self.focus == Focus::Tree {
+                    let i = self.tree.focus;
+                    window::begin_tree_rename(self, i);
+                } else if !self.open_batch_rename() {
                     self.start_rename();
                 }
             }

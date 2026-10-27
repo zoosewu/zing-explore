@@ -104,6 +104,17 @@ pub enum FileOp {
 
 impl FileOp {
     /// 可能耗時、要顯示在作業佇列的作業
+    /// 作業會移走（改名、移動、刪除）的項目。底下有開啟中的監看時 Windows 拒絕移走資料夾，
+    /// 所以送出前先暫停它們的監看（`App::submit_op`），完成時（`Msg::FileOpDone` 的 `vacated`）恢復
+    pub fn vacated(&self) -> Vec<String> {
+        match self {
+            FileOp::Rename { path, .. } => vec![path.clone()],
+            FileOp::Delete { paths, .. } => paths.clone(),
+            FileOp::Transfer { sources, mov: true, .. } => sources.clone(),
+            FileOp::Transfer { .. } | FileOp::NewFolder { .. } | FileOp::NewFile { .. } | FileOp::BatchRename { .. } => Vec::new(),
+        }
+    }
+
     pub fn is_long(&self) -> bool {
         matches!(self, FileOp::Transfer { .. } | FileOp::Delete { .. } | FileOp::BatchRename { .. })
     }
@@ -156,9 +167,11 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
                 {
                     // 排隊中就取消了
                     n.send(Msg::Job { id: *id, event: JobEvent::Finished { error: None, cancelled: true } });
+                    n.send(Msg::FileOpDone { dirs: Vec::new(), error: None, select: None, renamed: None, vacated: op.vacated() });
                     continue;
                 }
                 let (dirs, select) = affected(&op);
+                let vacated = op.vacated();
                 let rename = match &op {
                     FileOp::Rename { path: p, new_name } => path::parent(p).map(|d| (p.clone(), path::join(&d, new_name))),
                     _ => None,
@@ -191,7 +204,7 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
                 let renamed = rename.filter(|_| error.is_none() && !cancelled);
                 // 作業佇列介面會顯示錯誤，狀態列不再重複
                 let error = if job.is_some() { None } else { error };
-                n.send(Msg::FileOpDone { dirs, error, select, renamed });
+                n.send(Msg::FileOpDone { dirs, error, select, renamed, vacated });
             }
         })
         .expect("無法建立檔案作業執行緒");

@@ -83,6 +83,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 分頁開著的資料夾被刪除或改名（資料夾監看看不到自己被刪除）：上層的子資料夾變更（樹狀列監看）、檔案作業完成時，
   在背景確認它下面的分頁（`services::check_gone`）；重新整理時找不到也一樣（`Msg::ListingError` 的 `gone`）。
   不在了就移到仍存在的上層（`App::on_folder_gone`）。只限列舉成功過的路徑（`Tab::shown`），輸入錯的路徑照樣顯示錯誤。
+- 資料夾底下有開啟中的監看（分頁、樹狀列）時，Windows 拒絕改名、移動、刪除到資源回收筒（監看它自己不影響）。
+  `App::submit_op` 送出前暫停 `FileOp::vacated` 之下的監看（`pause_watches`），`Msg::FileOpDone` 的 `vacated` 恢復；
+  新增會移走項目的作業時同步更新 `vacated`。
 - 右鍵選單、內容對話方塊、剪貼簿一律交給 `ShellHost`（shellhost.rs）：獨立的 STA 執行緒，UI 只送請求不等待，結果以訊息送回。主機忙碌超過 3 秒時下一個請求會改用新主機。
   右鍵選單最慢的是 `QueryContextMenu`（Windows 查詢動詞，文字檔約 200 ms；第一次載入擴充功能可達數秒），所以游標在清單停住 150 ms
   就送 `ShellJob::Prepare` 先建好（`shell::prepare_menu`），按下右鍵時項目相同、剪貼簿序號沒變、沒按 Shift 就直接顯示（`show_menu`）。

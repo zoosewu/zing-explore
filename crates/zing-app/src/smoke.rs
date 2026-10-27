@@ -2242,7 +2242,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     }, move |_, a| {
         let m = a.menu.as_ref().ok_or("選單沒開")?;
         let labels: Vec<&str> = m.levels[0].items.iter().map(|i| i.label.as_str()).collect();
-        for want in ["開啟", "在新分頁開啟", "剪下", "複製", "刪除", "複製路徑", "內容", "顯示更多選項"] {
+        for want in ["開啟", "在新分頁開啟", "剪下", "複製", "重新命名", "刪除", "複製路徑", "內容", "顯示更多選項"] {
             if !labels.contains(&want) {
                 return Err(format!("缺少「{want}」：{labels:?}"));
             }
@@ -2995,7 +2995,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             expect("錯誤", a.tab().error.is_some(), true)
         }
     }));
-    v.push(step("目前資料夾被刪除：回到測試資料夾", {
+    v.push(step("目前資料夾被刪除：回到測試資料夾（準備樹狀列改名）", {
         let d = d.clone();
         move |_| {
             with_app(|a| {
@@ -3008,6 +3008,71 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         move |_, a| {
             expect("路徑", a.tab().path.as_str(), d.as_str())?;
             expect("列舉完成", a.tab().shown, true)
+        }
+    }));
+    // 樹狀列就地重新命名：開在它裡面的分頁跟著換路徑
+    let (ren_old, ren_new) = (path::join(&d, "樹狀列改名"), path::join(&d, "樹狀列改名後"));
+    let ren_inner = path::join(&ren_old, "內層");
+    v.push(step(
+        "樹狀列改名：進入子資料夾後，在樹狀列按 F2",
+        {
+            let (ren_old, ren_inner) = (ren_old.clone(), ren_inner.clone());
+            move |c| {
+                let _ = harness_io(|| std::fs::create_dir_all(&ren_inner));
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, ren_inner.clone(), true);
+                    a.focus = Focus::Tree;
+                    if let Some(k) = a.tree.find(&ren_old) {
+                        a.tree.focus = k;
+                    }
+                });
+                if with_app(|a| a.tree.find(&ren_old).is_some()).unwrap_or(false) {
+                    key(c, "", VK_F2);
+                }
+            }
+        },
+        {
+            let ren_old = ren_old.clone();
+            move |_, a| match &a.edit {
+                Some(e) if matches!(&e.kind, EditKind::TreeRename { path } if path.eq_ignore_ascii_case(&ren_old)) => {
+                    expect("內容", crate::window::edit_text(e.hwnd).as_str(), "樹狀列改名")
+                }
+                _ => Err("重新命名框沒有出現".into()),
+            }
+        },
+    ));
+    v.push(
+        step("樹狀列改名：輸入後 Enter，分頁跟著換路徑", |_| edit_commit("樹狀列改名後"), {
+            let (ren_old, ren_new) = (ren_old.clone(), ren_new.clone());
+            move |_, a| {
+                if !exists(&ren_new) || exists(&ren_old) {
+                    return Err("磁碟上的名稱沒有改變".into());
+                }
+                expect("分頁", a.tab().path.as_str(), path::join(&ren_new, "內層").as_str())?;
+                // 送出時暫停的監看已恢復
+                expect("暫停的監看", a.watch_pause.len(), 0)?;
+                expect("分頁的監看", a.tab().watcher.is_some(), true)?;
+                expect("節點", a.tree.find(&ren_new).is_some(), true)
+            }
+        })
+        .slow(),
+    );
+    v.push(step("樹狀列改名：回到測試資料夾並清除", {
+        let (d, ren_new) = (d.clone(), ren_new.clone());
+        move |_| {
+            with_app(|a| {
+                a.focus = Focus::List;
+                let p = a.active_pane;
+                a.navigate(p, d.clone(), true);
+            });
+            let _ = harness_io(|| std::fs::remove_dir_all(&ren_new));
+        }
+    }, {
+        let (d, ren_new) = (d.clone(), ren_new.clone());
+        move |_, a| {
+            expect("路徑", a.tab().path.as_str(), d.as_str())?;
+            expect("節點", a.tree.find(&ren_new), None)
         }
     }));
     v.push(step(
