@@ -34,6 +34,7 @@ pub const MENU_TREE_CUT: u32 = crate::shell::EXTRA_ID_BASE + 102;
 pub const MENU_TREE_COPY: u32 = crate::shell::EXTRA_ID_BASE + 103;
 pub const MENU_TREE_COPYPATH: u32 = crate::shell::EXTRA_ID_BASE + 104;
 pub const MENU_TREE_PROPERTIES: u32 = crate::shell::EXTRA_ID_BASE + 105;
+pub const MENU_TREE_DELETE: u32 = crate::shell::EXTRA_ID_BASE + 106;
 
 /// 「顯示更多選項」要開的完整選單，連同程式自己的項目（開啟第一層時算好，之後清單的選取改變也不影響）
 pub struct PendingShellMenu {
@@ -175,6 +176,10 @@ impl App {
         out.push(MenuItem::separator());
         out.push(item(MENU_TREE_CUT, tr!("剪下")));
         out.push(item(MENU_TREE_COPY, tr!("複製")));
+        // 我的最愛是捷徑、磁碟機不能刪除；刪掉開著的資料夾時分頁移到上層（`on_folder_gone`）
+        if kind == NodeKind::Folder {
+            out.push(item(MENU_TREE_DELETE, tr!("刪除")));
+        }
         out.push(item(MENU_TREE_COPYPATH, tr!("複製路徑")));
         if !rest.is_empty() {
             out.push(MenuItem::separator());
@@ -208,6 +213,10 @@ impl App {
             }
             MENU_TREE_COPYPATH => self.shell_host.submit(ShellJob::SetText { text: target, status: tr!("已複製路徑").into(), reply: None }),
             MENU_TREE_PROPERTIES => self.shell_host.submit(ShellJob::Properties { paths: vec![target] }),
+            MENU_TREE_DELETE => {
+                let permanent = crate::input::Mods::current().shift;
+                self.submit_op(crate::shell::FileOp::Delete { paths: vec![target], permanent });
+            }
             _ => self.on_menu_extra(id, target),
         }
     }

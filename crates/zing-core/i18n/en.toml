@@ -747,3 +747,4 @@
 "讓選單變慢的第三方項目（自動偵測）只在「顯示更多選項」中" = "Third-party items that slow the menu down (detected automatically) are only under \"Show more options\""
 "開啟的項目照樣放在第一層；7 天後重新量" = "Items switched on stay on the first level; measured again after 7 days"
 "隱藏緩慢的擴充功能項目" = "Hide slow extension items"
+"資料夾已不存在，移到 {up}：{gone}" = "Folder no longer exists, moved to {up}: {gone}"

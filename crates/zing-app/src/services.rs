@@ -34,7 +34,10 @@ pub type TabId = u64;
 pub enum Msg {
     /// 列舉進度或完成；`listing` 為目前為止的完整內容（前綴穩定）
     Listing { tab: TabId, generation: u64, listing: Arc<Listing>, sorted: Vec<u32>, done: bool },
-    ListingError { tab: TabId, generation: u64, error: String },
+    /// `gone`：資料夾不存在時，仍存在的最近的上層（「此電腦」為空字串）
+    ListingError { tab: TabId, generation: u64, error: String, gone: Option<String> },
+    /// 分頁的資料夾已不存在（被刪除或改名，`check_gone`）；`existing` 是仍存在的最近的上層
+    FolderGone { path: String, existing: String },
     Sorted { tab: TabId, generation: u64, spec: SortSpec, sorted: Vec<u32> },
     /// 樹狀列的子資料夾；None 表示這個位置不預先載入（`kind` 為 Probe 時）
     /// `show_hidden`：列舉時是否包含隱藏資料夾（設定在途中改變時丟棄預先載入的結果）
@@ -228,9 +231,37 @@ pub fn load_dir(
                 n.send(Msg::Listing { tab, generation, listing, sorted, done: true });
             }
             Err(EnumError::Cancelled) => {}
-            Err(e) => n.send(Msg::ListingError { tab, generation, error: e.to_string() }),
+            Err(e) => {
+                let gone = matches!(e, EnumError::NotFound).then(|| nearest_existing(&path));
+                n.send(Msg::ListingError { tab, generation, error: e.to_string(), gone });
+            }
         }
     });
+}
+
+/// 確認分頁的資料夾還在（上層的子資料夾改變、檔案作業之後）；不在就送出 `Msg::FolderGone`
+pub fn check_gone(pool: &Pool, n: &Notifier, path: String) {
+    let n = n.clone();
+    pool.spawn(move || {
+        zing_core::guard::io("確認資料夾是否還在");
+        if !std::path::Path::new(&path).is_dir() {
+            let existing = nearest_existing(&path);
+            n.send(Msg::FolderGone { path, existing });
+        }
+    });
+}
+
+/// `path` 的上層中仍存在的最近一個；都不在（磁碟機已移除）就是「此電腦」（空字串）
+fn nearest_existing(path: &str) -> String {
+    zing_core::guard::io("找出仍存在的上層資料夾");
+    let mut p = path.to_string();
+    while let Some(up) = zing_core::path::parent(&p) {
+        if up.is_empty() || std::path::Path::new(&up).is_dir() {
+            return up;
+        }
+        p = up;
+    }
+    String::new()
 }
 
 pub fn sort_job(pool: &Pool, n: &Notifier, tab: TabId, generation: u64, listing: Arc<Listing>, spec: SortSpec) {

@@ -2242,7 +2242,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     }, move |_, a| {
         let m = a.menu.as_ref().ok_or("選單沒開")?;
         let labels: Vec<&str> = m.levels[0].items.iter().map(|i| i.label.as_str()).collect();
-        for want in ["開啟", "在新分頁開啟", "剪下", "複製", "複製路徑", "內容", "顯示更多選項"] {
+        for want in ["開啟", "在新分頁開啟", "剪下", "複製", "刪除", "複製路徑", "內容", "顯示更多選項"] {
             if !labels.contains(&want) {
                 return Err(format!("缺少「{want}」：{labels:?}"));
             }
@@ -2905,6 +2905,111 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
         move |_, a| expect("節點", a.tree.find(&outside), None),
     ));
+    // 開著的資料夾被刪除：資料夾監看看不到自己被刪除，由上層的子資料夾變更（樹狀列監看）或重新整理發現，移到仍存在的上層
+    let gone_top = path::join(&d, "外部刪除");
+    let gone_inner = path::join(&gone_top, "內層");
+    v.push(step(
+        "目前資料夾被刪除：進入「外部刪除\\內層」",
+        {
+            let gone_inner = gone_inner.clone();
+            move |_| {
+                let _ = harness_io(|| std::fs::create_dir_all(&gone_inner));
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, gone_inner.clone(), true);
+                });
+            }
+        },
+        {
+            let gone_inner = gone_inner.clone();
+            move |_, a| {
+                expect("路徑", a.tab().path.as_str(), gone_inner.as_str())?;
+                expect("列舉完成", a.tab().shown, true)
+            }
+        },
+    ));
+    v.push(step(
+        "目前資料夾被刪除：在別處刪除上層，分頁移到仍存在的資料夾",
+        {
+            let gone_top = gone_top.clone();
+            move |_| drop(std::thread::spawn(move || std::fs::remove_dir_all(&gone_top)))
+        },
+        {
+            let d = d.clone();
+            move |_, a| {
+                expect("路徑", a.tab().path.as_str(), d.as_str())?;
+                expect("沒有錯誤", a.tab().error.as_deref(), None)?;
+                expect("狀態列", a.status.as_ref().is_some_and(|s| s.0.contains("資料夾已不存在")), true)
+            }
+        },
+    ));
+    v.push(step(
+        "目前資料夾被刪除：進入「外部刪除」",
+        {
+            let gone_top = gone_top.clone();
+            move |_| {
+                let _ = harness_io(|| std::fs::create_dir_all(&gone_top));
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, gone_top.clone(), true);
+                });
+            }
+        },
+        {
+            let gone_top = gone_top.clone();
+            move |_, a| {
+                expect("路徑", a.tab().path.as_str(), gone_top.as_str())?;
+                expect("列舉完成", a.tab().shown, true)
+            }
+        },
+    ));
+    v.push(step(
+        "目前資料夾被刪除：刪除後按 F5",
+        {
+            let gone_top = gone_top.clone();
+            move |_| {
+                let _ = harness_io(|| std::fs::remove_dir(&gone_top));
+                exec("nav.refresh");
+            }
+        },
+        {
+            let d = d.clone();
+            move |_, a| {
+                expect("路徑", a.tab().path.as_str(), d.as_str())?;
+                expect("沒有錯誤", a.tab().error.as_deref(), None)
+            }
+        },
+    ));
+    v.push(step("目前資料夾被刪除：輸入不存在的路徑只顯示錯誤", {
+        let gone_top = gone_top.clone();
+        move |_| {
+            with_app(|a| {
+                let p = a.active_pane;
+                a.navigate(p, gone_top.clone(), true);
+            });
+        }
+    }, {
+        let gone_top = gone_top.clone();
+        move |_, a| {
+            expect("路徑", a.tab().path.as_str(), gone_top.as_str())?;
+            expect("錯誤", a.tab().error.is_some(), true)
+        }
+    }));
+    v.push(step("目前資料夾被刪除：回到測試資料夾", {
+        let d = d.clone();
+        move |_| {
+            with_app(|a| {
+                let p = a.active_pane;
+                a.navigate(p, d.clone(), true);
+            });
+        }
+    }, {
+        let d = d.clone();
+        move |_, a| {
+            expect("路徑", a.tab().path.as_str(), d.as_str())?;
+            expect("列舉完成", a.tab().shown, true)
+        }
+    }));
     v.push(step(
         "樹狀列：再點一次收合",
         {

@@ -62,6 +62,8 @@ pub struct Tab {
     /// 載入完成後要選取的項目（名稱、是否進入重新命名）
     pub pending_select: Option<(String, bool)>,
     pub refresh_due: bool,
+    /// 這個路徑列舉成功過：之後找不到就是被刪除或改名了，移到仍存在的上層（剛輸入的路徑找不到則只顯示錯誤）
+    pub shown: bool,
 }
 
 impl Tab {
@@ -94,6 +96,7 @@ impl Tab {
             watcher: None,
             pending_select: None,
             refresh_due: false,
+            shown: false,
         }
     }
 
@@ -117,6 +120,7 @@ impl Tab {
         self.refreshing = false;
         self.pending_select = None;
         self.refresh_due = false;
+        self.shown = false;
     }
 
     pub fn rebuild_view(&mut self, show_hidden: bool) {
@@ -423,6 +427,14 @@ pub enum Expand {
     Done { path: String, stale: bool },
     /// 需要先載入
     Load(String),
+}
+
+/// `p` 是 `dir` 本身或在它底下（不分大小寫；`dir` 可以是磁碟機根目錄）
+pub fn within(p: &str, dir: &str) -> bool {
+    match p.get(..dir.len()) {
+        Some(head) if head.eq_ignore_ascii_case(dir) => p.len() == dir.len() || dir.ends_with('\\') || p[dir.len()..].starts_with('\\'),
+        _ => false,
+    }
 }
 
 /// `p` 是 `old` 本身或在它底下時，換成 `new` 開頭的路徑（資料夾改名）
@@ -902,6 +914,15 @@ mod tests {
         assert_eq!(replace_prefix(r"E:\a\b\x\y", r"E:\a\b", r"E:\a\c").as_deref(), Some(r"E:\a\c\x\y"));
         assert_eq!(replace_prefix(r"E:\a\bb", r"E:\a\b", r"E:\a\c"), None);
         assert_eq!(replace_prefix(r"E:\a", r"E:\a\b", r"E:\a\c"), None);
+    }
+
+    #[test]
+    fn within_dir() {
+        assert!(within(r"E:\a\B", r"e:\a\b"));
+        assert!(within(r"E:\a\b\x", r"E:\a\b"));
+        assert!(within(r"E:\a", r"E:\"));
+        assert!(!within(r"E:\a\bb", r"E:\a\b"));
+        assert!(!within(r"E:\a", r"E:\a\b"));
     }
 
     #[test]

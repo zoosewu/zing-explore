@@ -635,10 +635,51 @@ impl App {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_TREE_REFRESH);
         }
-        for path in std::mem::take(&mut self.tree_dirty) {
+        let dirty = std::mem::take(&mut self.tree_dirty);
+        // 子資料夾有刪除或改名：開在它們裡面的分頁可能已不存在（資料夾監看看不到自己被刪除或改名）
+        self.check_tabs_under(&dirty);
+        for path in dirty {
             if self.tree.nodes.iter().any(|n| n.expanded && n.path.eq_ignore_ascii_case(&path)) {
                 self.load_tree(path, TreeLoad::Refresh);
             }
+        }
+    }
+
+    /// 開在 `dirs` 之下（不含 `dirs` 本身）的分頁：在背景確認資料夾還在（`services::check_gone`）
+    fn check_tabs_under(&self, dirs: &[String]) {
+        let mut seen: Vec<&str> = Vec::new();
+        for tab in self.panes.iter().flat_map(|p| p.tabs.iter()) {
+            let under = dirs.iter().any(|d| !d.eq_ignore_ascii_case(&tab.path) && crate::model::within(&tab.path, d));
+            if under && !seen.iter().any(|s| s.eq_ignore_ascii_case(&tab.path)) {
+                seen.push(&tab.path);
+                services::check_gone(&self.pool, &self.notifier, tab.path.clone());
+            }
+        }
+    }
+
+    /// 分頁的資料夾已不存在：開在它（或它裡面）的分頁都移到仍存在的上層
+    fn on_folder_gone(&mut self, gone: &str, existing: String) {
+        let mut moved = false;
+        for p in 0..self.panes.len() {
+            for t in 0..self.panes[p].tabs.len() {
+                if !crate::model::within(&self.panes[p].tabs[t].path, gone) {
+                    continue;
+                }
+                moved = true;
+                if t == self.panes[p].active {
+                    self.navigate(p, existing.clone(), false);
+                } else {
+                    let tab = &mut self.panes[p].tabs[t];
+                    tab.path = existing.clone();
+                    tab.reset_contents();
+                    tab.watcher = None;
+                    self.load(p, t);
+                }
+            }
+        }
+        if moved {
+            let up = if existing.is_empty() { tr!("此電腦").to_string() } else { existing };
+            self.set_status(tr!("資料夾已不存在，移到 {up}：{gone}", up, gone), false);
         }
     }
 
@@ -753,6 +794,7 @@ impl App {
                 tab.refreshing = false;
                 if done {
                     tab.loading = false;
+                    tab.shown = true;
                     // 已知的資料夾大小寫進新清單；設定為自動時計算
                     let path_key = crate::sizes::key(&tab.path);
                     if self.sizes.has_parent(&path_key) {
@@ -780,16 +822,23 @@ impl App {
                         perf.on_listing(self.panes[p].tabs[t].view.len(), done);
                     }
             }
-            Msg::ListingError { tab, generation, error } => {
+            Msg::ListingError { tab, generation, error, gone } => {
                 if let Some((p, t)) = self.find_tab(tab) {
                     let tab = &mut self.panes[p].tabs[t];
                     if generation == tab.generation {
                         tab.loading = false;
                         tab.refreshing = false;
-                        tab.error = Some(error);
+                        match gone {
+                            Some(existing) if tab.shown => {
+                                let path = tab.path.clone();
+                                self.on_folder_gone(&path, existing);
+                            }
+                            _ => tab.error = Some(error),
+                        }
                     }
                 }
             }
+            Msg::FolderGone { path, existing } => self.on_folder_gone(&path, existing),
             Msg::Sorted { tab, generation, spec, sorted } => {
                 if let Some((p, t)) = self.find_tab(tab) {
                     let show_hidden = self.show_hidden;
@@ -845,6 +894,8 @@ impl App {
                         self.load_tree(d.clone(), TreeLoad::Refresh);
                     }
                 }
+                // 開在被刪除、移走的資料夾（或它裡面）的分頁
+                self.check_tabs_under(&dirs);
                 for p in 0..self.panes.len() {
                     for t in 0..self.panes[p].tabs.len() {
                         let tp = self.panes[p].tabs[t].path.clone();
