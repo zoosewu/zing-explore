@@ -83,11 +83,11 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 右鍵選單、內容對話方塊、剪貼簿一律交給 `ShellHost`（shellhost.rs）：獨立的 STA 執行緒，UI 只送請求不等待，結果以訊息送回。主機忙碌超過 3 秒時下一個請求會改用新主機。
   右鍵選單最慢的是 `QueryContextMenu`（Windows 查詢動詞，文字檔約 200 ms；第一次載入擴充功能可達數秒），所以游標在清單停住 150 ms
   就送 `ShellJob::Prepare` 先建好（`shell::prepare_menu`），按下右鍵時項目相同、剪貼簿序號沒變、沒按 Shift 就直接顯示（`show_menu`）。
-  停住與按下右鍵的對象（項目、資料夾）一律經 `Tab::menu_target`，不要另外計算，否則預先準備會悄悄失效。
-  鍵盤（Shift+F10、選單鍵）同理：清單的按鍵停住 150 ms 就以 `Tab::key_menu_target` 準備，`menu.context` 用同一個函式。
+  停住與按下右鍵的對象（項目、資料夾）一律經 `Tab::menu_target`（樹狀列 `App::tree_menu_target`），不要另外計算，否則預先準備會悄悄失效。
+  鍵盤（Shift+F10、選單鍵）同理：清單的按鍵停住 150 ms 就以 `Tab::key_menu_target`（樹狀列同上）準備，`menu.context` 用同一個函式。
   預先準備中（PREPARING）超過 10 秒才算卡住。各階段耗時：`cargo test --release -p zing-app ctx_menu_timing -- --ignored --nocapture`。
-- 清單的右鍵選單預設是兩層（`ctxmenu.rs`，設定 `context_menu.style`）：第一層用 `menu.rs` 自繪（程式的命令＋`entry_menu_extras`＋
-  第三方擴充功能），立即出現；「顯示更多選項」、Shift+右鍵、「此電腦」才開完整的 Windows 選單。第三方擴充功能在 `shellext.rs`：
+- 清單與樹狀列的右鍵選單預設是兩層（`ctxmenu.rs`，設定 `context_menu.style`）：第一層用 `menu.rs` 自繪（程式的命令＋`entry_menu_extras`＋
+  第三方擴充功能；樹狀列的項目只對節點動作，是 `MENU_TREE_*` 而不是命令），立即出現；「顯示更多選項」、Shift+右鍵、「此電腦」才開完整的 Windows 選單。第三方擴充功能在 `shellext.rs`：
   預先準備時在 ShellHost 載入、計時、讀出項目（`Msg::MenuExtensions`），選了再以同一個物件執行（`ShellJob::InvokeExt`）；
   還沒準備好就不放（選單不會在顯示後變長）。緩慢的（依檔案／資料夾／背景分開判斷）不放進第一層（`context_menu.hide_slow`），`allow_slow` 列出的 CLSID 除外
   （設定頁的表格逐一切換，`hide_slow` 關閉時表格為灰階）。

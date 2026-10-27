@@ -1149,6 +1149,15 @@ impl App {
             Cmd::MenuContext => {
                 // 鍵盤開啟右鍵選單：顯示在焦點項目下方
                 self.layout = self.compute_layout();
+                if self.focus == Focus::Tree {
+                    let i = self.tree.focus;
+                    let Some((tr, n)) = self.layout.tree.zip(self.tree.nodes.get(i)) else { return Ok(()) };
+                    let x = tr.l + 6.0 + n.depth as f32 * 14.0 + 30.0;
+                    let y = (tr.t + 4.0 + (i + 1) as f32 * self.row_h() - self.tree.scroll).clamp(tr.t, tr.b);
+                    let pt = self.client_to_screen(x, y);
+                    self.open_tree_menu(i, x, y, pt);
+                    return Ok(());
+                }
                 let tab = self.tab();
                 let pl = &self.layout.panes[p];
                 // 與按鍵停住時預先準備的相同（`Tab::key_menu_target`）
@@ -1160,11 +1169,7 @@ impl App {
                 };
                 let x = if self.grid(p, pl.list).is_some() { item.map_or(pl.list.l, |r| r.l) + 16.0 } else { pl.cols[0].0 + 40.0 };
                 let y = y.clamp(pl.list.t, pl.list.b);
-                let s = self.gfx.scale();
-                let mut pt = POINT { x: (x * s) as i32, y: (y * s) as i32 };
-                unsafe {
-                    let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd, &mut pt);
-                }
+                let pt = self.client_to_screen(x, y);
                 self.open_context_menu(items, folder, x, y, pt);
             }
             Cmd::FileCopypath => {
@@ -1351,6 +1356,16 @@ impl App {
             Cmd::AppExit => window::close(self.hwnd),
         }
         Ok(())
+    }
+
+    /// 視窗內的座標（DIP）換成螢幕座標
+    fn client_to_screen(&self, x: f32, y: f32) -> POINT {
+        let s = self.gfx.scale();
+        let mut pt = POINT { x: (x * s) as i32, y: (y * s) as i32 };
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd, &mut pt);
+        }
+        pt
     }
 
     /// 交給 Shell 主機顯示右鍵選單（不等待結果，選擇的項目以訊息送回）

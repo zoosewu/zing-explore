@@ -2210,6 +2210,72 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         key(c, "", VK_ESCAPE);
         key(c, "", VK_ESCAPE);
     }, |_, a| expect("關閉", a.menu.is_none(), true)));
+    // 樹狀列：目前資料夾的節點（展開到目前資料夾後一定看得到）
+    let cur_node = |a: &App| a.tree.nodes.iter().position(|n| n.kind == crate::model::NodeKind::Folder && n.path.eq_ignore_ascii_case(&a.tab().path));
+    let cur_node_pos = move || {
+        with_app(|a| {
+            a.layout = a.compute_layout();
+            let k = cur_node(a)?;
+            tree_arrow_pos(a, k).map(|(x, y)| (x + 40.0, y))
+        })
+        .flatten()
+    };
+    let tree_before = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let before = tree_before.clone();
+    v.push(step("右鍵選單（樹狀列）：游標停在節點後預先準備", move |c| {
+        before.set(crate::shellhost::PREPARED_COUNT.load(std::sync::atomic::Ordering::Relaxed));
+        hover_at(c, cur_node_pos());
+        with_app(|a| a.on_menu_prepare_timer());
+    }, move |_, a| {
+        let want = cur_node(a).and_then(|k| a.tree_menu_target(k)).ok_or("找不到目前資料夾的節點")?;
+        expect("準備的對象", a.menu_prepared.as_ref(), Some(&want))?;
+        if crate::shellhost::PREPARED_COUNT.load(std::sync::atomic::Ordering::Relaxed) <= tree_before.get() {
+            return Err("ShellHost 還沒建好選單".into());
+        }
+        Ok(())
+    }));
+    let selected_before = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let before = selected_before.clone();
+    v.push(step("右鍵選單（樹狀列）：在資料夾按右鍵顯示精簡選單", move |c| {
+        before.set(with_app(|a| a.tab().selected_entries().len()).unwrap_or(0));
+        right_click(c, cur_node_pos());
+    }, move |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒開")?;
+        let labels: Vec<&str> = m.levels[0].items.iter().map(|i| i.label.as_str()).collect();
+        for want in ["開啟", "在新分頁開啟", "剪下", "複製", "複製路徑", "內容", "顯示更多選項"] {
+            if !labels.contains(&want) {
+                return Err(format!("缺少「{want}」：{labels:?}"));
+            }
+        }
+        expect("清單的選取不變", a.tab().selected_entries().len(), selected_before.get())?;
+        expect("完整選單待命", a.pending_shell_menu.is_some(), true)
+    }));
+    let tabs_before = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let before = tabs_before.clone();
+    v.push(step("右鍵選單（樹狀列）：點「在新分頁開啟」", move |c| {
+        before.set(with_app(|a| a.panes[a.active_pane].tabs.len()).unwrap_or(0));
+        click(c, "", menu_item_pos(0, "在新分頁開啟"));
+    }, move |_, a| {
+        expect("選單關閉", a.menu.is_none(), true)?;
+        expect("分頁數", a.panes[a.active_pane].tabs.len(), tabs_before.get() + 1)
+    }));
+    v.push(step("右鍵選單（樹狀列）：選單鍵在焦點節點開啟", move |_| {
+        with_app(|a| {
+            a.exec("tab.close");
+            a.focus = Focus::Tree;
+            if let Some(k) = cur_node(a) {
+                a.tree.focus = k;
+            }
+            a.exec("menu.context");
+        });
+    }, |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒開")?;
+        expect("第一項", m.levels[0].items.first().map(|i| i.label.as_str()), Some("開啟"))
+    }));
+    v.push(step("右鍵選單（樹狀列）：Esc 關閉，焦點回到清單", |c| {
+        key(c, "", VK_ESCAPE);
+        with_app(|a| a.focus = Focus::List);
+    }, |_, a| expect("關閉", a.menu.is_none(), true)));
     v.push(step("命令列：視窗太窄時移進「⋯」", |c| hover_at(c, Some((5.0, 400.0))), |_, a| {
         let narrow = a.layout_cmdbar(crate::gfx::Rect::new(0.0, 0.0, 180.0, 30.0));
         expect("有移出的按鈕", narrow.overflow.is_empty(), false)?;

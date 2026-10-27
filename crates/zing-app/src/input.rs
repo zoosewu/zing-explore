@@ -1,14 +1,13 @@
 //! 滑鼠與鍵盤輸入。
 
 use zing_core::keymap::KeyChord;
-use zing_core::path;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_MENU,
     VK_NEXT, VK_PRIOR, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 
-use crate::app::{App, Focus, MENU_FAV_ADD, MENU_FAV_DOWN, MENU_FAV_UP, Modal, Press};
+use crate::app::{App, Focus, Modal, Press};
 use crate::model::{MenuTarget, NodeKind};
 use crate::view::{COLUMN_KEYS, Hit, clamp_col};
 
@@ -104,9 +103,9 @@ impl App {
         }
     }
 
-    /// 游標移到清單的另一列（或空白處）：停住 150 ms 後預先準備右鍵選單
+    /// 游標移到清單的另一列（或空白處）、樹狀列的另一個節點：停住 150 ms 後預先準備右鍵選單
     fn schedule_menu_prepare(&self) {
-        if self.perf.is_some() || !matches!(self.hover, Hit::Row(..) | Hit::ListEmpty(_)) {
+        if self.perf.is_some() || !matches!(self.hover, Hit::Row(..) | Hit::ListEmpty(_) | Hit::TreeRow(_) | Hit::TreeArrow(_)) {
             return;
         }
         unsafe {
@@ -114,8 +113,11 @@ impl App {
         }
     }
 
-    /// 在 `hit` 按右鍵時選單的對象（`Tab::menu_target`）；不是清單就是 None
+    /// 在 `hit` 按右鍵時選單的對象（`Tab::menu_target`、`App::tree_menu_target`）；不是清單或樹狀列就是 None
     pub fn menu_target_at(&self, hit: &Hit) -> Option<MenuTarget> {
+        if let Hit::TreeRow(i) | Hit::TreeArrow(i) = *hit {
+            return self.tree_menu_target(i);
+        }
         let (p, at) = list_spot(hit)?;
         Some(self.panes.get(p)?.tab().menu_target(at))
     }
@@ -129,9 +131,9 @@ impl App {
         }
     }
 
-    /// 清單有焦點時按了鍵（移動焦點、選取、篩選…）：停住 150 ms 後預先準備鍵盤開啟的右鍵選單
+    /// 清單或樹狀列有焦點時按了鍵（移動焦點、選取、篩選…）：停住 150 ms 後預先準備鍵盤開啟的右鍵選單
     fn schedule_key_menu_prepare(&self) {
-        if self.perf.is_some() || self.focus != Focus::List || self.menu.is_some() {
+        if self.perf.is_some() || !matches!(self.focus, Focus::List | Focus::Tree) || self.menu.is_some() {
             return;
         }
         unsafe {
@@ -144,11 +146,17 @@ impl App {
             let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(self.hwnd), crate::app::TIMER_KEY_MENU_PREPARE);
         }
         // 計時期間焦點可能移走、或選單已經開了
-        if self.focus != Focus::List || self.menu.is_some() {
+        if self.menu.is_some() {
             return;
         }
-        let target = self.tab().key_menu_target();
-        self.prepare_menu(target);
+        let target = match self.focus {
+            Focus::List => Some(self.tab().key_menu_target()),
+            Focus::Tree => self.tree_menu_target(self.tree.focus),
+            _ => None,
+        };
+        if let Some(target) = target {
+            self.prepare_menu(target);
+        }
     }
 
     /// 送出預先準備（與上次相同就不送）。滑鼠停住、按鍵停住共用；ShellHost 只保留最後一份
@@ -394,34 +402,7 @@ impl App {
                 self.paint();
                 self.open_context_menu(target.items, target.folder, x, y, screen);
             }
-            Hit::TreeRow(i) | Hit::TreeArrow(i) => {
-                let n = &self.tree.nodes[i];
-                match n.kind {
-                    NodeKind::FavRoot => {
-                        let cur = self.tab().path.clone();
-                        if !cur.is_empty() && !self.is_favorite(&cur) {
-                            let extras = vec![(MENU_FAV_ADD, tr!("將目前資料夾加入我的最愛").to_string())];
-                            self.show_context_menu(Vec::new(), String::new(), screen, extras, cur);
-                        }
-                    }
-                    NodeKind::Pc => {}
-                    kind => {
-                        let target = n.path.clone();
-                        let folder = path::parent(&target).unwrap_or_default();
-                        let mut extras = self.folder_extras(&target);
-                        if kind == NodeKind::Favorite {
-                            let k = self.favorites.iter().position(|f| f.eq_ignore_ascii_case(&target)).unwrap_or(0);
-                            if k > 0 {
-                                extras.push((MENU_FAV_UP, tr!("我的最愛中上移").into()));
-                            }
-                            if k + 1 < self.favorites.len() {
-                                extras.push((MENU_FAV_DOWN, tr!("我的最愛中下移").into()));
-                            }
-                        }
-                        self.show_context_menu(vec![target.clone()], folder, screen, extras, target);
-                    }
-                }
-            }
+            Hit::TreeRow(i) | Hit::TreeArrow(i) => self.open_tree_menu(i, x, y, screen),
             _ => {}
         }
         self.invalidate();
