@@ -18,7 +18,7 @@ use zing_core::theme::{
 use crate::app::{App, EditKind, Modal, Press};
 use crate::gfx::{Font, Rect};
 use crate::services::Msg;
-use crate::sidepanel::{footer_buttons, row_rect};
+use crate::sidepanel::{Line, footer_buttons, row_rect};
 use crate::view::Hit;
 use crate::window;
 
@@ -346,6 +346,52 @@ impl App {
     fn collapse(&mut self) {
         if let Some(ed) = self.theme_editor_mut() {
             ed.expanded = None;
+        }
+    }
+
+    /// 鍵盤焦點的目標（`side_targets`），位置與 `theme_hit` 相同；滑桿只用滑鼠（鍵盤用 −／＋）。
+    /// 下方兩行是底部按鈕與「另存新檔／匯出／開啟檔案」
+    pub fn theme_targets(&self, panel: Rect, line: Line) -> Vec<(Hit, Rect)> {
+        let Some(ed) = self.theme_editor() else { return Vec::new() };
+        let pl = self.theme_panel_layout(panel);
+        let k = match line {
+            Line::Top(_) => return Vec::new(),
+            Line::Bottom(0) => return vec![(Hit::ThemeButton(0), pl.buttons[0]), (Hit::ThemeButton(1), pl.buttons[1])],
+            Line::Bottom(_) => return pl.links.iter().enumerate().map(|(i, r)| (Hit::ThemeLink(i), *r)).collect(),
+            Line::Row(k) => k,
+        };
+        let Some(row) = ed.rows(&self.theme).get(k).copied() else { return Vec::new() };
+        let rr = self.theme_row_rects(pl.list, k, ed.scroll);
+        let upto = |x: f32| Rect::new(rr.row.l, rr.row.t, x, rr.row.b);
+        match row {
+            Row::Header(_) => Vec::new(),
+            Row::Swatches(_, line) => {
+                let first = line * SWATCH_COLS;
+                (0..SWATCH_COLS)
+                    .filter(|c| first + c <= SWATCHES.len())
+                    .map(|c| {
+                        let cell = self.swatch_cell(rr.row, c);
+                        let cell = if first + c == SWATCHES.len() { Rect::new(cell.l, cell.t, rr.row.r, cell.b) } else { cell };
+                        (Hit::ThemeCell(k, first + c), cell)
+                    })
+                    .collect()
+            }
+            Row::Field(i) => {
+                let f = &FIELDS[i];
+                let mut out = match f.kind {
+                    FieldKind::Color => vec![(Hit::ThemeRow(k), upto(rr.text.l)), (Hit::ThemeText(k), rr.text)],
+                    FieldKind::Number { .. } => {
+                        vec![(Hit::ThemeRow(k), upto(rr.minus.l)), (Hit::ThemeStep(k, false), rr.minus), (Hit::ThemeStep(k, true), rr.plus)]
+                    }
+                    _ => vec![(Hit::ThemeRow(k), upto(rr.tail.l))],
+                };
+                if !self.theme.is_default(f) {
+                    out.push((Hit::ThemeReset(k), rr.tail));
+                }
+                out
+            }
+            Row::Rule(_) => vec![(Hit::ThemeRow(k), upto(rr.text.l)), (Hit::ThemeText(k), rr.text), (Hit::ThemeDelete(k), rr.tail)],
+            Row::Style | Row::Mode | Row::Option(..) | Row::AddRule => vec![(Hit::ThemeRow(k), rr.row)],
         }
     }
 

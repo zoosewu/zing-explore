@@ -116,6 +116,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   也要能用鍵盤啟動。右側面板（設定、主題、自訂命令列、快速鍵）是 `App::side` 一個欄位（`sidepanel.rs`），一次只開一個；
   宿主只經過 `side_hit`／`side_click`／`side_wheel`／`side_escape`／`paint_side`，捲動、列的位置、捲到看得見（`side_reveal`，
   冒煙測試也用它找列）、底部按鈕是共用的。新面板加一個 `SidePanel` 變體與這些分派，不要再在 view.rs、input.rs 各接一次。
+  鍵盤（`Focus::Side`：開啟面板或按 Tab 進入）：面板只提供一行中可按的目標（`side_targets`，命中與位置），
+  ↑↓←→、Home／End、Enter／空白鍵、焦點框都在 sidepanel.rs；改了面板的命中（`*_hit`）就同步改 `*_targets`，
+  冒煙測試「每一行的鍵盤目標與滑鼠命中一致」會檢查。
 - 執行外部程式一律經 `services::start`／`services::launch`：`Show::HideConsole`（`run`、Lua 的 `run`）時主控台程式以
   CREATE_NO_WINDOW 執行；開啟檔案、網址列輸入維持 `Show::Normal`（與檔案總管相同）。Lua 的 `os.execute`、`io.popen`
   在 prelude 換成不顯示主控台視窗的版本。

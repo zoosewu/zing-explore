@@ -10,6 +10,7 @@ use zing_core::cmdbar::{self as core, GLYPHS, Item};
 
 use crate::app::{App, EditKind, Modal, Press};
 use crate::gfx::{Font, Rect};
+use crate::sidepanel::Line;
 use crate::view::Hit;
 use crate::window;
 
@@ -178,9 +179,44 @@ impl App {
             if let Some(p) = self.bar_parts(row, r).iter().position(|p| p.contains(x, y)) {
                 return Hit::BarEditPart(k, p);
             }
-            return if matches!(row, Row::Icons(..)) { Hit::BarEditPanel } else { Hit::BarEditRow(k) };
+            return if matches!(row, Row::Icons(..) | Row::IconActions(_)) { Hit::BarEditPanel } else { Hit::BarEditRow(k) };
         }
         Hit::BarEditPanel
+    }
+
+    /// 鍵盤焦點的目標（`side_targets`），位置與 `cmdbar_edit_hit` 相同；上方是搜尋框，下方是底部按鈕。
+    /// 拖曳把手只用滑鼠（鍵盤用 ↑／↓）
+    pub fn cmdbar_edit_targets(&self, panel: Rect, line: Line) -> Vec<(Hit, Rect)> {
+        let Some(ed) = self.cmdbar_editor() else { return Vec::new() };
+        let (_, list, buttons) = self.cmdbar_edit_layout(panel);
+        let k = match line {
+            Line::Top(_) => {
+                let s = self.bar_search_rect(panel);
+                if ed.query.is_empty() {
+                    return vec![(Hit::BarEditSearch(false), s)];
+                }
+                let x = s.r - s.h();
+                return vec![(Hit::BarEditSearch(false), Rect::new(s.l, s.t, x, s.b)), (Hit::BarEditSearch(true), Rect::new(x, s.t, s.r, s.b))];
+            }
+            Line::Bottom(_) => return vec![(Hit::BarEditButton(0), buttons[0]), (Hit::BarEditButton(1), buttons[1])],
+            Line::Row(k) => k,
+        };
+        let rows = self.cmdbar_edit_rows();
+        let Some(row) = rows.get(k) else { return Vec::new() };
+        let r = self.bar_row_rect(list, k, ed.scroll);
+        let parts = self.bar_parts(row, r);
+        let part = |p: usize| (Hit::BarEditPart(k, p), parts[p]);
+        match row {
+            Row::Header(_) | Row::Group(_) => Vec::new(),
+            Row::Item(_) => vec![
+                (Hit::BarEditRow(k), Rect::new(parts[PART_DRAG].r, r.t, parts[PART_UP].l, r.b)),
+                part(PART_UP),
+                part(PART_DOWN),
+                part(PART_REMOVE),
+            ],
+            Row::Icons(..) | Row::IconActions(_) => (0..parts.len()).map(part).collect(),
+            Row::Name(_) | Row::AddSeparator | Row::Avail(..) | Row::Custom => vec![(Hit::BarEditRow(k), r)],
+        }
     }
 
     pub fn cmdbar_edit_click(&mut self, hit: Hit, _y: f32) {

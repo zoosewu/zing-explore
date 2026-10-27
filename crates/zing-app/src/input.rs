@@ -539,6 +539,12 @@ impl App {
 
         // 右側面板：Esc 收起展開的選項、回上一層或關閉面板（篩選與選取之前）
         if plain && vk == VK_ESCAPE.0 && self.side_escape() {
+            self.side_settle();
+            return true;
+        }
+        // 鍵盤焦點在右側面板：方向鍵、Enter、空白鍵交給面板（快速鍵之前）
+        if self.focus == Focus::Side && self.side_key(vk, mods.ctrl || mods.alt) {
+            self.suppress_char = true;
             return true;
         }
 
@@ -572,6 +578,7 @@ impl App {
         match self.focus {
             Focus::List => self.list_key(vk, mods),
             Focus::Tree => self.tree_key(vk, mods),
+            Focus::Side => false,
         }
     }
 

@@ -13,6 +13,7 @@ use zing_core::keymap::KeyChord;
 use crate::app::{App, EditKind};
 use crate::gfx::{Font, Rect};
 use crate::input::Mods;
+use crate::sidepanel::Line;
 use crate::view::Hit;
 use crate::window;
 
@@ -210,6 +211,31 @@ impl App {
             };
         }
         Hit::KeysPanel
+    }
+
+    /// 鍵盤焦點的目標（`side_targets`），位置與 `keys_hit` 相同；第 0 列是搜尋列，下方是底部按鈕。
+    /// 命令列的空白處與 ＋ 相同，只放 ＋
+    pub fn keys_targets(&self, panel: Rect, line: Line) -> Vec<(Hit, Rect)> {
+        let Some(kp) = self.keys_panel() else { return Vec::new() };
+        let (_, list, _, buttons) = self.keys_layout(panel);
+        let k = match line {
+            Line::Top(_) => return Vec::new(),
+            Line::Bottom(_) => return vec![(Hit::KeysButton(0), buttons[0]), (Hit::KeysButton(1), buttons[1])],
+            Line::Row(k) => k,
+        };
+        let r = self.keys_row_rect(list, k, kp.scroll);
+        match self.keys_rows().get(k) {
+            Some(Row::Search) => {
+                let [q, by, clear] = self.search_parts(r);
+                if kp.query.is_empty() && kp.key_filter.is_none() {
+                    return vec![(Hit::KeysPart(0, PART_QUERY), q), (Hit::KeysPart(0, PART_BY_KEY), by)];
+                }
+                vec![(Hit::KeysPart(0, PART_QUERY), Rect::new(q.l, q.t, clear.l, q.b)), (Hit::KeysPart(0, PART_CLEAR), clear), (Hit::KeysPart(0, PART_BY_KEY), by)]
+            }
+            Some(Row::Cmd(cmd, _)) => self.key_parts(cmd, r).into_iter().map(|(i, p)| (Hit::KeysPart(k, i), p)).collect(),
+            Some(Row::Conflict) => self.conflict_parts(r).into_iter().enumerate().map(|(i, p)| (Hit::KeysPart(k, i), p)).collect(),
+            Some(Row::Header(_)) | None => Vec::new(),
+        }
     }
 
     pub fn keys_click(&mut self, hit: Hit) {

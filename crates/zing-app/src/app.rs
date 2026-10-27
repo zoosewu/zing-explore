@@ -77,6 +77,8 @@ const INLINE_SORT_LIMIT: usize = 20_000;
 pub enum Focus {
     List,
     Tree,
+    /// 右側面板（`sidepanel.rs`）
+    Side,
 }
 
 /// 滑鼠按下後的拖曳狀態
@@ -152,6 +154,8 @@ pub struct App {
     pub bar_focus: Option<usize>,
     /// 最後一次請 ShellHost 預先準備右鍵選單的（項目, 資料夾）
     pub menu_prepared: Option<MenuTarget>,
+    /// 右側面板的鍵盤焦點（`Focus::Side` 時）
+    pub side_cursor: crate::sidepanel::SideCursor,
     /// 精簡右鍵選單的「顯示更多選項」要開的完整選單（ctxmenu.rs）
     pub pending_shell_menu: Option<crate::ctxmenu::PendingShellMenu>,
     /// ShellHost 預先載入的第三方擴充功能項目（精簡右鍵選單的第一層）
@@ -260,6 +264,7 @@ impl App {
             tip: None,
             bar_focus: None,
             menu_prepared: None,
+            side_cursor: Default::default(),
             pending_shell_menu: None,
             menu_exts: None,
             cmdbar_images: Default::default(),
@@ -1221,15 +1226,21 @@ impl App {
                 }
             }
             Cmd::PaneFocusnext => {
+                // 窗格 → 樹狀列 → 右側面板 → 第一個窗格
                 let tree_visible = self.layout.tree.is_some();
+                let side = self.side.is_some();
                 match self.focus {
-                    Focus::Tree => {
+                    Focus::List if p + 1 < self.panes.len() => self.active_pane = p + 1,
+                    Focus::List if tree_visible => self.focus = Focus::Tree,
+                    Focus::List | Focus::Tree if side => {
+                        self.focus = Focus::Side;
+                        self.side_cursor.visible = true;
+                        self.side_settle();
+                    }
+                    Focus::List | Focus::Tree | Focus::Side => {
                         self.focus = Focus::List;
                         self.active_pane = 0;
                     }
-                    Focus::List if p + 1 < self.panes.len() => self.active_pane = p + 1,
-                    Focus::List if tree_visible => self.focus = Focus::Tree,
-                    Focus::List => self.active_pane = 0,
                 }
                 self.sync_tree();
             }

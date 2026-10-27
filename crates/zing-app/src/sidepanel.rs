@@ -4,8 +4,12 @@
 //! 滾輪（`side_wheel`）、Esc（`side_escape`）、繪製（`paint_side`）、關閉（`close_side_panels`）。
 //! 各面板只提供自己的列、列的內容與動作；捲動、列的位置、捲到看得見（`side_reveal`）、底部兩個按鈕是共用的。
 //! 面板的命中仍是各自的 `Hit` 變體，`Hit::side_panel` 判斷屬於面板的命中。
+//!
+//! 鍵盤（`Focus::Side`，開啟面板或按 Tab 進入）：各面板只提供一行中可按的目標（`side_targets`：命中與位置，與滑鼠的
+//! 命中相同）；↑↓ 換行、←→ 在行中移動、Enter／空白鍵等於點那個目標、焦點框、捲到看得見都在這裡。
+//! 冒煙測試逐行核對目標與滑鼠的命中一致。
 
-use crate::app::App;
+use crate::app::{App, Focus};
 use crate::cmdbaredit::CmdBarEditor;
 use crate::gfx::{Font, Rect};
 use crate::keyspanel::KeysPanel;
@@ -28,6 +32,28 @@ pub enum SideKind {
     Theme,
     BarEdit,
     Keys,
+}
+
+/// 鍵盤焦點所在的一行：清單上方的固定行（例如搜尋框）、清單的第 k 列、清單下方的固定行（底部按鈕）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Line {
+    Top(usize),
+    Row(usize),
+    Bottom(usize),
+}
+
+/// 鍵盤焦點：第幾行、行中第幾個目標；`visible` 在按了方向鍵後才為 true（用滑鼠時不畫焦點框）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SideCursor {
+    pub line: Line,
+    pub part: usize,
+    pub visible: bool,
+}
+
+impl Default for SideCursor {
+    fn default() -> Self {
+        SideCursor { line: Line::Row(0), part: 0, visible: false }
+    }
 }
 
 /// 面板中捲動清單的幾何：清單範圍、列高、列數、固定在上方不捲動的列數
@@ -81,6 +107,25 @@ impl Hit {
                 | Hit::KeysButton(_)
                 | Hit::KeysPanel
         )
+    }
+
+    /// 屬於清單第幾列的命中
+    pub fn side_row(&self) -> Option<usize> {
+        match *self {
+            Hit::ThemeRow(k)
+            | Hit::ThemeText(k)
+            | Hit::ThemeCell(k, _)
+            | Hit::ThemeReset(k)
+            | Hit::ThemeStep(k, _)
+            | Hit::ThemeSlider(k)
+            | Hit::ThemeDelete(k)
+            | Hit::SettingsRow(k)
+            | Hit::BarEditRow(k)
+            | Hit::BarEditPart(k, _)
+            | Hit::KeysRow(k)
+            | Hit::KeysPart(k, _) => Some(k),
+            _ => None,
+        }
     }
 }
 
@@ -169,16 +214,23 @@ impl App {
         }
     }
 
-    /// 開啟一個面板（取代開著的那個）
+    /// 開啟一個面板（取代開著的那個）；鍵盤焦點移到面板
     pub fn open_side(&mut self, panel: SidePanel) {
         self.close_side_panels();
         self.side = Some(panel);
+        self.focus = Focus::Side;
+        self.side_cursor = SideCursor::default();
+        self.layout = self.compute_layout();
+        self.side_settle();
         self.invalidate();
     }
 
     /// 關閉右側的面板與它的輸入框；主題編輯面板保留目前的主題（不還原）
     pub fn close_side_panels(&mut self) {
         self.side = None;
+        if self.focus == Focus::Side {
+            self.focus = Focus::List;
+        }
         if self.edit.as_ref().is_some_and(|e| e.kind.in_side_panel())
             && let Some(e) = self.edit.take()
         {
@@ -243,6 +295,153 @@ impl App {
         self.side_row(panel, k)
     }
 
+    /// 清單上方、下方固定行的數目
+    fn side_fixed_lines(&self) -> (usize, usize) {
+        match self.side_kind() {
+            Some(SideKind::Settings | SideKind::BarEdit) => (1, 1),
+            Some(SideKind::Theme) => (0, 2),
+            Some(SideKind::Keys) => (0, 1),
+            None => (0, 0),
+        }
+    }
+
+    /// 由上到下所有的行
+    pub fn side_lines(&self) -> Vec<Line> {
+        let (top, bottom) = self.side_fixed_lines();
+        let rows = self.layout.side_panel.and_then(|p| self.side_geometry(p)).map_or(0, |g| g.rows);
+        (0..top).map(Line::Top).chain((0..rows).map(Line::Row)).chain((0..bottom).map(Line::Bottom)).collect()
+    }
+
+    /// 一行中可用鍵盤按的目標（由左到右）：命中與位置，位置的中心點以滑鼠命中會得到同一個命中。
+    /// 只用滑鼠的（滑桿、拖曳把手）不列入，鍵盤有對應的按鈕
+    pub fn side_targets(&self, line: Line) -> Vec<(Hit, Rect)> {
+        let Some(panel) = self.layout.side_panel else { return Vec::new() };
+        let mut v = match self.side_kind() {
+            Some(SideKind::Settings) => self.settings_targets(panel, line),
+            Some(SideKind::Theme) => self.theme_targets(panel, line),
+            Some(SideKind::BarEdit) => self.cmdbar_edit_targets(panel, line),
+            Some(SideKind::Keys) => self.keys_targets(panel, line),
+            None => Vec::new(),
+        };
+        v.sort_by(|a, b| a.1.l.total_cmp(&b.1.l));
+        v
+    }
+
+    /// 把鍵盤焦點放在某一行（捲到看得見）
+    pub fn side_focus_line(&mut self, line: Line, part: usize) {
+        if let Line::Row(k) = line {
+            self.side_reveal(k);
+        }
+        let n = self.side_targets(line).len();
+        self.side_cursor.line = line;
+        self.side_cursor.part = part.min(n.saturating_sub(1));
+        self.invalidate();
+    }
+
+    /// 焦點所在的行沒有目標了（列改變、收起選項）：移到下面最近的、沒有就往上找
+    pub fn side_settle(&mut self) {
+        if self.side.is_none() {
+            return;
+        }
+        let lines = self.side_lines();
+        let cur = lines.iter().position(|l| *l == self.side_cursor.line).unwrap_or(0);
+        let has = |l: &Line| !self.side_targets(*l).is_empty();
+        if lines.get(cur).is_some_and(has) {
+            let part = self.side_cursor.part;
+            return self.side_focus_line(lines[cur], part);
+        }
+        let next = lines[cur.min(lines.len())..].iter().find(|l| has(l)).or_else(|| lines[..cur.min(lines.len())].iter().rev().find(|l| has(l)));
+        if let Some(&l) = next {
+            self.side_focus_line(l, 0);
+        }
+    }
+
+    /// 點了面板中的 `hit`：鍵盤焦點跟著移到那裡（不畫焦點框）
+    fn side_cursor_to(&mut self, hit: &Hit) {
+        self.focus = Focus::Side;
+        self.side_cursor.visible = false;
+        let lines = match hit.side_row() {
+            Some(k) => vec![Line::Row(k)],
+            None => self.side_lines().into_iter().filter(|l| !matches!(l, Line::Row(_))).collect(),
+        };
+        for line in lines {
+            if let Some(part) = self.side_targets(line).iter().position(|(h, _)| h == hit) {
+                self.side_cursor.line = line;
+                self.side_cursor.part = part;
+                return;
+            }
+        }
+    }
+
+    /// 鍵盤焦點在面板時的按鍵；回傳是否處理了（其他按鍵照常交給快速鍵）
+    pub fn side_key(&mut self, vk: u16, ctrl_or_alt: bool) -> bool {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_END, VK_HOME, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SPACE, VK_UP};
+        let nav = [VK_UP.0, VK_DOWN.0, VK_LEFT.0, VK_RIGHT.0, VK_HOME.0, VK_END.0];
+        let activate = vk == VK_RETURN.0 || vk == VK_SPACE.0;
+        if ctrl_or_alt || self.side.is_none() || !(nav.contains(&vk) || activate) {
+            return false;
+        }
+        // 第一次按鍵只顯示焦點框（用滑鼠開啟或點過面板時焦點框是隱藏的）
+        if !self.side_cursor.visible {
+            self.side_cursor.visible = true;
+            self.side_settle();
+            return true;
+        }
+        let SideCursor { line, part, .. } = self.side_cursor;
+        let targets = self.side_targets(line);
+        if activate {
+            let Some((hit, r)) = targets.get(part).cloned() else { return true };
+            self.side_click(hit, (r.l + r.r) / 2.0, (r.t + r.b) / 2.0);
+            self.side_cursor.visible = true;
+            self.side_settle();
+            return true;
+        }
+        match vk {
+            v if v == VK_LEFT.0 => self.side_focus_line(line, part.saturating_sub(1)),
+            v if v == VK_RIGHT.0 => self.side_focus_line(line, part + 1),
+            _ => {
+                let lines = self.side_lines();
+                let cur = lines.iter().position(|l| *l == line).unwrap_or(0);
+                let has = |l: &Line| !self.side_targets(*l).is_empty();
+                let found = match vk {
+                    v if v == VK_UP.0 => lines[..cur].iter().rev().find(|l| has(l)),
+                    v if v == VK_DOWN.0 => lines.get(cur + 1..).unwrap_or_default().iter().find(|l| has(l)),
+                    v if v == VK_HOME.0 => lines.iter().find(|l| has(l)),
+                    _ => lines.iter().rev().find(|l| has(l)),
+                };
+                let Some(&next) = found else { return true };
+                // 換行時選水平位置最接近的目標（色票、圖示格可以上下移動）
+                let x = targets.get(part).map_or(0.0, |(_, r)| (r.l + r.r) / 2.0);
+                if let Line::Row(k) = next {
+                    self.side_reveal(k);
+                }
+                let near = self
+                    .side_targets(next)
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| ((a.1.1.l + a.1.1.r) / 2.0 - x).abs().total_cmp(&((b.1.1.l + b.1.1.r) / 2.0 - x).abs()))
+                    .map_or(0, |(i, _)| i);
+                self.side_focus_line(next, near);
+            }
+        }
+        true
+    }
+
+    /// 焦點框（鍵盤焦點在面板、按過方向鍵後）
+    fn paint_side_focus(&self) {
+        if self.focus != Focus::Side || !self.side_cursor.visible {
+            return;
+        }
+        let Some(r) = self.side_targets(self.side_cursor.line).get(self.side_cursor.part).map(|t| t.1) else { return };
+        // 捲出清單的列不畫
+        if let (Line::Row(_), Some(g)) = (self.side_cursor.line, self.layout.side_panel.and_then(|p| self.side_geometry(p)))
+            && (r.t < g.list.t - 1.0 || r.b > g.list.b + 1.0)
+        {
+            return;
+        }
+        self.gfx.stroke_round(r.inset(-1.0, -1.0), self.theme.metrics.radius, self.theme.color.accent, 2.0);
+    }
+
     pub fn side_hit(&self, panel: Rect, x: f32, y: f32) -> Hit {
         match self.side_kind() {
             Some(SideKind::Settings) => self.settings_hit(panel, x, y),
@@ -254,6 +453,7 @@ impl App {
     }
 
     pub fn side_click(&mut self, hit: Hit, x: f32, y: f32) {
+        self.side_cursor_to(&hit);
         match self.side_kind() {
             Some(SideKind::Settings) => self.settings_click(hit),
             Some(SideKind::Theme) => self.theme_click(hit, x),
@@ -303,6 +503,7 @@ impl App {
             Some(SideKind::Keys) => self.paint_keys_panel(r),
             None => return,
         }
+        self.paint_side_focus();
         self.gfx.vline(r.l - 1.0, r.t, r.b, self.theme.color.border);
     }
 

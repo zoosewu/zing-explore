@@ -193,7 +193,7 @@ use windows::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON, MK_RBUTTON,
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardState, SetKeyboardState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F2, VK_HOME,
-    VK_LEFT, VK_MENU, VK_OEM_5, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB,
+    VK_LEFT, VK_MENU, VK_OEM_5, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect, ICON_BIG, KillTimer, SendMessageW, SetTimer, WM_CHAR, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
@@ -1019,6 +1019,50 @@ fn at(a: &App, dir: &str) -> Result<(), String> {
     }
     if t.loading || t.refreshing {
         return Err("仍在載入".into());
+    }
+    Ok(())
+}
+
+/// 右側面板每一行的鍵盤目標與滑鼠命中一致：目標的中心點命中它自己，橫掃一行時點得到的也都在目標中
+/// （只用滑鼠的除外：滑桿、拖曳把手、與 ＋ 相同的快速鍵列空白處）
+fn check_side_targets(a: &mut App) -> Result<(), String> {
+    use crate::sidepanel::Line;
+    use crate::view::Hit;
+    a.layout = a.compute_layout();
+    let panel = a.layout.side_panel.ok_or("面板位置")?;
+    let bar_rows = a.cmdbar_edit_rows();
+    let mouse_only = |h: &Hit| match *h {
+        Hit::ThemeSlider(_) | Hit::KeysRow(_) => true,
+        Hit::BarEditPart(k, p) => p == crate::cmdbaredit::PART_DRAG && matches!(bar_rows.get(k), Some(crate::cmdbaredit::Row::Item(_))),
+        _ => false,
+    };
+    let panel_hit = |h: &Hit| matches!(h, Hit::None | Hit::SettingsPanel | Hit::ThemePanel | Hit::BarEditPanel | Hit::KeysPanel);
+    for line in a.side_lines() {
+        let row = match line {
+            Line::Row(k) => a.side_reveal(k),
+            _ => None,
+        };
+        let targets = a.side_targets(line);
+        for (hit, r) in &targets {
+            let got = a.side_hit(panel, (r.l + r.r) / 2.0, (r.t + r.b) / 2.0);
+            if got != *hit {
+                return Err(format!("{line:?} 的 {hit:?} 在中心點命中 {got:?}"));
+            }
+        }
+        let Some(r) = row.or_else(|| targets.first().map(|t| t.1)) else { continue };
+        let y = (r.t + r.b) / 2.0;
+        let mut x = panel.l;
+        while x < panel.r {
+            let h = a.side_hit(panel, x, y);
+            let mine = match line {
+                Line::Row(k) => h.side_row() == Some(k),
+                _ => h.side_row().is_none() && !panel_hit(&h),
+            };
+            if mine && !mouse_only(&h) && !targets.iter().any(|(t, _)| *t == h) {
+                return Err(format!("{line:?} 在 x={x} 點得到 {h:?}，鍵盤到不了"));
+            }
+            x += 2.0;
+        }
     }
     Ok(())
 }
@@ -2434,6 +2478,123 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     });
     v.push(step("設定：點工具列的齒輪開啟", move |c| click(c, "", gear()), |_, a| expect("設定頁", a.settings_page().is_some(), true)));
     v.push(step("設定：再點一次關閉", move |c| click(c, "", gear()), |_, a| expect("設定頁", a.settings_page().is_none(), true)));
+    // 鍵盤：方向鍵、Enter、空白鍵、Esc、Tab
+    use crate::sidepanel::Line;
+    let cursor = |a: &App| a.side_cursor.line;
+    // 按 ↓ 直到焦點在第 k 列（最多 60 次）
+    let down_to = |c: &Ctx, row: Row| {
+        for _ in 0..60 {
+            let k = with_app(|a| a.settings_page().and_then(|p| p.rows().iter().position(|r| *r == row))).flatten();
+            if k.is_none() || with_app(|a| a.side_cursor.line).is_some_and(|l| Some(l) == k.map(Line::Row)) {
+                return;
+            }
+            key(c, "", VK_DOWN);
+        }
+    };
+    let general = group_index("一般").unwrap_or(0);
+    let hidden = zing_core::prefs::PREFS.iter().position(|p| p.key == "show_hidden").unwrap_or(0);
+    v.push(step("設定（鍵盤）：Ctrl+, 開啟、↓ 顯示焦點框", |c| {
+        key(c, "c", VIRTUAL_KEY(0xBC));
+        key(c, "", VK_DOWN);
+    }, move |_, a| {
+        expect("焦點", a.focus, Focus::Side)?;
+        expect("焦點框", a.side_cursor.visible, true)?;
+        expect("第一個分類", cursor(a), Line::Row(0))
+    }));
+    v.push(step("設定（鍵盤）：↓ 到「一般」，Enter 進入", move |c| {
+        down_to(c, Row::Category(general));
+        key(c, "", VK_RETURN);
+    }, move |_, a| {
+        expect("分類", category(a), Some(general))?;
+        expect("焦點在第一項", cursor(a), Line::Row(0))
+    }));
+    v.push(step("設定（鍵盤）：↓ 到顯示隱藏檔案，空白鍵切換", move |c| {
+        down_to(c, Row::Field(hidden));
+        key(c, "", VIRTUAL_KEY(0x20));
+    }, |_, a| {
+        expect("顯示隱藏檔案", a.show_hidden, true)?;
+        expect("沒有變成篩選", a.tab().filter.as_str(), "")
+    }));
+    v.push(step("截圖：設定頁的鍵盤焦點框", |_| {}, |c, _| screenshot(c, "25-設定鍵盤焦點")));
+    v.push(step("設定（鍵盤）：Esc 回到分類清單，焦點在「一般」", |c| key(c, "", VK_ESCAPE), move |_, a| {
+        expect("分類清單", category(a), None)?;
+        let k = a.settings_page().and_then(|p| p.rows().iter().position(|r| *r == Row::Category(general)));
+        expect("焦點", Some(cursor(a)), k.map(Line::Row))
+    }));
+    v.push(step("設定（鍵盤）：↑ 到頂端後再 ↑ 不動、End 到底部按鈕", |c| {
+        key(c, "", VK_HOME);
+        key(c, "", VK_UP);
+        key(c, "", VK_END);
+    }, move |_, a| {
+        expect("底部按鈕", cursor(a), Line::Bottom(0))?;
+        expect("「關閉」在右邊", a.side_targets(Line::Bottom(0)).get(1).map(|t| t.0.clone()), Some(crate::view::Hit::SettingsButton(1)))
+    }));
+    v.push(step("設定（鍵盤）：Tab 回到清單，↓ 移動清單", |c| {
+        key(c, "", VK_TAB);
+        key(c, "", VK_HOME);
+        key(c, "", VK_DOWN);
+    }, |_, a| {
+        expect("焦點", a.focus, Focus::List)?;
+        expect("設定頁仍開著", a.settings_page().is_some(), true)?;
+        expect("清單焦點", a.tab().focus, 1)
+    }));
+    v.push(step("設定（鍵盤）：→ Enter 按「關閉」", |c| {
+        with_app(|a| a.exec("pane.focusnext"));
+        for _ in 0..4 {
+            if with_app(|a| a.focus == Focus::Side).unwrap_or(true) {
+                break;
+            }
+            with_app(|a| a.exec("pane.focusnext"));
+        }
+        key(c, "", VK_END);
+        key(c, "", VK_RIGHT);
+        key(c, "", VK_RETURN);
+    }, move |_, a| {
+        expect("設定頁", a.settings_page().is_none(), true)?;
+        expect("焦點回到清單", a.focus, Focus::List)?;
+        a.set_pref(hidden, "false".into());
+        expect("還原", a.show_hidden, false)
+    }));
+    v.push(step("右側面板：每一行的鍵盤目標與滑鼠命中一致", |_| {}, |_, a| {
+        use crate::view::Hit;
+        // 設定頁：分類清單、每個分類（展開第一個選項欄位）
+        a.exec("settings.open");
+        check_side_targets(a).map_err(|e| format!("設定分類：{e}"))?;
+        for g in 0..zing_core::prefs::groups().len() {
+            a.settings_category(Some(g));
+            let rows = a.settings_page().map(|p| p.rows()).unwrap_or_default();
+            let choice = rows.iter().find_map(|r| match *r {
+                Row::Field(i) if matches!(zing_core::prefs::PREFS[i].kind, zing_core::prefs::Kind::Choice(_) | zing_core::prefs::Kind::Theme) => Some(i),
+                _ => None,
+            });
+            if let Some(page) = a.settings_page_mut() {
+                page.expanded = choice;
+            }
+            check_side_targets(a).map_err(|e| format!("設定分類 {g}：{e}"))?;
+        }
+        a.close_side_panels();
+        // 主題：展開第一個顏色欄位（色票）
+        a.exec("theme.edit");
+        a.layout = a.compute_layout();
+        let color = a.theme_rows().iter().position(|r| matches!(r, crate::themepanel::Row::Field(i) if zing_core::theme::FIELDS[*i].kind == zing_core::theme::FieldKind::Color));
+        if let Some(k) = color {
+            a.side_click(Hit::ThemeRow(k), 0.0, 0.0);
+        }
+        check_side_targets(a).map_err(|e| format!("主題：{e}"))?;
+        a.close_side_panels();
+        // 自訂命令列：展開第一個按鈕（名稱、圖示、圖示動作）
+        a.exec("cmdbar.edit");
+        a.layout = a.compute_layout();
+        if let Some(k) = a.cmdbar_edit_rows().iter().position(|r| matches!(r, crate::cmdbaredit::Row::Item(_))) {
+            a.side_click(Hit::BarEditRow(k), 0.0, 0.0);
+        }
+        check_side_targets(a).map_err(|e| format!("命令列：{e}"))?;
+        a.close_side_panels();
+        a.exec("keys.edit");
+        check_side_targets(a).map_err(|e| format!("快速鍵：{e}"))?;
+        a.close_side_panels();
+        expect("焦點", a.focus, Focus::List)
+    }));
     // 重新載入設定（config.reload）與設定頁走同一條套用路徑（App::apply_config）
     let reload_with = |f: fn(&mut zing_core::config::Config)| {
         with_app(|a| {
@@ -2456,7 +2617,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
         |_, a| {
             expect("顯示隱藏檔案", a.show_hidden, true)?;
-            expect("右鍵選單重新準備", a.menu_prepared.is_none(), true)
+            // 放進去的標記被清掉（之後按鍵停住的計時器可能已重新準備了真的對象）
+            expect("右鍵選單重新準備", a.menu_prepared != Some(Default::default()), true)
         },
     ));
     v.push(step(

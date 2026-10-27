@@ -16,7 +16,7 @@ use crate::gfx::{Font, Rect};
 use crate::services::Msg;
 use crate::settings;
 use crate::shellext::SlowExt;
-use crate::sidepanel::{footer_buttons, row_rect};
+use crate::sidepanel::{Line, footer_buttons, row_rect};
 use crate::view::Hit;
 use crate::window;
 
@@ -147,9 +147,16 @@ impl App {
     pub fn settings_category(&mut self, category: Option<usize>) {
         self.end_pref_edit();
         let Some(page) = self.settings_page_mut() else { return };
+        let left = page.category;
         page.category = category;
         page.scroll = 0.0;
         page.expanded = None;
+        // 鍵盤焦點：進入分類時在第一項，回到分類清單時在剛才的分類
+        let k = match (category, left) {
+            (None, Some(g)) => page.rows().iter().position(|r| *r == Row::Category(g)).unwrap_or(0),
+            _ => 0,
+        };
+        self.side_cursor.line = Line::Row(k);
         let groups = groups();
         let group = category.and_then(|g| groups.get(g).copied());
         if PREFS.iter().any(|p| Some(p.group) == group && p.kind == Kind::SlowList) {
@@ -212,6 +219,34 @@ impl App {
         Hit::SettingsPanel
     }
 
+    /// 鍵盤焦點的目標（`side_targets`）：上方是標題列的「‹」（分類中），下方是底部按鈕
+    pub fn settings_targets(&self, panel: Rect, line: Line) -> Vec<(Hit, Rect)> {
+        let Some(page) = self.settings_page() else { return Vec::new() };
+        let pl = self.settings_layout(panel);
+        match line {
+            Line::Top(_) if page.category.is_some() => vec![(Hit::SettingsBack, pl.title)],
+            Line::Top(_) => Vec::new(),
+            Line::Bottom(_) => vec![(Hit::SettingsButton(0), pl.buttons[0]), (Hit::SettingsButton(1), pl.buttons[1])],
+            Line::Row(k) => {
+                let (rr, _) = self.settings_row_rects(pl.list, k, page.scroll);
+                match page.rows().get(k) {
+                    // 分類與它下方的一覽是同一個按鈕
+                    Some(Row::Category(_)) => vec![(Hit::SettingsRow(k), Rect::new(rr.l, rr.t, rr.r, rr.b + self.row_h()))],
+                    Some(Row::Field(_) | Row::Option(..)) => vec![(Hit::SettingsRow(k), rr)],
+                    Some(Row::Slow(..)) if self.slow_table_enabled() => vec![(Hit::SettingsRow(k), rr)],
+                    _ => Vec::new(),
+                }
+            }
+        }
+    }
+
+    /// 收起展開的選項後，鍵盤焦點回到欄位本身
+    fn settings_focus_field(&mut self, i: usize) {
+        if let Some(k) = self.settings_page().and_then(|p| p.rows().iter().position(|r| *r == Row::Field(i))) {
+            self.side_cursor.line = Line::Row(k);
+        }
+    }
+
     pub fn settings_click(&mut self, hit: Hit) {
         match hit {
             Hit::SettingsRow(k) => {
@@ -238,6 +273,7 @@ impl App {
                         if let Some(page) = self.settings_page_mut() {
                             page.expanded = None;
                         }
+                        self.settings_focus_field(i);
                         if let Some(v) = value {
                             self.set_pref(i, v);
                         }
@@ -267,7 +303,10 @@ impl App {
     pub fn settings_escape(&mut self) {
         match self.settings_page_mut() {
             Some(page) if page.expanded.is_some() => {
-                page.expanded = None;
+                let i = page.expanded.take();
+                if let Some(i) = i {
+                    self.settings_focus_field(i);
+                }
                 self.invalidate();
             }
             Some(page) if page.category.is_some() => self.settings_category(None),
