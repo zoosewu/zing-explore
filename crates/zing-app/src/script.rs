@@ -1377,41 +1377,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// examples/scripts/extract.lua：以真的 tar.exe 解壓縮（中文路徑、子資料夾、損壞的檔案）
+    /// 系統的 ANSI 字碼頁能否表示 `s`：tar.exe 等以窄字元讀命令列的程式，表示不了的字元會變成「?」
+    fn acp_can_encode(s: &str) -> bool {
+        use windows::Win32::Globalization::{CP_ACP, WideCharToMultiByte};
+        let w: Vec<u16> = s.encode_utf16().collect();
+        let mut used_default = windows::core::BOOL(0);
+        let n = unsafe { WideCharToMultiByte(CP_ACP, 0, &w, None, windows::core::PCSTR::null(), Some(&mut used_default)) };
+        n > 0 && !used_default.as_bool()
+    }
+
+    /// examples/scripts/extract.lua：以真的 tar.exe 解壓縮（中文路徑、子資料夾、損壞的檔案）。
+    /// tar.exe 的參數經過系統的 ANSI 字碼頁：英文版 Windows（如 CI）表示不了中文，改用英文名稱測同樣的流程
     #[test]
     fn example_extract_script() {
         let _allow = zing_core::guard::allow_io("測試");
-        let dir = zing_core::testdir::dir().join(format!("zing-extract-測試-{}", std::process::id()));
+        let cjk = acp_can_encode("測試來源甲乙壓縮資料壞掉說明輸出平放");
+        let n = |zh: &'static str, en: &'static str| if cjk { zh } else { en };
+        let (a, b, zip, tgz, broken) = (n("甲.txt", "a.txt"), n("乙.txt", "b.txt"), n("壓縮 1.zip", "pack 1.zip"), n("資料.tar.gz", "data.tar.gz"), n("壞掉.zip", "broken.zip"));
+        let dir = zing_core::testdir::dir().join(format!("zing-extract-{}-{}", n("測試", "test"), std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let src = dir.join("來源");
+        let src = dir.join(n("來源", "src"));
         std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("甲.txt"), "a").unwrap();
-        std::fs::write(src.join("乙.txt"), "b").unwrap();
+        std::fs::write(src.join(a), "a").unwrap();
+        std::fs::write(src.join(b), "b").unwrap();
         let tar = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap()).join(r"System32\tar.exe");
         let pack = |out: &str, file: &str| {
             let st = std::process::Command::new(&tar).arg("-a").arg("-cf").arg(dir.join(out)).arg("-C").arg(&src).arg(file).status();
             assert!(st.unwrap().success(), "建立 {out} 失敗");
         };
-        pack("壓縮 1.zip", "甲.txt");
-        pack("資料.tar.gz", "乙.txt");
-        std::fs::write(dir.join("壞掉.zip"), "not a zip").unwrap();
-        std::fs::write(dir.join("說明.txt"), "x").unwrap();
+        pack(zip, a);
+        pack(tgz, b);
+        std::fs::write(dir.join(broken), "not a zip").unwrap();
+        std::fs::write(dir.join(n("說明.txt", "readme.txt")), "x").unwrap();
 
         let l = example_lua("extract.lua", include_str!("../../../examples/scripts/extract.lua"));
-        set_ctx(&l, &dir, &["壓縮 1.zip", "資料.tar.gz", "壞掉.zip", "說明.txt"]);
+        set_ctx(&l, &dir, &[zip, tgz, broken, n("說明.txt", "readme.txt")]);
         let run = |answers: [&str; 2]| example_run(&l, "extract_to()", &answers);
 
         // 每個壓縮檔各自的子資料夾；損壞的檔案回報失敗，其他照常完成
-        let out = dir.join("輸出");
+        let out = dir.join(n("輸出", "out"));
         let m = run([&out.to_string_lossy(), "是"]);
-        assert!(m.contains("1 個失敗") && m.contains("壞掉.zip"), "{m}");
-        assert!(out.join("壓縮 1").join("甲.txt").exists());
-        assert!(out.join("資料").join("乙.txt").exists());
+        assert!(m.contains("1 個失敗") && m.contains(broken), "{m}");
+        assert!(out.join(n("壓縮 1", "pack 1")).join(a).exists());
+        assert!(out.join(n("資料", "data")).join(b).exists());
 
         // 直接解壓縮到目標資料夾
-        let flat = dir.join("平放");
+        let flat = dir.join(n("平放", "flat"));
         run([&flat.to_string_lossy(), "否"]);
-        assert!(flat.join("甲.txt").exists() && flat.join("乙.txt").exists());
+        assert!(flat.join(a).exists() && flat.join(b).exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -69,7 +69,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: 單元測試
-        run: cargo test --workspace
+        # 一個 crate 失敗時其他 crate 照樣跑，一次看到所有失敗
+        run: cargo test --workspace --no-fail-fast
 
       - name: 安裝 Lua Language Server（冒煙測試前檢查 Lua API）
         run: |

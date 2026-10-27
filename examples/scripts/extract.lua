@@ -1,5 +1,6 @@
 -- 批次解壓縮：把選取的壓縮檔解壓縮到指定的資料夾
 -- 使用 Windows 內建的 tar.exe（bsdtar），支援 zip、7z、rar、tar（含 gz／bz2／xz）、iso、cab
+-- 限制：tar.exe 的參數經過系統的 ANSI 字碼頁，路徑中有字碼頁表示不了的字元（如英文版 Windows 上的中文）時會失敗
 -- 安裝：複製到 zing.exe 旁的 scripts\，命令面板執行「重新載入 Lua 腳本」
 
 local ARCHIVE = freeze { zip = true, ["7z"] = true, rar = true, tar = true, gz = true, tgz = true,
