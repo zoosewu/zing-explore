@@ -22,8 +22,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # 冒煙測試、效能測試的測試資料（zing_core::testdir）
-  ZING_TEST_DIR: ${{ github.workspace }}\..\zing-test
   ASSET: zing-explore-windows-x64.zip
   LUALS_VERSION: '3.13.6'
   GH_TOKEN: ${{ github.token }}
@@ -40,6 +38,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: 測試資料夾
+        # 冒煙測試、效能測試的測試資料（zing_core::testdir）；路徑不可含 ..（Shell 的檔案作業會回報參數不正確）
+        run: '"ZING_TEST_DIR=$(Join-Path $env:RUNNER_TEMP ''zing-test'')" >> $env:GITHUB_ENV'
 
       - name: 確認標籤與版本號、標籤在 master 上
         if: github.ref_type == 'tag'

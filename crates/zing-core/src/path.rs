@@ -1,15 +1,56 @@
 //! 路徑工具。UI 層以 `String` 保存路徑；空字串代表「此電腦」（磁碟機清單）。
 
-/// 去除多餘的結尾反斜線（磁碟根目錄 `C:\` 保留），並把 `/` 轉成 `\`。
+/// 去除多餘的結尾反斜線（磁碟根目錄 `C:\` 保留），把 `/` 轉成 `\`，並整理 `.`、`..`
+/// （Shell 的檔案作業不接受含 `..` 的路徑，回報「參數不正確」）。
 pub fn normalize(p: &str) -> String {
     let mut s = p.trim().trim_matches('"').replace('/', "\\");
     if s.len() == 2 && s.ends_with(':') {
         s.push('\\');
     }
+    if let Some(c) = collapse_dots(&s) {
+        s = c;
+    }
     while s.len() > 3 && s.ends_with('\\') && !s.ends_with(":\\") {
         s.pop();
     }
     s
+}
+
+/// 去除 `.`、`..` 段（只處理字串、不碰磁碟）；`..` 不超過磁碟根目錄或網路分享（`\\server\share`）。
+/// 沒有這些段、或不是絕對路徑（相對路徑、`\\?\`）時回傳 None
+fn collapse_dots(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let prefix_len = if b.len() >= 3 && b[1] == b':' && b[2] == b'\\' {
+        3
+    } else {
+        let r = s.strip_prefix("\\\\")?;
+        if r.starts_with("?\\") || r.starts_with(".\\") {
+            return None;
+        }
+        let mut it = r.splitn(3, '\\');
+        let (server, share) = (it.next()?, it.next()?);
+        2 + server.len() + 1 + share.len()
+    };
+    let (prefix, rest) = s.split_at(prefix_len);
+    if !rest.split('\\').any(|c| c == "." || c == "..") {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for c in rest.split('\\') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            c => parts.push(c),
+        }
+    }
+    let mut out = prefix.to_string();
+    if !out.ends_with('\\') && !parts.is_empty() {
+        out.push('\\');
+    }
+    out.push_str(&parts.join("\\"));
+    Some(out)
 }
 
 pub fn is_root(p: &str) -> bool {
@@ -110,6 +151,16 @@ mod tests {
         assert_eq!(normalize("c:"), "c:\\");
         assert_eq!(normalize("C:/Users/x/"), "C:\\Users\\x");
         assert_eq!(normalize("C:\\"), "C:\\");
+        // . 與 ..：不超過磁碟根目錄、網路分享
+        assert_eq!(normalize(r"D:\a\b\..\c"), r"D:\a\c");
+        assert_eq!(normalize(r"D:\a\.\b\"), r"D:\a\b");
+        assert_eq!(normalize(r"D:\a\..\.."), r"D:\");
+        assert_eq!(normalize(r"D:/a/../資料夾"), r"D:\資料夾");
+        assert_eq!(normalize(r"\\srv\share\a\..\.."), r"\\srv\share");
+        assert_eq!(normalize(r"\\srv\share\a\..\b"), r"\\srv\share\b");
+        assert_eq!(normalize(r"D:\a..b\.c"), r"D:\a..b\.c");
+        assert_eq!(normalize(r"..\a"), r"..\a");
+        assert_eq!(normalize(r"\\?\C:\a\..\b"), r"\\?\C:\a\..\b");
         assert_eq!(parent("C:\\Users"), Some("C:\\".into()));
         assert_eq!(parent("C:\\"), Some(String::new()));
         assert_eq!(parent(""), None);
