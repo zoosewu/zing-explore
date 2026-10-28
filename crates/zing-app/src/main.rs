@@ -35,6 +35,7 @@ mod themeedit;
 mod themepanel;
 mod thumbs;
 mod tooltip;
+mod update;
 #[cfg(feature = "smoke")]
 mod smoke;
 /// 一般建置不含冒煙測試（tools/smoke.ps1 以 `--features smoke` 建置），不增加執行檔大小
@@ -144,6 +145,7 @@ fn run(perf: Option<perf::Perf>, smoke: Option<smoke::Smoke>) -> windows::core::
         }
     }
     window::APP.with(|a| a.borrow_mut().take());
+    update::relaunch();
     Ok(())
 }
 

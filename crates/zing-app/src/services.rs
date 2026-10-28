@@ -112,6 +112,12 @@ pub enum Msg {
     IndexAction { text: String, error: bool, changed: bool },
     /// 已安裝的索引服務比這版 zing 舊（版號）
     IndexOutdated { installed: u32 },
+    /// 檢查新版本的結果：最新版的標籤（沒有任何 Release 時為 None）、略過的版本；`manual` 為 update.check 命令
+    UpdateChecked { latest: Result<Option<String>, String>, skipped: Option<zing_core::update::Version>, manual: bool },
+    /// 下載更新的進度（0–100）
+    UpdateProgress { percent: u32 },
+    /// 更新安裝完成（Ok(false)：途中取消）
+    UpdateInstalled(Result<bool, String>),
 }
 
 /// 檔案作業完成後要選取（並可能進入重新命名）的項目

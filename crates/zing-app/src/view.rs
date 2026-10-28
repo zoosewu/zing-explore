@@ -68,6 +68,8 @@ pub struct Layout {
     pub jobs: Option<Rect>,
     /// 狀態列上的檔案作業進度（面板收起時）
     pub jobs_indicator: Option<Rect>,
+    /// 狀態列上的「有新版本」（update.rs）
+    pub update_indicator: Option<Rect>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -148,6 +150,8 @@ pub enum Hit {
     JobsPanel,
     /// 狀態列上的檔案作業進度
     JobsIndicator,
+    /// 狀態列上的「有新版本」
+    UpdateIndicator,
 }
 
 impl App {
@@ -226,6 +230,11 @@ impl App {
         if let Some(text) = self.jobs_indicator_text() {
             let tw = self.gfx.measure(&text, Font::Small) + 16.0;
             lay.jobs_indicator = Some(Rect::new(w - 8.0 - tw, lay.status.t, w - 4.0, lay.status.b));
+        }
+        if let Some(text) = self.update_indicator_text() {
+            let r = lay.jobs_indicator.map_or(w - 4.0, |j| j.l - 4.0);
+            let tw = self.gfx.measure(&text, Font::Small) + 16.0;
+            lay.update_indicator = Some(Rect::new(r - tw, lay.status.t, r, lay.status.b));
         }
 
         // 主體：樹狀列 + 窗格
@@ -357,6 +366,9 @@ impl App {
         }
         if let Some(h) = self.jobs_hit(lay, x, y) {
             return h;
+        }
+        if lay.update_indicator.is_some_and(|r| r.contains(x, y)) {
+            return Hit::UpdateIndicator;
         }
         if lay.toolbar.contains(x, y) {
             if let Some(i) = lay.nav.iter().position(|r| r.contains(x, y)) {
@@ -1001,13 +1013,22 @@ impl App {
             left.push_str(&tr!("　計算資料夾大小（剩 {n} 個）", n = self.sizes.pending));
         }
         g.text(&left, Font::Small, Rect::new(12.0, s.t, s.r * 0.5, s.b), c.text_secondary);
+        // 「有新版本」一直顯示；其右側（檔案作業進度）照舊，左側的訊息與排序資訊讓出位置
+        let mut right_edge = s.r - 12.0;
+        if let (Some(r), Some(text)) = (lay.update_indicator, self.update_indicator_text()) {
+            if self.hover == Hit::UpdateIndicator {
+                g.fill_round(r.inset(0.0, 3.0), self.theme.metrics.radius, c.hover);
+            }
+            g.text(&text, Font::Small, Rect::new(r.l + 8.0, r.t, r.r, r.b), c.accent);
+            right_edge = r.l - 8.0;
+        }
         if let (Some(r), Some(text)) = (lay.jobs_indicator, self.jobs_indicator_text()) {
             if self.hover == Hit::JobsIndicator {
                 g.fill_round(r.inset(0.0, 3.0), self.theme.metrics.radius, c.hover);
             }
             g.text(&text, Font::Small, Rect::new(r.l + 8.0, r.t, r.r, r.b), c.accent);
         } else if let Some((msg, err, _)) = &self.status {
-            g.text(msg, Font::SmallRight, Rect::new(s.r * 0.35, s.t, s.r - 12.0, s.b), if *err { c.error } else { c.text });
+            g.text(msg, Font::SmallRight, Rect::new(s.r * 0.35, s.t, right_edge, s.b), if *err { c.error } else { c.text });
         } else {
             let mut right = Vec::new();
             if self.show_hidden {
@@ -1018,7 +1039,7 @@ impl App {
                 col = zing_core::i18n::tr(COLUMN_TITLES[COLUMN_KEYS.iter().position(|k| *k == tab.spec.key).unwrap_or(0)]),
                 arrow = if tab.spec.ascending { "↑" } else { "↓" }
             ));
-            g.text(&right.join(tr!("　")), Font::SmallRight, Rect::new(s.r * 0.5, s.t, s.r - 12.0, s.b), c.text_secondary);
+            g.text(&right.join(tr!("　")), Font::SmallRight, Rect::new(s.r * 0.5, s.t, right_edge, s.b), c.text_secondary);
         }
     }
 }

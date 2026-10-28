@@ -322,6 +322,11 @@ impl App {
             Hit::JobCancel(id) => self.job_cancel(id),
             Hit::JobsClear => self.jobs_clear(),
             Hit::JobsClose | Hit::JobsIndicator => self.jobs_toggle(),
+            Hit::UpdateIndicator => {
+                if let Some(r) = self.layout.update_indicator {
+                    self.open_update_menu(r);
+                }
+            }
             Hit::None | Hit::PaletteRow(_) | Hit::Palette | Hit::JobsPanel => {}
             // 右側面板的命中在 match 之前已交給 side_click
             _ => {}

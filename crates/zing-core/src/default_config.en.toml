@@ -47,6 +47,11 @@ allow_slow = []
 # false: calculate only when Ctrl+Shift+S (view.foldersizes) is pressed
 auto = true
 
+[update]
+# Check for a new version at startup: connects to GitHub only when more than 24 hours have passed since the last check (at most once a day),
+# and shows a notice on the status bar only for feature releases (a newer major or minor version), which can be downloaded and installed
+check = true
+
 # ---- Navigation ----
 [[key]]
 key = "Alt+Left"

@@ -1024,3 +1024,11 @@ Exit the program
 ```lua
 app.exit()
 ```
+
+### `update.check()`
+
+Check for a new version now (regardless of the once-a-day limit and the setting; any newer version is shown, including patch releases and skipped versions)
+
+```lua
+update.check()
+```

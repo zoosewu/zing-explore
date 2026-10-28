@@ -669,6 +669,15 @@ fn bar_button_pos(cmd: &str) -> Option<(f32, f32)> {
     .flatten()
 }
 
+/// 狀態列「有新版本」提示的中心
+fn update_indicator_pos() -> Option<(f32, f32)> {
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        a.layout.update_indicator.map(mid)
+    })
+    .flatten()
+}
+
 /// 開啟中的選單第 `level` 層、名稱為 `label` 的項目中心
 fn menu_item_pos(level: usize, label: &str) -> Option<(f32, f32)> {
     with_app(|a| {
@@ -2431,7 +2440,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("截圖：設定的分類", |_| {}, |c, _| screenshot(c, "22-設定分類")));
     v.push(step("設定：點「一般」", |c| click(c, "", settings_category_pos("一般")), move |_, a| {
         expect("分類", category(a), group_index("一般"))?;
-        expect("只有這個分類的項目", a.settings_page().is_some_and(|p| p.rows().contains(&Row::Field(3))), false)
+        let theme = zing_core::prefs::PREFS.iter().position(|p| p.key == "theme");
+        expect("只有這個分類的項目", a.settings_page().is_some_and(|p| theme.is_some_and(|t| p.rows().contains(&Row::Field(t)))), false)
     }));
     v.push(step("設定：點開關顯示隱藏檔案", |c| click(c, "", settings_row_pos("show_hidden", None, true)), |_, a| {
         expect("顯示隱藏檔案", a.show_hidden, true)?;
@@ -4252,6 +4262,86 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         )
         .slow(),
     );
+
+    // ------------------------------------------------ 檢查新版本（隔離模式不連網：以 TEST_LATEST 提供最新版）
+    let available = |a: &App| match &a.update {
+        crate::update::Update::Available { version, .. } => Some(version.to_string()),
+        _ => None,
+    };
+    v.push(step(
+        "更新：檢查到新版本，狀態列右側顯示提示",
+        |_| {
+            *crate::update::TEST_LATEST.lock().unwrap() = Some("v99.1.0".into());
+            exec("update.check");
+        },
+        move |_, a| {
+            expect("新版本", available(a).as_deref(), Some("99.1.0"))?;
+            expect("提示", a.update_indicator_text().as_deref(), Some("有新版本 99.1.0"))?;
+            a.layout = a.compute_layout();
+            expect("提示的位置", a.layout.update_indicator.is_some(), true)
+        },
+    ));
+    v.push(step("更新：點提示開啟選單", |c| click(c, "", update_indicator_pos()), |_, a| {
+        let labels: Vec<String> = a.menu.as_ref().map(|m| m.levels[0].items.iter().map(|i| i.label.clone()).collect()).unwrap_or_default();
+        expect("選單", labels, ["下載並安裝 99.1.0", "版本說明", "", "略過這個版本", "不再檢查更新"].map(String::from).to_vec())
+    }));
+    v.push(step("截圖：更新提示與選單", |_| {}, |c, _| screenshot(c, "26-更新提示")));
+    v.push(step("更新：下載並安裝（隔離模式不下載）", |c| click(c, "", menu_item_pos(0, "下載並安裝 99.1.0")), move |_, a| {
+        expect("選單", a.menu.is_none(), true)?;
+        expect("狀態列", status(a).as_deref(), Some("效能與冒煙測試不安裝更新"))?;
+        expect("提示仍在", available(a).as_deref(), Some("99.1.0"))
+    }));
+    v.push(step(
+        "更新：略過這個版本",
+        |c| {
+            click(c, "", update_indicator_pos());
+            click(c, "", menu_item_pos(0, "略過這個版本"));
+        },
+        move |_, a| {
+            expect("提示", a.update_indicator_text(), None)?;
+            let st = status(a).unwrap_or_default();
+            if st.contains("已略過 99.1.0") { Ok(()) } else { Err(format!("狀態列：{st}")) }
+        },
+    ));
+    v.push(step(
+        "更新：啟動時的檢查只提示功能更新、不提示略過的版本",
+        |_| {},
+        move |_, a| {
+            let v = |s| zing_core::update::Version::parse(s);
+            let cur = zing_core::update::Version::current();
+            // 修補版、略過的次版本不提示；更新的次版本提示
+            a.on_update_checked(Ok(Some(format!("v{}.{}.{}", cur.major, cur.minor, cur.patch + 1))), None, false);
+            expect("修補版", a.update_indicator_text(), None)?;
+            a.on_update_checked(Ok(Some("v99.1.3".into())), v("99.1.0"), false);
+            expect("略過的次版本", a.update_indicator_text(), None)?;
+            a.on_update_checked(Ok(Some("v99.2.0".into())), v("99.1.0"), false);
+            expect("新的次版本", available(a).as_deref(), Some("99.2.0"))
+        },
+    ));
+    v.push(step(
+        "更新：不再檢查更新（關閉設定並收起提示）",
+        |c| {
+            click(c, "", update_indicator_pos());
+            click(c, "", menu_item_pos(0, "不再檢查更新"));
+        },
+        |_, a| {
+            expect("設定", a.config.update.check, false)?;
+            expect("提示", a.update_indicator_text(), None)
+        },
+    ));
+    v.push(step(
+        "更新：還原設定（結束）",
+        |_| {
+            *crate::update::TEST_LATEST.lock().unwrap() = None;
+            with_app(|a| {
+                if let Some(i) = zing_core::prefs::PREFS.iter().position(|p| p.key == "update.check") {
+                    a.set_pref(i, "true".into());
+                }
+                a.status = None;
+            });
+        },
+        |_, a| expect("設定", a.config.update.check, true),
+    ));
 
     // 狀態列錯誤與 UI 執行緒 I/O 防呆的回報在 finish() 統一檢查
     v.push(step("截圖：結束畫面", |_| {}, |c, _| screenshot(c, "03-結束")));

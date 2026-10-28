@@ -1024,3 +1024,11 @@ script.reload()
 ```lua
 app.exit()
 ```
+
+### `update.check()`
+
+立即檢查新版本（不受每天一次與設定的限制；有任何較新的版本都提示，包括修補版與略過的版本）
+
+```lua
+update.check()
+```

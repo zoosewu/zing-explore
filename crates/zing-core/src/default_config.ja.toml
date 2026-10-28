@@ -47,6 +47,11 @@ allow_slow = []
 # false：Ctrl+Shift+S（view.foldersizes）を押したときだけ計算
 auto = true
 
+[update]
+# 起動時に新しいバージョンを確認：前回の確認から 24 時間以上たったときだけ GitHub に接続（1 日 1 回まで）し、
+# 機能更新（メジャーまたはマイナー バージョンが新しい）のときだけステータスバーに表示。ダウンロードしてインストールできる
+check = true
+
 # ---- 移動 ----
 [[key]]
 key = "Alt+Left"

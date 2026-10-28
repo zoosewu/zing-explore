@@ -81,6 +81,19 @@ impl Default for FolderSizesConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// 啟動時檢查新版本（距上次檢查超過 24 小時才連線，見 `update`）
+    pub check: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        UpdateConfig { check: true }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyBinding {
     pub key: String,
     pub cmd: String,
@@ -152,6 +165,7 @@ pub struct RawConfig {
     pub folder_sizes: Option<FolderSizesConfig>,
     pub command_bar: Option<CommandBarConfig>,
     pub context_menu: Option<ContextMenuConfig>,
+    pub update: Option<UpdateConfig>,
     pub key: Vec<KeyBinding>,
     pub button: Option<Vec<Button>>,
     pub thumbnailer: Vec<Thumbnailer>,
@@ -179,6 +193,7 @@ pub struct Config {
     pub folder_sizes: FolderSizesConfig,
     pub command_bar: CommandBarConfig,
     pub context_menu: ContextMenuConfig,
+    pub update: UpdateConfig,
     /// 命令列的按鈕（toolbar.toml，沒有時為預設＋舊版的 [[button]]）
     pub cmdbar: Vec<crate::cmdbar::Item>,
     /// 解析後的快速鍵；後定義者優先
@@ -263,6 +278,7 @@ impl Config {
             config_keys,
             command_bar: user.command_bar.or(base.command_bar).unwrap_or_default(),
             context_menu: user.context_menu.or(base.context_menu).unwrap_or_default(),
+            update: user.update.or(base.update).unwrap_or_default(),
             cmdbar: Vec::new(),
             buttons: user.button.or(base.button).unwrap_or_default(),
             thumbnailers: user.thumbnailer.into_iter().chain(base.thumbnailer).collect(),

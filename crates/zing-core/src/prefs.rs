@@ -62,6 +62,13 @@ pub const PREFS: &[Pref] = &[
         kind: Kind::Text,
     },
     Pref { key: "show_hidden", group: tr_key!("一般"), label: tr_key!("顯示隱藏檔案"), hint: "", kind: Kind::Bool },
+    Pref {
+        key: "update.check",
+        group: tr_key!("一般"),
+        label: tr_key!("啟動時檢查新版本"),
+        hint: tr_key!("每天最多連線到 GitHub 一次；只在有功能更新（次版號以上）時提示"),
+        kind: Kind::Bool,
+    },
     Pref { key: "theme", group: tr_key!("外觀"), label: tr_key!("主題"), hint: "", kind: Kind::Theme },
     Pref {
         key: "",
@@ -200,6 +207,7 @@ impl Config {
             "context_menu.style" => menu_style_code(self.context_menu.style).into(),
             "context_menu.hide_slow" => self.context_menu.hide_slow.to_string(),
             "context_menu.allow_slow" => self.context_menu.allow_slow.join(","),
+            "update.check" => self.update.check.to_string(),
             _ => String::new(),
         }
     }
@@ -226,6 +234,7 @@ impl Config {
                 self.context_menu.allow_slow =
                     value.split(',').map(|c| c.trim().to_ascii_lowercase()).filter(|c| !c.is_empty()).collect()
             }
+            "update.check" => self.update.check = value.parse().map_err(|_| bad())?,
             _ => return Err(bad()),
         }
         Ok(())
@@ -451,8 +460,8 @@ mod tests {
         assert_eq!((cfg.language, cfg.pref_value("language").as_str()), (crate::i18n::Lang::Ja, "ja"));
         assert!(cfg.set_pref("palette.position", "left").is_err());
         assert!(cfg.set_pref("show_hidden", "maybe").is_err());
-        assert_eq!(choice_label(&PREFS[5], "right"), "右側");
-        assert_eq!(choice_label(&PREFS[3], "我的主題"), "我的主題");
+        assert_eq!(choice_label(&PREFS[6], "right"), "右側");
+        assert_eq!(choice_label(&PREFS[4], "我的主題"), "我的主題");
         cfg.set_pref("context_menu.allow_slow", "{AB},,{cd}").unwrap();
         assert_eq!(cfg.context_menu.allow_slow, ["{ab}", "{cd}"]);
         assert!(Config::load(None).0.context_menu.hide_slow);

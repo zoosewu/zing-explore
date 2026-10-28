@@ -206,6 +206,8 @@ pub struct App {
     pub perf: Option<Perf>,
     /// 效能或冒煙測試：使用預設設定、不讀寫使用者的工作階段
     pub isolated: bool,
+    /// 新版本的提示與下載（update.rs）
+    pub update: crate::update::Update,
     session: Session,
 }
 
@@ -314,6 +316,7 @@ impl App {
             suppress_char: false,
             perf,
             isolated,
+            update: Default::default(),
             session,
         };
 
@@ -1010,6 +1013,9 @@ impl App {
             Msg::IndexSizes { parent, result } => self.on_index_sizes(parent, result),
             Msg::IndexAction { text, error, changed } => self.on_index_action(text, error, changed),
             Msg::IndexOutdated { installed } => self.on_index_outdated(installed),
+            Msg::UpdateChecked { latest, skipped, manual } => self.on_update_checked(latest, skipped, manual),
+            Msg::UpdateProgress { percent } => self.on_update_progress(percent),
+            Msg::UpdateInstalled(result) => self.on_update_installed(result),
             Msg::Paste { sources, dest, cut } => self.submit_op(FileOp::Transfer { sources, dest, mov: cut }),
             Msg::ConfigLoaded { mut config, theme, warnings } => {
                 if self.isolated {
@@ -1464,6 +1470,7 @@ impl App {
                 self.scripts.load(&n, self.isolated);
             }
             Cmd::AppExit => window::close(self.hwnd),
+            Cmd::UpdateCheck => self.check_update_now(),
         }
         Ok(())
     }
@@ -1527,6 +1534,10 @@ impl App {
         // 下次游標停住時以新的設定重新準備右鍵選單
         if self.config.context_menu != old.context_menu {
             self.menu_prepared = None;
+        }
+        // 關掉更新檢查：收起還沒處理的提示（下載中、已安裝的不動）
+        if !self.config.update.check && matches!(self.update, crate::update::Update::Available { .. }) {
+            self.update = crate::update::Update::None;
         }
         self.invalidate();
     }

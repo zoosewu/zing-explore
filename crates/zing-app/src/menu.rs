@@ -23,6 +23,8 @@ pub enum Action {
     ShellMenu,
     /// 右鍵選單中第三方擴充功能的項目（第幾個擴充功能, 命令 id）
     ShellExt(usize, u32),
+    /// 狀態列「有新版本」的選單（update.rs）
+    Update(crate::update::Choice),
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +222,7 @@ impl App {
             Action::Extra(id, target) => self.on_compact_extra(id, target),
             Action::ShellMenu => self.show_full_context_menu(),
             Action::ShellExt(ext, id) => self.invoke_menu_ext(ext, id),
+            Action::Update(c) => self.update_choice(c),
         }
     }
 

@@ -7,6 +7,11 @@ fn main() {
     println!("cargo:rerun-if-changed={}", manifest.display());
     println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
     println!("cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}", manifest.display());
+    // 只有檢查新版本（update.rs，第一幀之後的背景執行緒）用到：延遲到第一次呼叫才載入，不增加啟動時間
+    for dll in ["winhttp.dll", "bcrypt.dll"] {
+        println!("cargo:rustc-link-arg-bins=/DELAYLOAD:{dll}");
+    }
+    println!("cargo:rustc-link-arg-bins=delayimp.lib");
 
     let rc_file = assets.join("zing.rc");
     println!("cargo:rerun-if-changed={}", rc_file.display());

@@ -131,6 +131,13 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   鍵盤（`Focus::Side`：開啟面板或按 Tab 進入）：面板只提供一行中可按的目標（`side_targets`，命中與位置），
   ↑↓←→、Home／End、Enter／空白鍵、焦點框都在 sidepanel.rs；改了面板的命中（`*_hit`）就同步改 `*_targets`，
   冒煙測試「每一行的鍵盤目標與滑鼠命中一致」會檢查。
+- 檢查新版本與自動更新（`update.rs`，規則在 `zing_core::update`）：第一幀之後在背景執行緒讀紀錄，距上次超過 24 小時才以
+  WinHTTP 查 `/releases/latest` 的轉址（不用 GitHub API）；只在次版號以上較新時提示（`update.check` 命令連修補版也提示）。
+  安裝：下載指定標籤的壓縮檔與 `.sha256`、核對、以系統的 tar.exe 解壓縮（只用相對路徑，tar 以 ANSI 字碼頁讀參數），
+  先全部複製成程式旁的 `.new`，再把現有的改名成 `.old`（執行中的 exe 只能改名）、`.new` 換上，失敗就還原；下次啟動刪 `.old`。
+  重新啟動照一般方式關閉視窗，訊息迴圈結束後才啟動新版（`update::relaunch`）。winhttp.dll、bcrypt.dll 延遲載入（build.rs）。
+  隔離模式不連網、不寫檔，冒煙測試以 `update::TEST_LATEST` 提供最新版；連網的測試：
+  `cargo test -p zing-app latest_release -- --ignored --nocapture`。Release 壓縮檔的內容（檔名、平放在最上層）改變時同步修改這裡。
 - 執行外部程式一律經 `services::start`／`services::launch`：`Show::HideConsole`（`run`、Lua 的 `run`）時主控台程式以
   CREATE_NO_WINDOW 執行；開啟檔案、網址列輸入維持 `Show::Normal`（與檔案總管相同）。Lua 的 `os.execute`、`io.popen`
   在 prelude 換成不顯示主控台視窗的版本。
@@ -191,7 +198,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
     `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`）、
     `thumbs\`（外部命令產生的縮圖 PNG，上限 256 MB，見 `thumbs.rs`；Windows 的縮圖只放記憶體，上限 64 MB）、
     `custom-thumbs\`（手動指定的縮圖，檔名是「磁碟區序號-NTFS 檔案 ID」：鍵只在這台電腦有意義，所以不放在程式旁）、
-    `slow-menu-extensions.tsv`（讓右鍵選單變慢的第三方擴充功能，7 天後失效重新量，見 `shellext.rs`）。
+    `slow-menu-extensions.tsv`（讓右鍵選單變慢的第三方擴充功能，7 天後失效重新量，見 `shellext.rs`）、
+    `update.tsv`（上次檢查新版本的時間、當時的最新版、略過的版本，見 `update.rs`）、
+    `update\`（下載中的更新，安裝完成或失敗後刪除）。
   - 索引服務：執行檔安裝時複製到 `%ProgramFiles%\zing-explore\zing-index.exe`（以 LocalSystem 執行的程式不能放在一般使用者
     可修改的位置）；快照（`<磁碟區序號>.zidx`）與 `index.log` 放在服務帳號的 `%LOCALAPPDATA%`，即
     `C:\Windows\System32\config\systemprofile\AppData\Local\zing-explore`（不用 `%ProgramData%`：一般使用者能先建立同名資料夾）。

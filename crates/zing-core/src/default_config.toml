@@ -47,6 +47,11 @@ allow_slow = []
 # false：只在按 Ctrl+Shift+S（view.foldersizes）時計算
 auto = true
 
+[update]
+# 啟動時檢查新版本：距上次檢查超過 24 小時才連線到 GitHub（每天最多一次），
+# 只在有功能更新（主版號或次版號較新）時於狀態列提示，可下載並安裝
+check = true
+
 # ---- 導覽 ----
 [[key]]
 key = "Alt+Left"
