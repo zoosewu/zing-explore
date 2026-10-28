@@ -777,6 +777,7 @@ fn deferred_init(hwnd: HWND) {
             }
             a.check_index_version();
             a.startup_update();
+            a.refresh_default_app(true);
         }
     });
     unsafe {
@@ -1018,6 +1019,8 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             deferred_init(hwnd);
             Some(LRESULT(0))
         }
+        // 另一個 zing 程序轉來要開啟的資料夾（instance.rs）
+        WM_COPYDATA => crate::instance::on_copy_data(hwnd, lparam).map(|ok| LRESULT(ok as isize)),
         crate::gfx::WM_APP_GPU_READY => {
             with_app(|a| {
                 if a.gfx.adopt_hardware() {
@@ -1160,7 +1163,12 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             Some(LRESULT(0))
         }
         WM_DESTROY => {
-            with_app(|a| a.shell_host.shutdown());
+            with_app(|a| {
+                a.shell_host.shutdown();
+                if let Some(h) = a.shell_windows.take() {
+                    h.stop();
+                }
+            });
             unsafe {
                 let _ = RevokeDragDrop(hwnd);
             }

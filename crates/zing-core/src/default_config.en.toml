@@ -8,8 +8,10 @@ language = "auto"
 # or a user theme name (themes\<name>.toml next to zing.exe; style = "fluent" uses a style as the base)
 theme = "system"
 show_hidden = false
-# empty restores the last folder
-start_path = ""
+# On startup open: session (restore the last tabs) | new (one "This PC" tab) | tabs (the tabs in start_tabs)
+# When started with a folder (e.g. from the desktop after setting zing as the default file manager), that folder is also opened or switched to
+startup = "session"
+start_tabs = []
 favorites = []
 
 [layout]

@@ -4,7 +4,7 @@
 //! 沒有這一行就插入在同一節的最後一個值後面，沒有這一節就加在檔案最後。修改後重新解析整份檔案，
 //! 結果不是預期的值（例如使用者寫成 `layout = { tree = "left" }`）就放棄、不寫入。
 
-use crate::config::{Config, MenuStyle, PalettePosition, RawConfig, TreeSide};
+use crate::config::{Config, MenuStyle, PalettePosition, RawConfig, Startup, TreeSide};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
@@ -18,6 +18,10 @@ pub enum Kind {
     Action(&'static str),
     /// 緩慢的右鍵選單擴充功能的表格（每個可單獨切換；值是照樣顯示的 CLSID，以逗號分隔）
     SlowList,
+    /// 分頁的清單（值以 `|` 分隔，路徑不會含 `|`）：點一下改成目前開著的分頁
+    Tabs,
+    /// 不是設定值：是否為預設的檔案總管（登錄中的狀態，見 zing-app 的 defaultapp.rs）
+    DefaultApp,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -36,6 +40,8 @@ const LANGUAGES: &[(&str, &str)] =
 const TREE_SIDES: &[(&str, &str)] = &[("left", tr_key!("左側")), ("right", tr_key!("右側")), ("hidden", tr_key!("隱藏"))];
 const MENU_STYLES: &[(&str, &str)] =
     &[("compact", tr_key!("精簡（先顯示常用項目）")), ("full", tr_key!("完整的 Windows 選單"))];
+const STARTUPS: &[(&str, &str)] =
+    &[("session", tr_key!("還原上次的分頁")), ("new", tr_key!("一個新分頁（此電腦）")), ("tabs", tr_key!("指定的分頁"))];
 const PALETTE_POSITIONS: &[(&str, &str)] =
     &[("top", tr_key!("視窗上方")), ("center", tr_key!("正中央（輸入框固定）")), ("middle", tr_key!("正中央（整個面板置中）"))];
 
@@ -55,11 +61,25 @@ pub const BUILTIN_THEMES: &[(&str, &str)] = &[
 pub const PREFS: &[Pref] = &[
     Pref { key: "language", group: tr_key!("一般"), label: tr_key!("介面語言"), hint: "", kind: Kind::Choice(LANGUAGES) },
     Pref {
-        key: "start_path",
+        key: "",
         group: tr_key!("一般"),
-        label: tr_key!("啟動時開啟的資料夾"),
-        hint: tr_key!("留空表示還原上次的資料夾"),
-        kind: Kind::Text,
+        label: tr_key!("設為預設的檔案總管"),
+        hint: tr_key!("資料夾、磁碟機與 Win+E 改用 zing 開啟；關閉即還原"),
+        kind: Kind::DefaultApp,
+    },
+    Pref {
+        key: "startup",
+        group: tr_key!("一般"),
+        label: tr_key!("啟動時開啟"),
+        hint: tr_key!("以資料夾啟動（例如從桌面開啟）時，另外開啟那個資料夾"),
+        kind: Kind::Choice(STARTUPS),
+    },
+    Pref {
+        key: "start_tabs",
+        group: tr_key!("一般"),
+        label: tr_key!("指定的分頁"),
+        hint: tr_key!("點一下改成目前開著的分頁；「啟動時開啟」選「指定的分頁」時使用"),
+        kind: Kind::Tabs,
     },
     Pref { key: "show_hidden", group: tr_key!("一般"), label: tr_key!("顯示隱藏檔案"), hint: "", kind: Kind::Bool },
     Pref {
@@ -173,6 +193,14 @@ fn menu_style_code(s: MenuStyle) -> &'static str {
     }
 }
 
+fn startup_code(s: Startup) -> &'static str {
+    match s {
+        Startup::Session => "session",
+        Startup::New => "new",
+        Startup::Tabs => "tabs",
+    }
+}
+
 fn palette_code(p: PalettePosition) -> &'static str {
     match p {
         PalettePosition::Top => "top",
@@ -196,7 +224,8 @@ impl Config {
     pub fn pref_value(&self, key: &str) -> String {
         match key {
             "language" => self.language_setting.clone(),
-            "start_path" => self.start_path.clone(),
+            "startup" => startup_code(self.startup).into(),
+            "start_tabs" => self.start_tabs.join("|"),
             "show_hidden" => self.show_hidden.to_string(),
             "theme" => self.theme.clone(),
             "layout.tree" => tree_side_code(self.layout.tree).into(),
@@ -220,7 +249,8 @@ impl Config {
                 self.language = crate::i18n::Lang::parse(value).ok_or_else(bad)?;
                 self.language_setting = value.to_string();
             }
-            "start_path" => self.start_path = value.trim().to_string(),
+            "startup" => self.startup = toml_enum(value).ok_or_else(bad)?,
+            "start_tabs" => self.start_tabs = value.split('|').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect(),
             "show_hidden" => self.show_hidden = value.parse().map_err(|_| bad())?,
             "theme" => self.theme = value.to_string(),
             "layout.tree" => self.layout.tree = toml_enum(value).ok_or_else(bad)?,
@@ -255,6 +285,10 @@ pub fn toml_literal(pref: &Pref, value: &str) -> String {
         Kind::Bool => value.to_string(),
         Kind::SlowList => toml::Value::Array(
             value.split(',').filter(|c| !c.is_empty()).map(|c| toml::Value::String(c.to_string())).collect(),
+        )
+        .to_string(),
+        Kind::Tabs => toml::Value::Array(
+            value.split('|').filter(|c| !c.is_empty()).map(|c| toml::Value::String(c.to_string())).collect(),
         )
         .to_string(),
         _ => toml::Value::String(value.to_string()).to_string(),
@@ -438,6 +472,7 @@ mod tests {
                     Kind::Bool => "true",
                     Kind::Theme => "fluent-dark",
                     Kind::SlowList => "{a},{b}",
+                    Kind::Tabs => "C:\\Users|D:\\a,b",
                     _ => "C:\\Users",
                 };
                 src = write_pref(&src, p.key, &toml_literal(p, value)).unwrap_or_else(|e| panic!("{lang:?} {}: {e}", p.key));
@@ -460,8 +495,15 @@ mod tests {
         assert_eq!((cfg.language, cfg.pref_value("language").as_str()), (crate::i18n::Lang::Ja, "ja"));
         assert!(cfg.set_pref("palette.position", "left").is_err());
         assert!(cfg.set_pref("show_hidden", "maybe").is_err());
-        assert_eq!(choice_label(&PREFS[6], "right"), "右側");
-        assert_eq!(choice_label(&PREFS[4], "我的主題"), "我的主題");
+        let pref = |key: &str| PREFS.iter().find(|p| p.key == key).unwrap();
+        assert_eq!(choice_label(pref("layout.tree"), "right"), "右側");
+        assert_eq!(choice_label(pref("theme"), "我的主題"), "我的主題");
+        cfg.set_pref("start_tabs", "C:\\| |D:\\x").unwrap();
+        assert_eq!(cfg.start_tabs, ["C:\\", "D:\\x"]);
+        assert_eq!(toml_literal(pref("start_tabs"), &cfg.pref_value("start_tabs")), r"['C:\', 'D:\x']");
+        cfg.set_pref("startup", "new").unwrap();
+        assert_eq!((cfg.startup, cfg.pref_value("startup").as_str()), (Startup::New, "new"));
+        assert!(cfg.set_pref("startup", "later").is_err());
         cfg.set_pref("context_menu.allow_slow", "{AB},,{cd}").unwrap();
         assert_eq!(cfg.context_menu.allow_slow, ["{ab}", "{cd}"]);
         assert!(Config::load(None).0.context_menu.hide_slow);

@@ -118,6 +118,12 @@ pub enum Msg {
     UpdateProgress { percent: u32 },
     /// 更新安裝完成（Ok(false)：途中取消）
     UpdateInstalled(Result<bool, String>),
+    /// 是否為預設的檔案總管（defaultapp.rs）；`toggled`：使用者切換的結果（顯示訊息）
+    DefaultApp { result: Result<crate::defaultapp::Status, String>, toggled: bool },
+    /// 其他程式要 zing 開啟的資料夾（shellwin.rs 的 Navigate、BrowseObject）
+    ShellOpen(String),
+    /// 其他程式要選取的項目（`SHOpenFolderAndSelectItems` → `IShellView::SelectItem`）；`rename`：選取後重新命名
+    ShellSelect { path: String, rename: bool },
 }
 
 /// 檔案作業完成後要選取（並可能進入重新命名）的項目

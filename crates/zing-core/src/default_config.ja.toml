@@ -8,8 +8,10 @@ language = "auto"
 # またはユーザーテーマの名前（zing.exe の隣の themes\<名前>.toml。style = "fluent" でスタイルを基にできる）
 theme = "system"
 show_hidden = false
-# 空なら前回のフォルダーを復元
-start_path = ""
+# 起動時に開く：session（前回のタブを復元）| new（「PC」タブを 1 つ）| tabs（start_tabs のタブ）
+# フォルダーを指定して起動したとき（既定のファイル マネージャーにしてデスクトップから開いたときなど）は、そのフォルダーも開くか切り替える
+startup = "session"
+start_tabs = []
 favorites = []
 
 [layout]

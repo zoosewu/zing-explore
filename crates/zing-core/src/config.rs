@@ -80,6 +80,19 @@ impl Default for FolderSizesConfig {
     }
 }
 
+/// 啟動時開啟的分頁（見 `startup`）
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Startup {
+    /// 還原上次的工作階段
+    #[default]
+    Session,
+    /// 一個「此電腦」分頁
+    New,
+    /// `start_tabs` 列出的分頁
+    Tabs,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateConfig {
@@ -158,6 +171,9 @@ pub struct RawConfig {
     pub language: Option<String>,
     pub theme: Option<String>,
     pub show_hidden: Option<bool>,
+    pub startup: Option<Startup>,
+    pub start_tabs: Option<Vec<String>>,
+    /// 舊版的設定（啟動時開啟的一個資料夾）：有值而沒有 `startup` 時等同 `startup = "tabs"`
     pub start_path: Option<String>,
     pub favorites: Option<Vec<String>>,
     pub layout: Option<Layout>,
@@ -186,7 +202,8 @@ pub struct Config {
     pub language_setting: String,
     pub theme: String,
     pub show_hidden: bool,
-    pub start_path: String,
+    pub startup: Startup,
+    pub start_tabs: Vec<String>,
     pub favorites: Vec<String>,
     pub layout: Layout,
     pub palette: PaletteConfig,
@@ -264,12 +281,14 @@ impl Config {
                 (crate::i18n::system(), "auto".into())
             }
         };
+        let old_start = user.start_path.filter(|p| !p.trim().is_empty());
         let cfg = Config {
             language,
             language_setting,
             theme: user.theme.or(base.theme).unwrap_or_else(|| "system".into()),
             show_hidden: user.show_hidden.or(base.show_hidden).unwrap_or(false),
-            start_path: user.start_path.or(base.start_path).unwrap_or_default(),
+            startup: user.startup.or(old_start.as_ref().map(|_| Startup::Tabs)).or(base.startup).unwrap_or_default(),
+            start_tabs: user.start_tabs.or(old_start.map(|p| vec![p])).or(base.start_tabs).unwrap_or_default(),
             favorites: user.favorites.or(base.favorites).unwrap_or_default(),
             layout: user.layout.or(base.layout).unwrap_or_default(),
             palette: user.palette.or(base.palette).unwrap_or_default(),
@@ -312,6 +331,22 @@ mod tests {
         assert!(t.matches(&w16("模型.STL")) && t.matches(&w16("a.3mf")));
         assert!(!t.matches(&w16("a.stl.txt")));
         assert_eq!(t.command_line(r"C:\a b\x.stl", r"C:\t\1.png", 128), r#"stl-thumb -s 128 "C:\a b\x.stl" "C:\t\1.png""#);
+    }
+
+    #[test]
+    fn startup_and_old_start_path() {
+        let (cfg, w) = Config::load(None);
+        assert!(w.is_empty());
+        assert_eq!((cfg.startup, cfg.start_tabs.len()), (Startup::Session, 0));
+        let (cfg, _) = Config::load(Some("startup = \"tabs\"\nstart_tabs = ['C:\\', 'D:\\x']"));
+        assert_eq!((cfg.startup, cfg.start_tabs), (Startup::Tabs, vec!["C:\\".to_string(), "D:\\x".to_string()]));
+        // 舊版的 start_path
+        let (cfg, _) = Config::load(Some("start_path = 'E:\\a'"));
+        assert_eq!((cfg.startup, cfg.start_tabs), (Startup::Tabs, vec!["E:\\a".to_string()]));
+        let (cfg, _) = Config::load(Some("start_path = ''"));
+        assert_eq!((cfg.startup, cfg.start_tabs.len()), (Startup::Session, 0));
+        let (cfg, _) = Config::load(Some("startup = 'new'\nstart_path = 'E:\\a'"));
+        assert_eq!(cfg.startup, Startup::New);
     }
 
     #[test]

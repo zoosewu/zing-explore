@@ -535,6 +535,7 @@ impl App {
         self.gfx.end();
         self.layout = lay;
         self.update_title();
+        self.report_shell_location();
     }
 
     fn paint_toolbar(&self, lay: &Layout) {

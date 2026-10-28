@@ -8,8 +8,10 @@ language = "auto"
 # 或使用者主題名稱（zing.exe 旁的 themes\<名稱>.toml，可用 style = "fluent" 以某個風格為基礎）
 theme = "system"
 show_hidden = false
-# 留空表示還原上次的資料夾
-start_path = ""
+# 啟動時開啟：session（還原上次的分頁）| new（一個「此電腦」分頁）| tabs（start_tabs 列出的分頁）
+# 以資料夾啟動（例如設為預設的檔案總管後從桌面開啟）時，另外開啟或切換到那個資料夾
+startup = "session"
+start_tabs = []
 favorites = []
 
 [layout]

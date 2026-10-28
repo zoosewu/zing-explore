@@ -138,6 +138,19 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   重新啟動照一般方式關閉視窗，訊息迴圈結束後才啟動新版（`update::relaunch`）。winhttp.dll、bcrypt.dll 延遲載入（build.rs）。
   隔離模式不連網、不寫檔，冒煙測試以 `update::TEST_LATEST` 提供最新版；連網的測試：
   `cargo test -p zing-app latest_release -- --ignored --nocapture`。Release 壓縮檔的內容（檔名、平放在最上層）改變時同步修改這裡。
+- 設為預設的檔案總管（`defaultapp.rs`）：只寫 `HKCU\Software\Classes`（`Directory`、`Drive` 的預設動作 `zing-explore`、
+  Win+E 的 `CLSID\{52205fd8-…}\shell\opennewwindow`），關閉時只刪自己寫的；在背景執行緒讀寫，啟動時（第一幀之後）
+  發現登錄指向的 zing.exe 已不存在就改成目前的位置。隔離模式只在記憶體中切換；單元測試寫在自己的測試機碼下並刪除。
+  命令列的資料夾（`zing_core::startup::parse_args`）：`shell:MyComputerFolder` 是「此電腦」，其他 `shell:`、`::{CLSID}`
+  直接交給 `explorer.exe`（不能用 ShellExecute 開資料夾，會再轉回 zing）。已有 zing 開著時（`instance.rs`：具名 mutex
+  表示有 zing 在執行）以 WM_COPYDATA 轉給看得見的視窗開新分頁（`App::open_folder`，已開著就切換過去），
+  第一個 zing 還沒有視窗時最多等 3 秒；隔離模式的視窗拒絕。啟動時的分頁（`startup`：session／new／tabs）在 `zing_core::startup::initial`。
+- 「在資料夾中顯示」（`shellwin.rs`）：設為預設的檔案總管時，視窗登記到 ShellWindows（`SHOpenFolderAndSelectItems` 以此
+  找視窗、呼叫 `IShellView::SelectItem`；沒有登記時呼叫端卡 20 秒）。目前的資料夾改變時（重繪時比對，與視窗標題相同）
+  先取消再以 `RegisterPending`（執行緒用視窗所屬的 UI 執行緒）＋`Register` 重新登記：只呼叫 `OnNavigate` 等待中的呼叫端
+  看不到。登記在專用執行緒；COM 物件是 agile 的，其他程序的呼叫在 RPC 執行緒上執行，狀態放在 `Mutex`，結果以
+  `Msg::ShellSelect`／`ShellOpen` 送回 UI。在 SendMessage（WM_COPYDATA）的處理中不能呼叫 COM。跨程序的測試：
+  `cargo test -p zing-app shell_select_from_other_process -- --ignored --nocapture`（等待時要處理視窗訊息）。
 - 執行外部程式一律經 `services::start`／`services::launch`：`Show::HideConsole`（`run`、Lua 的 `run`）時主控台程式以
   CREATE_NO_WINDOW 執行；開啟檔案、網址列輸入維持 `Show::Normal`（與檔案總管相同）。Lua 的 `os.execute`、`io.popen`
   在 prelude 換成不顯示主控台視窗的版本。

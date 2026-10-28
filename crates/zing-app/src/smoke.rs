@@ -196,7 +196,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_LEFT, VK_MENU, VK_OEM_5, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, ICON_BIG, KillTimer, SendMessageW, SetTimer, WM_CHAR, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    GetClientRect, ICON_BIG, KillTimer, SendMessageW, SetTimer, WM_CHAR, WM_COPYDATA, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTEXT, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONUP,
 };
 
@@ -2447,14 +2447,30 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("顯示隱藏檔案", a.show_hidden, true)?;
         expect("設定", a.config.show_hidden, true)
     }));
-    v.push(step(
-        "設定：輸入啟動時開啟的資料夾",
-        |c| {
-            click(c, "", settings_row_pos("start_path", None, true));
-            edit_commit("C:\\Windows");
-        },
-        |_, a| expect("start_path", a.config.start_path.as_str(), "C:\\Windows"),
-    ));
+    let pref_index = |key: &str| zing_core::prefs::PREFS.iter().position(|p| p.key == key);
+    v.push(step("設定：展開「啟動時開啟」", |c| click(c, "", settings_row_pos("startup", None, true)), move |_, a| {
+        expect("展開", a.settings_page().and_then(|p| p.expanded), pref_index("startup"))
+    }));
+    v.push(step("設定：選「指定的分頁」", |c| click(c, "", settings_row_pos("startup", Some(2), true)), |_, a| {
+        expect("startup", a.config.startup, zing_core::config::Startup::Tabs)?;
+        expect("收起", a.settings_page().and_then(|p| p.expanded), None)
+    }));
+    v.push(step("設定：點「指定的分頁」改成目前開著的分頁", |c| click(c, "", settings_row_pos("start_tabs", None, true)), |_, a| {
+        let tabs: Vec<String> =
+            a.panes.iter().flat_map(|p| p.tabs.iter().map(|t| zing_core::startup::tab_value(&t.path))).collect();
+        expect("start_tabs", &a.config.start_tabs, &tabs)
+    }));
+    let default_app_pos = || {
+        let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == zing_core::prefs::Kind::DefaultApp)?;
+        settings_pos(Row::Field(i), true)
+    };
+    v.push(step("設定：設為預設的檔案總管（冒煙測試只改記憶體、不寫登錄）", move |c| click(c, "", default_app_pos()), |_, a| {
+        expect("狀態", a.default_app.clone(), Some(crate::defaultapp::Status::On))
+    }));
+    v.push(step("截圖：一般設定", |_| {}, |c, _| screenshot(c, "27-一般設定")));
+    v.push(step("設定：再點一次還原為 Windows 檔案總管", move |c| click(c, "", default_app_pos()), |_, a| {
+        expect("狀態", a.default_app.clone(), Some(crate::defaultapp::Status::Off))
+    }));
     v.push(step("設定：點標題回到分類清單", |c| click(c, "", settings_title_pos()), move |_, a| expect("分類清單", category(a), None)));
     v.push(step("設定：點「外觀」", |c| click(c, "", settings_category_pos("外觀")), move |_, a| {
         expect("分類", category(a), group_index("外觀"))
@@ -2527,7 +2543,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                 for (key, value) in [
                     ("show_hidden", "false"),
                     ("layout.tree", "left"),
-                    ("start_path", ""),
+                    ("startup", "session"),
+                    ("start_tabs", ""),
                     ("context_menu.hide_slow", "true"),
                     ("context_menu.allow_slow", ""),
                 ] {
@@ -2542,7 +2559,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             expect("設定頁", a.settings_page().is_none(), true)?;
             expect("樹狀列", a.tree_side, zing_core::config::TreeSide::Left)?;
             expect("顯示隱藏檔案", a.show_hidden, false)?;
-            expect("start_path", a.config.start_path.as_str(), "")?;
+            expect("startup", a.config.startup, zing_core::config::Startup::Session)?;
+            expect("start_tabs", a.config.start_tabs.len(), 0)?;
             expect("hide_slow", a.config.context_menu.hide_slow, true)?;
             expect("allow_slow", a.config.context_menu.allow_slow.len(), 0)
         },
@@ -4262,6 +4280,98 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         )
         .slow(),
     );
+
+    // ------------------------------------------------ 從外部開啟資料夾（設為預設的檔案總管後，其他程序轉來的路徑；instance.rs）
+    let tab_paths = |a: &App| a.panes.iter().flat_map(|p| p.tabs.iter().map(|t| t.path.clone())).collect::<Vec<_>>();
+    let active_path = |a: &App| a.tab().path.clone();
+    v.push(step(
+        "外部開啟：隔離模式拒絕其他程序轉來的資料夾",
+        move |c| {
+            let data: Vec<u16> = c.dir.encode_utf16().collect();
+            let cds = windows::Win32::System::DataExchange::COPYDATASTRUCT {
+                dwData: crate::instance::OPEN_MAGIC,
+                cbData: (data.len() * 2) as u32,
+                lpData: data.as_ptr() as *mut _,
+            };
+            let r = unsafe { SendMessageW(c.hwnd, WM_COPYDATA, Some(WPARAM(0)), Some(LPARAM(&cds as *const _ as isize))) };
+            c.notes.push(("copydata", r.0.to_string()));
+            let tabs = with_app(|a| tab_paths(a).join("|")).unwrap_or_default();
+            c.notes.push(("tabs_before", tabs));
+        },
+        move |c, a| {
+            expect("回傳值", c.note("copydata"), Some("0"))?;
+            expect("分頁不變", Some(tab_paths(a).join("|")), c.note("tabs_before").map(String::from))
+        },
+    ));
+    v.push(step(
+        "外部開啟：沒開著的資料夾開新分頁並切換過去",
+        |c| {
+            let target = path::parent(&c.dir).unwrap_or_default();
+            with_app(|a| a.open_folder(target));
+        },
+        move |c, a| {
+            let target = path::parent(&c.dir).unwrap_or_default();
+            let before = c.note("tabs_before").map_or(0, |t| t.split('|').count());
+            expect("分頁數", tab_paths(a).len(), before + 1)?;
+            expect("作用中的分頁", active_path(a), target)
+        },
+    ));
+    v.push(step(
+        "外部開啟：已開著的資料夾（大小寫不同）切換到那個分頁",
+        |c| {
+            let target = path::parent(&c.dir).unwrap_or_default().to_uppercase();
+            with_app(|a| {
+                a.panes[a.active_pane].active = 0;
+                a.open_folder(target);
+            });
+        },
+        move |c, a| {
+            let target = path::parent(&c.dir).unwrap_or_default();
+            let before = c.note("tabs_before").map_or(0, |t| t.split('|').count());
+            expect("分頁數不變", tab_paths(a).len(), before + 1)?;
+            expect("作用中的分頁", active_path(a), target)
+        },
+    ));
+    v.push(step(
+        "外部開啟：Win+E 的「此電腦」",
+        |_| {
+            let pc = match zing_core::startup::parse_args(&["zing.exe".into(), zing_core::startup::THIS_PC.into()]) {
+                Some(zing_core::startup::Target::Folder(p)) => p,
+                _ => "解析錯誤".into(),
+            };
+            with_app(|a| a.open_folder(pc));
+        },
+        move |_, a| expect("作用中的分頁", active_path(a), String::new()),
+    ));
+    v.push(step(
+        "外部開啟：其他程式要求選取檔案（瀏覽器的「在資料夾中顯示」）切到那個資料夾並選取",
+        |c| {
+            let file = c.sub("a2.txt");
+            with_app(|a| a.select_from_outside(file, false));
+        },
+        move |c, a| {
+            expect("作用中的分頁", active_path(a), c.dir.clone())?;
+            let tab = a.tab();
+            let selected: Vec<String> = tab.selected_entries().iter().map(|&e| String::from_utf16_lossy(tab.listing.name(e))).collect();
+            expect("選取", selected, vec!["a2.txt".to_string()])
+        },
+    ));
+    v.push(step(
+        "外部開啟：關閉這幾步開的分頁",
+        |c| {
+            let keep: Vec<String> = c.note("tabs_before").unwrap_or_default().split('|').map(String::from).collect();
+            with_app(|a| {
+                for p in (0..a.panes.len()).rev() {
+                    for t in (0..a.panes[p].tabs.len()).rev() {
+                        if !keep.contains(&a.panes[p].tabs[t].path) {
+                            a.close_tab(p, t);
+                        }
+                    }
+                }
+            });
+        },
+        move |c, a| expect("分頁", Some(tab_paths(a).join("|")), c.note("tabs_before").map(String::from)),
+    ));
 
     // ------------------------------------------------ 檢查新版本（隔離模式不連網：以 TEST_LATEST 提供最新版）
     let available = |a: &App| match &a.update {

@@ -7,6 +7,8 @@
 //!   關閉時表格以灰階顯示、不能切換。表格的內容在進入分類時於背景讀取（`shellext::slow_list`）。
 //! - 每次修改立即套用，並在背景只改寫 config.toml 中的那一行（保留註解，見 `zing_core::prefs::write_pref`）；
 //!   隔離模式（冒煙測試）不寫檔。
+//! - 指定的分頁（`Kind::Tabs`）：點一下改成目前開著的分頁。設為預設的檔案總管（`Kind::DefaultApp`）：開關顯示登錄的狀態
+//!   （開啟設定頁時在背景讀取），切換在背景寫入登錄（`defaultapp.rs`）。
 //! - 其他設定（工具列按鈕、縮圖產生器、快速鍵…）以列出的命令開啟對應的編輯器。
 
 use zing_core::prefs::{BUILTIN_THEMES, Kind, PREFS, choice_label, groups, toml_literal};
@@ -117,6 +119,7 @@ impl App {
             self.open_side(crate::sidepanel::SidePanel::Settings(SettingsPage::default()));
             let n = self.notifier.clone();
             self.pool.spawn(move || n.send(Msg::UserThemes(settings::user_themes())));
+            self.refresh_default_app(false);
         }
         self.invalidate();
     }
@@ -266,6 +269,15 @@ impl App {
                         }
                         Kind::Text => self.begin_pref_edit(i),
                         Kind::Action(cmd) => self.exec(cmd),
+                        Kind::Tabs => {
+                            let tabs: Vec<String> = self
+                                .panes
+                                .iter()
+                                .flat_map(|p| p.tabs.iter().map(|t| zing_core::startup::tab_value(&t.path)))
+                                .collect();
+                            self.set_pref(i, tabs.join("|"));
+                        }
+                        Kind::DefaultApp => self.toggle_default_app(),
                         Kind::SlowList => {}
                     },
                     Some(Row::Option(i, o)) => {
@@ -416,12 +428,14 @@ impl App {
                     g.text(&summary, Font::Small, Rect::new(rr.l + 8.0, rr.t, rr.r - 24.0, rr.b), c.text_secondary)
                 }
                 Row::Hint(i) => {
-                    let hint = if PREFS[i].kind == Kind::SlowList && !slow_on {
-                        tr!("「隱藏緩慢的擴充功能項目」關閉時，全部照樣放在第一層")
-                    } else {
-                        zing_core::i18n::tr(PREFS[i].hint)
+                    let hint = match (&PREFS[i].kind, &self.default_app) {
+                        (Kind::SlowList, _) if !slow_on => tr!("「隱藏緩慢的擴充功能項目」關閉時，全部照樣放在第一層").to_string(),
+                        (Kind::DefaultApp, Some(crate::defaultapp::Status::Other(exe))) => {
+                            tr!("目前是另一個位置的 zing：{exe}；開啟後改成這一個", exe)
+                        }
+                        _ => zing_core::i18n::tr(PREFS[i].hint).to_string(),
                     };
-                    g.text(hint, Font::Small, Rect::new(rr.l + 8.0, rr.t, rr.r - 6.0, rr.b), c.text_secondary)
+                    g.text(&hint, Font::Small, Rect::new(rr.l + 8.0, rr.t, rr.r - 6.0, rr.b), c.text_secondary)
                 }
                 Row::Field(i) => {
                     let p = &PREFS[i];
@@ -449,8 +463,22 @@ impl App {
                             let label = if on { tr!("開") } else { tr!("關") };
                             g.text(label, Font::Text, Rect::new(right + 8.0, rr.t, vr.r, rr.b), c.text_secondary);
                         }
-                        Kind::Text if v.is_empty() => g.text(tr!("（未設定）"), Font::Text, vr, c.text_secondary),
+                        Kind::Text | Kind::Tabs if v.is_empty() => g.text(tr!("（未設定）"), Font::Text, vr, c.text_secondary),
                         Kind::Text => g.text(&v, Font::Text, vr, c.text_secondary),
+                        Kind::Tabs => {
+                            let names: Vec<String> = v
+                                .split('|')
+                                .map(zing_core::startup::tab_path)
+                                .map(|p| if p.is_empty() { tr!("此電腦").to_string() } else { p })
+                                .collect();
+                            g.text(&names.join(tr!("、")), Font::Text, vr, c.text_secondary)
+                        }
+                        Kind::DefaultApp => {
+                            let on = self.default_app == Some(crate::defaultapp::Status::On);
+                            let right = self.paint_switch(rr, vr.l, on, self.default_app.is_some());
+                            let label = if on { tr!("開") } else { tr!("關") };
+                            g.text(label, Font::Text, Rect::new(right + 8.0, rr.t, vr.r, rr.b), c.text_secondary);
+                        }
                         Kind::Action(_) => g.text("›", Font::Text, Rect::new(rr.r - 18.0, rr.t, rr.r, rr.b), c.text_secondary),
                         Kind::SlowList => {}
                     }

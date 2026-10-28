@@ -26,6 +26,7 @@ pub mod path;
 pub mod prefs;
 pub mod scriptapi;
 pub mod sort;
+pub mod startup;
 pub mod testdir;
 pub mod text;
 pub mod textpreview;

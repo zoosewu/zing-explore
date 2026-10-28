@@ -208,12 +208,16 @@ pub struct App {
     pub isolated: bool,
     /// 新版本的提示與下載（update.rs）
     pub update: crate::update::Update,
+    /// 是否為預設的檔案總管（defaultapp.rs，登錄在背景讀取；還沒讀到時為 None）
+    pub default_app: Option<crate::defaultapp::Status>,
+    /// 登記到 ShellWindows（shellwin.rs，設為預設的檔案總管時）
+    pub shell_windows: Option<crate::shellwin::Host>,
     session: Session,
 }
 
 impl App {
-    /// `smoke_dir`：冒煙測試的起始資料夾（使用預設設定與深色主題，結果才可重現）
-    pub fn new(hwnd: HWND, dpi: f32, perf: Option<Perf>, smoke_dir: Option<String>) -> windows::core::Result<Self> {
+    /// `smoke_dir`：冒煙測試的起始資料夾（使用預設設定與深色主題，結果才可重現）；`open`：命令列要開啟的資料夾
+    pub fn new(hwnd: HWND, dpi: f32, perf: Option<Perf>, smoke_dir: Option<String>, open: Option<String>) -> windows::core::Result<Self> {
         let isolated = perf.is_some() || smoke_dir.is_some();
         // 第一幀之前必須知道設定與主題；檔案很小且在本機，屬於明確的例外
         let (mut config, warnings, session, theme, theme_warning, theme_name) = if smoke_dir.is_some() {
@@ -317,26 +321,27 @@ impl App {
             perf,
             isolated,
             update: Default::default(),
+            default_app: None,
+            shell_windows: None,
             session,
         };
 
-        // 起始分頁：效能測試固定從「此電腦」開始；否則依設定或上次的工作階段
-        let start_tabs: Vec<Vec<String>> = if let Some(d) = smoke_dir {
-            vec![vec![d]]
+        // 起始分頁：效能測試固定從「此電腦」開始；否則依設定（startup）與命令列要開啟的資料夾
+        use zing_core::startup::PaneTabs;
+        let (start, active_pane) = if let Some(d) = smoke_dir {
+            (vec![PaneTabs { tabs: vec![d], active: 0 }], 0)
         } else if app.perf.is_some() {
-            vec![vec![String::new()]]
-        } else if !app.config.start_path.is_empty() {
-            vec![vec![path::normalize(&app.config.start_path)]]
-        } else if !app.session.panes.is_empty() {
-            app.session.panes.iter().map(|p| p.tabs.clone()).filter(|t| !t.is_empty()).collect()
+            (vec![PaneTabs { tabs: vec![String::new()], active: 0 }], 0)
         } else {
-            vec![vec![std::env::var("USERPROFILE").unwrap_or_default()]]
+            let session: Vec<PaneTabs> =
+                app.session.panes.iter().map(|p| PaneTabs { tabs: p.tabs.clone(), active: p.active }).collect();
+            let home = std::env::var("USERPROFILE").unwrap_or_default();
+            let c = &app.config;
+            zing_core::startup::initial(c.startup, &c.start_tabs, &session, app.session.active_pane, &home, open.as_deref())
         };
-        for (pi, tabs) in start_tabs.into_iter().enumerate() {
-            let active = app.session.panes.get(pi).map_or(0, |p| p.active);
-            let tabs: Vec<Tab> = tabs.into_iter().map(|p| app.new_tab(p)).collect();
-            let active = active.min(tabs.len() - 1);
-            app.panes.push(Pane { tabs, active });
+        for (pi, pane) in start.into_iter().enumerate() {
+            let tabs: Vec<Tab> = pane.tabs.into_iter().map(|p| app.new_tab(p)).collect();
+            app.panes.push(Pane { tabs, active: pane.active });
             for t in 0..app.panes[pi].tabs.len() {
                 app.load(pi, t);
             }
@@ -346,7 +351,7 @@ impl App {
             app.panes.push(Pane { tabs: vec![t], active: 0 });
             app.load(0, 0);
         }
-        app.active_pane = app.session.active_pane.min(app.panes.len() - 1);
+        app.active_pane = active_pane.min(app.panes.len() - 1);
         app.sync_tree();
         if let Some(w) = warnings.into_iter().chain(theme_warning).next() {
             app.set_status(w, true);
@@ -1016,6 +1021,9 @@ impl App {
             Msg::UpdateChecked { latest, skipped, manual } => self.on_update_checked(latest, skipped, manual),
             Msg::UpdateProgress { percent } => self.on_update_progress(percent),
             Msg::UpdateInstalled(result) => self.on_update_installed(result),
+            Msg::DefaultApp { result, toggled } => self.on_default_app(result, toggled),
+            Msg::ShellOpen(path) => self.open_folder(path),
+            Msg::ShellSelect { path, rename } => self.select_from_outside(path, rename),
             Msg::Paste { sources, dest, cut } => self.submit_op(FileOp::Transfer { sources, dest, mov: cut }),
             Msg::ConfigLoaded { mut config, theme, warnings } => {
                 if self.isolated {
