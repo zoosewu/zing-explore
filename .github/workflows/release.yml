@@ -1,4 +1,5 @@
-# 發佈：push v* 標籤時測試（clippy、單元測試、冒煙測試、效能）、建置並建立 GitHub Release。
+# 發佈：push v* 標籤（v主.次.修補）時以標籤的版本號測試（clippy、單元測試、冒煙測試、效能）、建置，
+# 建立 GitHub Release（說明由 git-cliff 依慣例式提交產生，見 cliff.toml），再把版本號 commit 回 master。
 # 也可以手動執行（Actions → release → Run workflow）：在分支上只測試與建置不發佈，選標籤時會發佈。
 # 最新版固定在 https://github.com/<owner>/<repo>/releases/latest/download/zing-explore-windows-x64.zip
 name: release
@@ -24,6 +25,7 @@ env:
   CARGO_TERM_COLOR: always
   ASSET: zing-explore-windows-x64.zip
   LUALS_VERSION: '3.13.6'
+  GIT_CLIFF_VERSION: '2.8.0'
   GH_TOKEN: ${{ github.token }}
 
 defaults:
@@ -43,16 +45,20 @@ jobs:
         # 冒煙測試、效能測試的測試資料（zing_core::testdir）；路徑不可含 ..（Shell 的檔案作業會回報參數不正確）
         run: '"ZING_TEST_DIR=$(Join-Path $env:RUNNER_TEMP ''zing-test'')" >> $env:GITHUB_ENV'
 
-      - name: 確認標籤與版本號、標籤在 master 上
+      - name: 版本號取自標籤、確認標籤在 master 上
         if: github.ref_type == 'tag'
         run: |
           $tag = '${{ github.ref_name }}'
-          $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
-          $ver = ($meta.packages | Where-Object name -eq 'zing-app').version
-          if ($tag -ne "v$ver") { throw "標籤 $tag 與 Cargo.toml 的版本 $ver 不一致" }
+          # 預先發行版（-rc.1）不支援：檢查新版本只比較 主.次.修補
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') { throw "標籤 $tag 的格式需為 v主.次.修補（例如 v0.2.0）" }
+          $ver = $Matches[1]
           git fetch origin master
           git merge-base --is-ancestor $env:GITHUB_SHA origin/master
           if ($LASTEXITCODE -ne 0) { throw "標籤 $tag 的 commit 不在 master 上" }
+          # 以標籤的版本建置（執行檔的版本資訊、檢查新版本用的目前版本）
+          pwsh -NoProfile tools/set-version.ps1 $ver
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "VERSION=$ver" >> $env:GITHUB_ENV
 
       - name: 安裝 rust-toolchain.toml 指定的工具鏈
         run: |
@@ -147,10 +153,52 @@ jobs:
             target\smoke
           if-no-files-found: ignore
 
+      - name: Release 說明（git-cliff，依慣例式提交）
+        if: github.ref_type == 'tag'
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'git-cliff'
+          gh release download "v$env:GIT_CLIFF_VERSION" --repo orhun/git-cliff --pattern "git-cliff-$env:GIT_CLIFF_VERSION-x86_64-pc-windows-msvc.zip" --dir $dir
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Expand-Archive (Get-ChildItem $dir -Filter *.zip).FullName $dir
+          $cliff = (Get-ChildItem $dir -Recurse -Filter git-cliff.exe | Select-Object -First 1).FullName
+          # 上一個標籤到這個標籤之間的 commit
+          $changes = (& $cliff --config cliff.toml --current --strip all) -join "`n"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>$null | Out-Null
+          $first = $LASTEXITCODE -ne 0
+          $global:LASTEXITCODE = 0
+          if (-not $changes.Trim()) { $changes = if ($first) { '第一個公開版本。' } else { '這個版本沒有列出的變更。' } }
+          $install = '下載 `zing-explore-windows-x64.zip`，解壓縮到一般使用者可寫入的資料夾（不要放在 Program Files）後執行 `zing.exe`。' +
+            '已經在用的 zing 會在狀態列提示新版本，點了即可下載並安裝。'
+          $notes = Join-Path $env:RUNNER_TEMP 'notes.md'
+          Set-Content $notes "$($changes.Trim())`n`n---`n`n$install" -Encoding utf8
+          Get-Content $notes
+          "NOTES_FILE=$notes" >> $env:GITHUB_ENV
+
       - name: 建立 Release
         if: github.ref_type == 'tag'
         run: |
           $dist = Join-Path $env:RUNNER_TEMP 'dist'
-          gh release create '${{ github.ref_name }}' --repo $env:GITHUB_REPOSITORY --generate-notes `
+          gh release create '${{ github.ref_name }}' --repo $env:GITHUB_REPOSITORY --title '${{ github.ref_name }}' --notes-file $env:NOTES_FILE `
             (Join-Path $dist $env:ASSET) (Join-Path $dist "$env:ASSET.sha256") (Join-Path $dist 'perf.json')
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: 版本號 commit 回 master（chore(release)）
+        if: github.ref_type == 'tag'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # 發佈期間 master 可能又有新的 commit：在最新的 master 上改版本號
+          git fetch origin master
+          git checkout -f -B release-version origin/master
+          pwsh -NoProfile tools/set-version.ps1 $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # 更新 Cargo.lock 中本專案的版本
+          cargo metadata --format-version 1 --offline | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          git add Cargo.toml Cargo.lock
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) { Write-Host "master 的版本已是 $env:VERSION"; exit 0 }
+          git commit -m "chore(release): v$env:VERSION"
+          git push origin HEAD:master
           if ($LASTEXITCODE -ne 0) { exit 1 }

@@ -1,0 +1,18 @@
+#!/bin/sh
+# commit 訊息的第一行需為慣例式提交（Conventional Commits）：類型(範圍): 說明
+# Release 的說明由這些 commit 產生（cliff.toml）。啟用：git config core.hooksPath tools/hooks
+first=$(head -n 1 "$1")
+case "$first" in
+    Merge* | Revert* | fixup!* | squash!* | amend!*) exit 0 ;;
+esac
+if printf '%s\n' "$first" | grep -Eq '^(feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert)(\([^)]+\))?!?: .+'; then
+    exit 0
+fi
+cat >&2 <<'EOF'
+commit 訊息的第一行需為慣例式提交：類型(範圍): 說明
+  類型：feat（新功能）、fix（修正）、perf（效能）、refactor、docs、test、build、ci、chore、style、revert
+  不相容的變更在冒號前加 !，例如 feat(config)!: 設定檔改用新格式
+  例：feat(update): 檢查新版本與自動更新
+EOF
+printf '目前的第一行：%s\n' "$first" >&2
+exit 1

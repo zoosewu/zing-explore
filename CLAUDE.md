@@ -34,9 +34,14 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   結束時剪貼簿上仍有標記就還原（不論步驟成敗），沒有標記但已改變（使用者自己複製）就不動。目前只測文字（Lua `clipboard()`、
   複製路徑）；檔案的複製／貼上（OLE 資料物件）、右鍵選單、刪除（會搶前景、留東西在資源回收筒）仍需手動測試。
 - 只有在確認是改善（或刻意接受的取捨）時才執行 `pwsh tools/perf.ps1 -UpdateBaseline` 更新 `perf/baseline.json`，並在說明中寫明原因。
-- 發佈：在 master 上把 `Cargo.toml` 的 `version` 改好、push `v<版本>` 標籤，`.github/workflows/release.yml` 會跑 clippy、
-  單元測試、release 的冒煙測試、效能檢查，全部通過才建立 GitHub Release（`zing-explore-windows-x64.zip`、`.sha256`、`perf.json`；
-  檔名不含版本，`releases/latest/download/` 永遠是最新版）。CI 的效能基準是上一個 Release 附的 `perf.json`（不是
+- commit 訊息用慣例式提交（Conventional Commits）：第一行 `類型(範圍): 說明`（說明用繁體中文），類型為 feat、fix、perf、
+  refactor、docs、test、build、ci、chore、style、revert，不相容的變更在冒號前加 `!`；內文照舊（效能結果表等）。
+  Release 的說明由這些 commit 產生（`cliff.toml`，只列符合格式的）。`git config core.hooksPath tools/hooks` 啟用格式檢查。
+- 發佈：在 master 上 push `v<主.次.修補>` 標籤即可（不必先改 `Cargo.toml`）。`.github/workflows/release.yml` 以標籤的版本號
+  （`tools/set-version.ps1`）跑 clippy、單元測試、release 的冒煙測試、效能檢查，全部通過才建立 GitHub Release
+  （`zing-explore-windows-x64.zip`、`.sha256`、`perf.json`；檔名不含版本，`releases/latest/download/` 永遠是最新版；
+  說明由 git-cliff 依上一個標籤以來的 commit 產生），最後把版本號以 `chore(release): v<版本>` commit 回 master
+  （之後本機要先 `git pull`）。CI 的效能基準是上一個 Release 附的 `perf.json`（不是
   `perf/baseline.json`，機器不同），相對容差 15%；刻意接受的退步以手動執行（選標籤、勾選 allow_regression）發佈。
   工具鏈固定在 `rust-toolchain.toml`。測試、冒煙測試、效能失敗時 `tools/ci-annotate.ps1` 把原因輸出成錯誤摘要
   （不登入也能從 API 讀：`/repos/<owner>/<repo>/check-runs/<job id>/annotations`；日誌要登入才能下載）。

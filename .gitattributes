@@ -1,0 +1,2 @@
+# Git for Windows 的 sh 執行 hook：保持 LF
+tools/hooks/* text eol=lf
