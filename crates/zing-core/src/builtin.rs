@@ -166,6 +166,7 @@ builtins! {
     ScriptReload, OTHER, None => spec("script.reload", &[], tr_key!("重新載入 Lua 腳本"), "script.reload()");
     AppExit, OTHER, None => spec("app.exit", &[], tr_key!("結束程式"), "app.exit()");
     UpdateCheck, OTHER, None => spec("update.check", &[], tr_key!("立即檢查新版本（不受每天一次與設定的限制；有任何較新的版本都提示，包括修補版與略過的版本）"), "update.check()");
+    WelcomeShow, OTHER, None => spec("welcome.show", &[], tr_key!("開啟歡迎畫面（第一次啟動時顯示的常用設定）"), "welcome.show()");
 }
 
 /// 在終端機開啟目前的資料夾
@@ -266,6 +267,7 @@ pub const PRESETS: &[Preset] = &[
     titled("config.edit", tr_key!("編輯設定檔")),
     titled("config.reload", tr_key!("重新載入設定")),
     titled("update.check", tr_key!("檢查更新")),
+    titled_short("welcome.show", tr_key!("歡迎畫面（常用設定）"), tr_key!("歡迎畫面…")),
     titled_short("app.exit", tr_key!("結束 zing-explore"), tr_key!("結束")),
     short("view.sort --asc", tr_key!("遞增")),
     short("view.sort --desc", tr_key!("遞減")),

@@ -192,6 +192,11 @@ impl App {
             self.menu_click(hit);
             return;
         }
+        // 歡迎畫面開著：只有它能點
+        if self.welcome.is_some() {
+            self.welcome_click(hit);
+            return;
+        }
         // Lua 的 ask()：點輸入框外視為取消
         if self.ask.is_some() {
             if self.ask_layout().is_some_and(|(card, _, _)| !card.contains(x, y)) {
@@ -362,6 +367,9 @@ impl App {
     }
 
     pub fn on_double_click(&mut self, x: f32, y: f32) {
+        if self.welcome.is_some() {
+            return self.on_lbutton_down(x, y);
+        }
         if self.batch.is_some() {
             return;
         }
@@ -382,7 +390,7 @@ impl App {
     }
 
     pub fn on_rbutton_up(&mut self, x: f32, y: f32, screen: POINT) {
-        if self.batch.is_some() {
+        if self.batch.is_some() || (self.welcome.is_some() && self.menu.is_none()) {
             return;
         }
         self.hide_tip();
@@ -414,7 +422,7 @@ impl App {
     }
 
     pub fn on_mbutton_up(&mut self, x: f32, y: f32) {
-        if self.batch.is_some() {
+        if self.batch.is_some() || self.welcome.is_some() {
             return;
         }
         match self.fresh_hit(x, y) {
@@ -443,6 +451,9 @@ impl App {
         self.hide_tip();
         if self.menu.is_some() {
             self.close_menu();
+            return;
+        }
+        if self.welcome.is_some() {
             return;
         }
         if self.batch.is_some() {
@@ -497,6 +508,10 @@ impl App {
         if self.menu.is_some() {
             self.suppress_char = true;
             return self.menu_key(vk);
+        }
+        if self.welcome.is_some() {
+            self.suppress_char = true;
+            return self.welcome_key(vk, mods.shift);
         }
         // 鍵盤操作命令列中（F10）
         if self.bar_focus.is_some() && self.cmdbar_key(vk) {

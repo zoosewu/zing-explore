@@ -1032,3 +1032,11 @@ Check for a new version now (regardless of the once-a-day limit and the setting;
 ```lua
 update.check()
 ```
+
+### `welcome.show()`
+
+Open the welcome screen (the common settings shown on first launch)
+
+```lua
+welcome.show()
+```

@@ -1032,3 +1032,11 @@ app.exit()
 ```lua
 update.check()
 ```
+
+### `welcome.show()`
+
+ようこそ画面を開く（初回起動時に表示されるよく使う設定）
+
+```lua
+welcome.show()
+```

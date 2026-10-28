@@ -1032,3 +1032,11 @@ app.exit()
 ```lua
 update.check()
 ```
+
+### `welcome.show()`
+
+開啟歡迎畫面（第一次啟動時顯示的常用設定）
+
+```lua
+welcome.show()
+```

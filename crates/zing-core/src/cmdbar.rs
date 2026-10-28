@@ -189,6 +189,7 @@ pub const MORE_MENU: &[Entry] = &[
     Cmd("cmdbar.edit"),
     Cmd("keys.edit"),
     Cmd("settings.open"),
+    Cmd("welcome.show"),
     Cmd("update.check"),
     Sep,
     Cmd("app.exit"),

@@ -778,6 +778,9 @@ fn deferred_init(hwnd: HWND) {
             a.check_index_version();
             a.startup_update();
             a.refresh_default_app(true);
+            if a.first_run {
+                a.open_welcome();
+            }
         }
     });
     unsafe {

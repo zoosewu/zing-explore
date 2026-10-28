@@ -4453,6 +4453,79 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |_, a| expect("設定", a.config.update.check, true),
     ));
 
+    // ------------------------------------------------ 歡迎畫面（隔離模式不是第一次啟動：以命令開啟；設定只改記憶體）
+    // 第 k 個項目的位置：控制項（value）或名稱
+    let welcome_pos = |key: &'static str, value: bool| {
+        move || {
+            with_app(|a| {
+                a.layout = a.compute_layout();
+                let i = zing_core::prefs::PREFS.iter().position(|p| p.key == key)?;
+                let k = crate::welcome::items().iter().position(|&x| x == i)?;
+                let (_, first, control) = *a.welcome_layout()?.rows.get(k)?;
+                let x = if value { control.l + 12.0 } else { first.l + 12.0 };
+                Some((x, (first.t + first.b) / 2.0))
+            })
+            .flatten()
+        }
+    };
+    v.push(step("歡迎畫面：以命令開啟", |_| exec("welcome.show"), |_, a| {
+        expect("歡迎畫面", a.welcome.is_some(), true)?;
+        expect("第一次啟動", a.first_run, false)?;
+        expect("鍵盤焦點", a.welcome.as_ref().map(|w| w.focus), Some(0))
+    }));
+    v.push(step("截圖：歡迎畫面", |_| {}, |c, _| screenshot(c, "28-歡迎畫面")));
+    let hidden_pos = welcome_pos("show_hidden", true);
+    v.push(step("歡迎畫面：點開關切換顯示隱藏檔案", move |c| click(c, "", hidden_pos()), |_, a| {
+        expect("顯示隱藏檔案", a.show_hidden, true)?;
+        expect("歡迎畫面仍開著", a.welcome.is_some(), true)
+    }));
+    let theme_pos = welcome_pos("theme", true);
+    v.push(step("歡迎畫面：點主題開啟下拉選單（目前的打勾）", move |c| click(c, "", theme_pos()), |_, a| {
+        let m = a.menu.as_ref().ok_or("沒有選單")?;
+        let checked: Vec<&str> = m.levels[0].items.iter().filter(|i| i.checked).map(|i| i.label.as_str()).collect();
+        expect("打勾", checked, vec!["緊湊深色"])
+    }));
+    v.push(step("歡迎畫面：選「緊湊淺色」立即套用", |c| click(c, "", menu_item_pos(0, "緊湊淺色")), |_, a| {
+        expect("選單", a.menu.is_none(), true)?;
+        expect("主題", a.config.theme.as_str(), "light")?;
+        expect("歡迎畫面仍開著", a.welcome.is_some(), true)
+    }));
+    v.push(step("歡迎畫面：背後的清單點不到", |c| {
+        let below = with_app(|a| a.layout.panes.first().map(|p| (p.list.l + 20.0, p.list.t + 10.0))).flatten();
+        click(c, "", below);
+    }, |_, a| expect("歡迎畫面仍開著", a.welcome.is_some(), true)));
+    v.push(step(
+        "歡迎畫面：Shift+Tab 到「開始使用」，Enter 關閉",
+        |c| {
+            // 點過的項目會成為焦點：從第一項開始
+            with_app(|a| a.welcome.as_mut().map(|w| w.focus = 0));
+            key(c, "s", VK_TAB);
+            let f = with_app(|a| a.welcome.as_ref().map(|w| w.focus)).flatten();
+            c.notes.push(("welcome_focus", format!("{f:?}")));
+            key(c, "", VK_RETURN);
+        },
+        |c, a| {
+            let last = crate::welcome::items().len() + crate::welcome::BUTTONS.len() - 1;
+            expect("焦點", c.note("welcome_focus"), Some(format!("{:?}", Some(last)).as_str()))?;
+            expect("歡迎畫面", a.welcome.is_none(), true)
+        },
+    ));
+    v.push(step(
+        "歡迎畫面：還原設定（結束）",
+        |_| {
+            with_app(|a| {
+                for (key, value) in [("show_hidden", "false"), ("theme", "dark")] {
+                    let i = zing_core::prefs::PREFS.iter().position(|p| p.key == key).unwrap();
+                    a.set_pref(i, value.into());
+                }
+            });
+        },
+        |_, a| {
+            expect("顯示隱藏檔案", a.show_hidden, false)?;
+            expect("主題", a.config.theme.as_str(), "dark")
+        },
+    ));
+
     // 狀態列錯誤與 UI 執行緒 I/O 防呆的回報在 finish() 統一檢查
     v.push(step("截圖：結束畫面", |_| {}, |c, _| screenshot(c, "03-結束")));
     v

@@ -67,6 +67,7 @@ mod smoke {
     pub fn tick(_hwnd: HWND) {}
 }
 mod view;
+mod welcome;
 #[macro_use]
 extern crate zing_core;
 mod window;

@@ -212,6 +212,10 @@ pub struct App {
     pub default_app: Option<crate::defaultapp::Status>,
     /// 登記到 ShellWindows（shellwin.rs，設為預設的檔案總管時）
     pub shell_windows: Option<crate::shellwin::Host>,
+    /// 歡迎畫面（welcome.rs）
+    pub welcome: Option<crate::welcome::Welcome>,
+    /// 第一次啟動（程式旁沒有 session.toml）：第一幀之後顯示歡迎畫面
+    pub first_run: bool,
     session: Session,
 }
 
@@ -219,12 +223,14 @@ impl App {
     /// `smoke_dir`：冒煙測試的起始資料夾（使用預設設定與深色主題，結果才可重現）；`open`：命令列要開啟的資料夾
     pub fn new(hwnd: HWND, dpi: f32, perf: Option<Perf>, smoke_dir: Option<String>, open: Option<String>) -> windows::core::Result<Self> {
         let isolated = perf.is_some() || smoke_dir.is_some();
+        let mut first_run = false;
         // 第一幀之前必須知道設定與主題；檔案很小且在本機，屬於明確的例外
         let (mut config, warnings, session, theme, theme_warning, theme_name) = if smoke_dir.is_some() {
             let (config, warnings) = Config::load(None);
             (config, warnings, Session::default(), Theme::dark(), None, "dark".to_string())
         } else {
             let _allow = zing_core::guard::allow_io("啟動時讀取設定、主題與工作階段");
+            first_run = !isolated && !Session::exists();
             let (config, warnings) = settings::load_config();
             let session = if isolated { Session::default() } else { Session::load() };
             // 最後選用的主題優先於設定檔
@@ -323,6 +329,8 @@ impl App {
             update: Default::default(),
             default_app: None,
             shell_windows: None,
+            welcome: None,
+            first_run,
             session,
         };
 
@@ -1479,6 +1487,7 @@ impl App {
             }
             Cmd::AppExit => window::close(self.hwnd),
             Cmd::UpdateCheck => self.check_update_now(),
+            Cmd::WelcomeShow => self.open_welcome(),
         }
         Ok(())
     }

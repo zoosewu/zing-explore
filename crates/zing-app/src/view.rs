@@ -75,6 +75,10 @@ pub struct Layout {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
     None,
+    /// 歡迎畫面（welcome.rs）：第 k 個項目、底部按鈕、卡片的其他位置與背景
+    WelcomeRow(usize),
+    WelcomeButton(usize),
+    WelcomePanel,
     Nav(usize),
     Crumb(String),
     Address,
@@ -358,6 +362,9 @@ impl App {
         if self.menu.is_some() {
             return self.menu_hit(x, y).unwrap_or(Hit::None);
         }
+        if let Some(h) = self.welcome_hit(x, y) {
+            return h;
+        }
         if let Some(h) = self.batch_hit(x, y) {
             return h;
         }
@@ -530,6 +537,7 @@ impl App {
         self.paint_palette();
         self.paint_batch();
         self.paint_ask();
+        self.paint_welcome();
         self.paint_menu();
         self.paint_tip();
         self.gfx.end();

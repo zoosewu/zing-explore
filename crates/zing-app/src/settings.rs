@@ -145,6 +145,12 @@ impl Default for Session {
 }
 
 impl Session {
+    /// 程式旁已經有 session.toml（不是第一次啟動）
+    pub fn exists() -> bool {
+        zing_core::guard::io("確認工作階段是否存在");
+        session_path().exists()
+    }
+
     pub fn load() -> Self {
         zing_core::guard::io("讀取工作階段");
         std::fs::read_to_string(session_path()).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()

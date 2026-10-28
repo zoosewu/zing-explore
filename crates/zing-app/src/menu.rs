@@ -25,6 +25,8 @@ pub enum Action {
     ShellExt(usize, u32),
     /// 狀態列「有新版本」的選單（update.rs）
     Update(crate::update::Choice),
+    /// 設定 `PREFS[i]` 為這個值（歡迎畫面的選項，welcome.rs）
+    Pref(usize, String),
 }
 
 #[derive(Clone, Debug)]
@@ -223,6 +225,7 @@ impl App {
             Action::ShellMenu => self.show_full_context_menu(),
             Action::ShellExt(ext, id) => self.invoke_menu_ext(ext, id),
             Action::Update(c) => self.update_choice(c),
+            Action::Pref(i, value) => self.set_pref(i, value),
         }
     }
 

@@ -367,7 +367,7 @@ impl App {
     }
 
     /// 開關：軌道與圓鈕（`enabled` 為 false 時灰階）；回傳軌道的右緣
-    fn paint_switch(&self, rr: Rect, l: f32, on: bool, enabled: bool) -> f32 {
+    pub fn paint_switch(&self, rr: Rect, l: f32, on: bool, enabled: bool) -> f32 {
         let c = &self.theme.color;
         let g = &self.gfx;
         let h = (rr.h() - 10.0).clamp(10.0, 18.0);

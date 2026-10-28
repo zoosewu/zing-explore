@@ -808,3 +808,13 @@
 "資料夾、磁碟機與 Win+E 改用 zing 開啟；關閉即還原" = "Open folders, drives and Win+E in zing; turn off to restore"
 "還原上次的分頁" = "Restore the last tabs"
 "點一下改成目前開著的分頁；「啟動時開啟」選「指定的分頁」時使用" = "Click to use the tabs that are open now; used when \"On startup, open\" is \"Specific tabs\""
+
+# 歡迎畫面（welcome.rs）
+"先調整幾個常用的設定；之後都能在設定頁（Ctrl+,）修改" = "Adjust a few common settings; you can change them later in Settings (Ctrl+,)"
+"啟用…" = "Enable…"
+"更多設定…" = "More settings…"
+"歡迎使用 zing-explore" = "Welcome to zing-explore"
+"歡迎畫面…" = "Welcome…"
+"歡迎畫面（常用設定）" = "Welcome screen (common settings)"
+"開啟歡迎畫面（第一次啟動時顯示的常用設定）" = "Open the welcome screen (the common settings shown on first launch)"
+"開始使用" = "Get started"

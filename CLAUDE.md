@@ -122,6 +122,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   `zing_core::prefs::PREFS`，新增設定時同步加上 `Config::pref_value`／
   `set_pref`；改變後的副作用只寫在 `App::apply_config`（比較新舊設定，設定頁與 `config.reload` 共用）。寫回 config.toml 只改那一行（`prefs::write_pref`，保留註解），改不了（行內表、
   多行字串）就回報錯誤、不寫入；隔離模式不寫檔。與主題編輯面板共用右側位置，兩者只開一個。
+- 歡迎畫面（`welcome.rs`，命令 `welcome.show`）：程式旁還沒有 session.toml 時（第一次啟動，`App::first_run`）在第一幀之後
+  顯示；項目是 `PREFS` 的一部分（`welcome::ITEMS`），改值一律經 `App::set_pref`（與設定頁相同），選項用 menu.rs 的下拉選單
+  （`Action::Pref`）。開著時攔下滑鼠與鍵盤（命中判定、`on_key` 在下拉選單之後）。隔離模式不是第一次啟動。
 - 介面要讓不會寫程式的人也能用：能用 UI 調整的就不要求改設定檔或寫命令（選單、開關、滑桿、色票，改了立即看到效果）；
   設定檔與命令腳本留給進階使用者。主題編輯面板在 `themepanel.rs`（檔案操作在 `themeedit.rs`）。
   命令面板視為只有工程師會用：每個操作都要能從命令列（`cmdbar.rs`，內容在 `zing_core::cmdbar`）、「⋯」選單、右鍵或面板完成
