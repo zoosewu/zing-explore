@@ -47,8 +47,8 @@ pub enum Row {
     Category(usize),
     CategoryHint(usize),
     Field(usize),
-    /// 欄位的說明（小字）
-    Hint(usize),
+    /// 欄位的說明（小字）的第 n 行
+    Hint(usize, usize),
     /// 展開的欄位的第 k 個選項
     Option(usize, usize),
     /// 緩慢的擴充功能表格（`Kind::SlowList` 的欄位）：欄名、第 k 個擴充功能、沒有項目
@@ -95,7 +95,8 @@ impl SettingsPage {
         for (i, p) in PREFS.iter().enumerate().filter(|(_, p)| p.group == *group) {
             out.push(Row::Field(i));
             if !p.hint.is_empty() {
-                out.push(Row::Hint(i));
+                let lines = zing_core::i18n::tr(p.hint).lines().count().max(1);
+                out.extend((0..lines).map(|n| Row::Hint(i, n)));
             }
             if self.expanded == Some(i) {
                 out.extend((0..self.options(i).len()).map(|k| Row::Option(i, k)));
@@ -427,7 +428,7 @@ impl App {
                     let summary = category_summary(groups[gi]);
                     g.text(&summary, Font::Small, Rect::new(rr.l + 8.0, rr.t, rr.r - 24.0, rr.b), c.text_secondary)
                 }
-                Row::Hint(i) => {
+                Row::Hint(i, n) => {
                     let hint = match (&PREFS[i].kind, &self.default_app) {
                         (Kind::SlowList, _) if !slow_on => tr!("「隱藏緩慢的擴充功能項目」關閉時，全部照樣放在第一層").to_string(),
                         (Kind::DefaultApp, Some(crate::defaultapp::Status::Other(exe))) => {
@@ -435,7 +436,8 @@ impl App {
                         }
                         _ => zing_core::i18n::tr(PREFS[i].hint).to_string(),
                     };
-                    g.text(&hint, Font::Small, Rect::new(rr.l + 8.0, rr.t, rr.r - 6.0, rr.b), c.text_secondary)
+                    let line = hint.lines().nth(n).unwrap_or("");
+                    g.text(line, Font::Small, Rect::new(rr.l + 8.0, rr.t, rr.r - 6.0, rr.b), c.text_secondary)
                 }
                 Row::Field(i) => {
                     let p = &PREFS[i];

@@ -30,7 +30,7 @@ pub struct Pref {
     pub key: &'static str,
     pub group: &'static str,
     pub label: &'static str,
-    /// 顯示在名稱下方的說明（可為空）
+    /// 顯示在名稱下方的說明（可為空；以 \n 分成多行）
     pub hint: &'static str,
     pub kind: Kind,
 }
@@ -151,8 +151,8 @@ pub const PREFS: &[Pref] = &[
     Pref {
         key: "",
         group: tr_key!("資料夾大小"),
-        label: tr_key!("啟用 NTFS 索引服務"),
-        hint: tr_key!("立即顯示資料夾大小、全磁碟搜尋；需要系統管理員權限"),
+        label: tr_key!("啟用 NTFS 索引服務（建議）"),
+        hint: tr_key!("資料夾大小立即顯示，不必逐一掃描每個子資料夾\n全磁碟搜尋：數百萬個檔案也能即時找到\n需要系統管理員權限（會跳出 UAC）"),
         kind: Kind::Action("index.install"),
     },
     Pref { key: "", group: tr_key!("資料夾大小"), label: tr_key!("NTFS 索引服務狀態"), hint: "", kind: Kind::Action("index.status") },

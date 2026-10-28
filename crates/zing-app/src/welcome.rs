@@ -62,6 +62,11 @@ pub fn items() -> Vec<usize> {
         .collect()
 }
 
+/// 說明的行數（沒有說明是 0）
+fn hint_lines(i: usize) -> usize {
+    if PREFS[i].hint.is_empty() { 0 } else { zing_core::i18n::tr(PREFS[i].hint).lines().count() }
+}
+
 impl App {
     pub fn open_welcome(&mut self) {
         self.close_menu();
@@ -88,8 +93,8 @@ impl App {
         let line = (rh + 8.0).max(28.0);
         let button_h = (rh + 6.0).max(28.0);
         let fixed = 18.0 + rh + 4.0 + rh + 14.0 + 12.0 + button_h + 18.0;
-        // 有說明的項目多一行；視窗太矮時不顯示說明
-        let with_hints: Vec<f32> = list.iter().map(|&i| if PREFS[i].hint.is_empty() { line } else { line + rh }).collect();
+        // 說明每一行多一列的高度；視窗太矮時不顯示說明
+        let with_hints: Vec<f32> = list.iter().map(|&i| line + rh * hint_lines(i) as f32).collect();
         let hints = fixed + with_hints.iter().sum::<f32>() <= h - 16.0;
         let heights: Vec<f32> = if hints { with_hints } else { vec![line; list.len()] };
         let card_h = fixed + heights.iter().sum::<f32>();
@@ -228,8 +233,10 @@ impl App {
             }
             g.text(zing_core::i18n::tr(p.label), Font::Text, Rect::new(first.l, first.t, control.l - 8.0, first.b), c.text);
             if lay.hints && !p.hint.is_empty() {
-                let hint = Rect::new(first.l, first.b - 4.0, row.r - 12.0, first.b - 4.0 + rh);
-                g.text(zing_core::i18n::tr(p.hint), Font::Small, hint, c.text_secondary);
+                for (n, text) in zing_core::i18n::tr(p.hint).lines().enumerate() {
+                    let t = first.b - 4.0 + rh * n as f32;
+                    g.text(text, Font::Small, Rect::new(first.l, t, row.r - 12.0, t + rh), c.text_secondary);
+                }
             }
             match p.kind {
                 Kind::Choice(_) | Kind::Theme => {
