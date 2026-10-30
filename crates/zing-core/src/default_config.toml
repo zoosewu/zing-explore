@@ -49,11 +49,18 @@ allow_slow = []
 # false：只在按 Ctrl+Shift+S（view.foldersizes）時計算
 auto = true
 
+[list]
+# 在清單中直接打字（沒有綁定快速鍵的字元鍵）：filter（篩選目前的資料夾）| jump（跳到名稱開頭相符的項目，與檔案總管相同）
+# | none（不做事，字元鍵全部留給快速鍵；可把 filter.start 綁到某個按鍵來開始篩選）
+typing = "filter"
+
 [update]
 # 啟動時檢查新版本：距上次檢查超過 24 小時才連線到 GitHub（每天最多一次），
 # 只在有功能更新（主版號或次版號較新）時於狀態列提示，可下載並安裝
 check = true
 
+# 快速鍵：when 指定只在某個情境有效（list 清單、filter 篩選中、tree 樹狀列、popup 選單與面板、search 全磁碟搜尋），省略為全域。
+# 清單、樹狀列、選單的方向鍵等有情境的預設按鍵是內建的（cursor.*、tree.*、ui.*…），在這裡用同樣的 key 與 when 覆蓋，cmd = "" 解除。
 # ---- 導覽 ----
 [[key]]
 key = "Alt+Left"

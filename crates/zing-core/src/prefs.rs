@@ -4,7 +4,7 @@
 //! 沒有這一行就插入在同一節的最後一個值後面，沒有這一節就加在檔案最後。修改後重新解析整份檔案，
 //! 結果不是預期的值（例如使用者寫成 `layout = { tree = "left" }`）就放棄、不寫入。
 
-use crate::config::{Config, MenuStyle, PalettePosition, RawConfig, Startup, TreeSide};
+use crate::config::{Config, MenuStyle, PalettePosition, RawConfig, Startup, TreeSide, Typing};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
@@ -42,6 +42,8 @@ const MENU_STYLES: &[(&str, &str)] =
     &[("compact", tr_key!("精簡（先顯示常用項目）")), ("full", tr_key!("完整的 Windows 選單"))];
 const STARTUPS: &[(&str, &str)] =
     &[("session", tr_key!("還原上次的分頁")), ("new", tr_key!("一個新分頁（此電腦）")), ("tabs", tr_key!("指定的分頁"))];
+const TYPINGS: &[(&str, &str)] =
+    &[("filter", tr_key!("篩選目前的資料夾")), ("jump", tr_key!("跳到名稱開頭相符的項目")), ("none", tr_key!("不做事（留給快速鍵）"))];
 const PALETTE_POSITIONS: &[(&str, &str)] =
     &[("top", tr_key!("視窗上方")), ("center", tr_key!("正中央（輸入框固定）")), ("middle", tr_key!("正中央（整個面板置中）"))];
 
@@ -82,6 +84,7 @@ pub const PREFS: &[Pref] = &[
         kind: Kind::Tabs,
     },
     Pref { key: "show_hidden", group: tr_key!("一般"), label: tr_key!("顯示隱藏檔案"), hint: "", kind: Kind::Bool },
+    Pref { key: "list.typing", group: tr_key!("一般"), label: tr_key!("在清單中直接打字"), hint: tr_key!("沒有綁定快速鍵的字元鍵"), kind: Kind::Choice(TYPINGS) },
     Pref {
         key: "update.check",
         group: tr_key!("一般"),
@@ -201,6 +204,14 @@ fn startup_code(s: Startup) -> &'static str {
     }
 }
 
+fn typing_code(t: Typing) -> &'static str {
+    match t {
+        Typing::Filter => "filter",
+        Typing::Jump => "jump",
+        Typing::None => "none",
+    }
+}
+
 fn palette_code(p: PalettePosition) -> &'static str {
     match p {
         PalettePosition::Top => "top",
@@ -237,6 +248,7 @@ impl Config {
             "context_menu.hide_slow" => self.context_menu.hide_slow.to_string(),
             "context_menu.allow_slow" => self.context_menu.allow_slow.join(","),
             "update.check" => self.update.check.to_string(),
+            "list.typing" => typing_code(self.list.typing).into(),
             _ => String::new(),
         }
     }
@@ -265,6 +277,7 @@ impl Config {
                     value.split(',').map(|c| c.trim().to_ascii_lowercase()).filter(|c| !c.is_empty()).collect()
             }
             "update.check" => self.update.check = value.parse().map_err(|_| bad())?,
+            "list.typing" => self.list.typing = toml_enum(value).ok_or_else(bad)?,
             _ => return Err(bad()),
         }
         Ok(())

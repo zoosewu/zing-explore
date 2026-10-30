@@ -200,6 +200,12 @@ pub struct App {
     pub modal: Option<Modal>,
     pub palette: Option<Palette>,
     pub palette_recent: Vec<String>,
+    /// 命令面板以鍵盤確定時：true 為開啟（全磁碟搜尋的 search.openitem），false 為前往；None（滑鼠）時看 Ctrl
+    pub palette_open: Option<bool>,
+    /// `filter.start` 之後：下一個字元開始篩選（navkeys.rs）
+    pub filter_armed: bool,
+    /// 「跳到名稱開頭相符的項目」目前的字首與最後一次打字的時間（navkeys.rs）
+    pub jump: Option<(String, std::time::Instant)>,
     pub layout: Layout,
     /// 按鍵已觸發命令時，吃掉緊接著的 WM_CHAR
     pub suppress_char: bool,
@@ -322,6 +328,9 @@ impl App {
             modal: None,
             palette: None,
             palette_recent: session.palette_recent.clone(),
+            palette_open: None,
+            filter_armed: false,
+            jump: None,
             layout: Layout::default(),
             suppress_char: false,
             perf,
@@ -1488,6 +1497,57 @@ impl App {
             Cmd::AppExit => window::close(self.hwnd),
             Cmd::UpdateCheck => self.check_update_now(),
             Cmd::WelcomeShow => self.open_welcome(),
+            Cmd::ListUp | Cmd::ListDown | Cmd::ListLeft | Cmd::ListRight | Cmd::ListPageup | Cmd::ListPagedown | Cmd::ListFirst
+            | Cmd::ListLast => {
+                use crate::navkeys::Move;
+                let dir = match cmd {
+                    Cmd::ListUp => Move::Up,
+                    Cmd::ListDown => Move::Down,
+                    Cmd::ListLeft => Move::Left,
+                    Cmd::ListRight => Move::Right,
+                    Cmd::ListPageup => Move::PageUp,
+                    Cmd::ListPagedown => Move::PageDown,
+                    Cmd::ListFirst => Move::First,
+                    _ => Move::Last,
+                };
+                self.list_move(dir, inv.has("extend"), inv.has("keep"));
+            }
+            Cmd::ListSelect => self.list_select(false),
+            Cmd::ListToggle => self.list_select(true),
+            Cmd::FilterBackspace => self.filter_backspace(),
+            Cmd::FilterStart => self.filter_start(),
+            Cmd::TreeUp => self.tree_step(false),
+            Cmd::TreeDown => self.tree_step(true),
+            Cmd::TreeExpand => self.tree_expand(),
+            Cmd::TreeCollapse => self.tree_collapse(),
+            Cmd::TreeOpen => self.tree_open(),
+            Cmd::TreeLeave => self.tree_leave(),
+            Cmd::TreeMoveup => self.tree_move_favorite(-1),
+            Cmd::TreeMovedown => self.tree_move_favorite(1),
+            Cmd::UiUp | Cmd::UiDown | Cmd::UiLeft | Cmd::UiRight | Cmd::UiPageup | Cmd::UiPagedown | Cmd::UiFirst | Cmd::UiLast
+            | Cmd::UiAccept | Cmd::UiCancel | Cmd::UiSelect | Cmd::UiNext | Cmd::UiPrev => {
+                if let Some(a) = crate::navkeys::UiAction::parse(cmd.name()) {
+                    self.ui(a);
+                }
+            }
+            Cmd::SearchSort => {
+                let key = match inv.flag("by").or_else(|| inv.positional().next()).unwrap_or("none") {
+                    "none" => None,
+                    w => Some(zing_core::namequery::SortKey::ALL.into_iter().find(|k| k.word() == w).ok_or_else(|| tr!("search.sort 的 --by 不是已知的欄位：{w}", w))?),
+                };
+                self.search_sort(key);
+            }
+            Cmd::SearchOpenitem => {
+                if self.palette.as_ref().is_some_and(|p| p.search.is_some()) {
+                    self.palette_open = Some(true);
+                    self.run_palette(None);
+                }
+            }
+            Cmd::CmdbarFocus => {
+                if self.config.command_bar.visible {
+                    self.cmdbar_focus_toggle();
+                }
+            }
         }
         Ok(())
     }

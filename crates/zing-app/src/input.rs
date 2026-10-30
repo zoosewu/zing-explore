@@ -1,14 +1,14 @@
 //! 滑鼠與鍵盤輸入。
 
-use zing_core::keymap::KeyChord;
+use zing_core::keymap::{KeyChord, Scope};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_MENU,
-    VK_NEXT, VK_PRIOR, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
-};
+    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_ESCAPE, VK_MENU,
+    VK_SHIFT, };
 
 use crate::app::{App, Focus, Modal, Press};
-use crate::model::{MenuTarget, NodeKind};
+use crate::model::MenuTarget;
+use crate::navkeys::PopupKey;
 use crate::view::{COLUMN_KEYS, Hit, clamp_col};
 
 #[derive(Clone, Copy, Default)]
@@ -468,9 +468,22 @@ impl App {
             self.side_wheel(sp, x, y, delta);
             return;
         }
-        if ctrl && let Some(p) = self.layout.panes.iter().position(|pl| pl.list.contains(x, y)) {
-            let notches = (delta as i32 / 120).signum();
-            self.zoom_thumbs(p, notches * crate::views::THUMB_STEP);
+        // 滾輪的快速鍵（Ctrl+WheelUp 放大縮圖…）：游標所在的清單（先成為作用中的窗格）、樹狀列或全域
+        // Ctrl 以滾輪訊息帶的旗標為準（MK_CONTROL），Shift、Alt 讀鍵盤狀態
+        let mods = Mods { ctrl, ..Mods::current() };
+        let vk = if delta > 0 { zing_core::keymap::WHEEL_UP } else { zing_core::keymap::WHEEL_DOWN };
+        let chord = KeyChord { ctrl: mods.ctrl, shift: mods.shift, alt: mods.alt, vk, when: Scope::Global };
+        let over_list = self.layout.panes.iter().position(|pl| pl.list.contains(x, y));
+        let scope = match over_list {
+            Some(_) => Scope::List,
+            None if self.layout.tree.is_some_and(|r| r.contains(x, y)) => Scope::Tree,
+            None => Scope::Global,
+        };
+        if let Some(cmd) = self.config.command_in(scope, chord).map(str::to_string) {
+            if let Some(p) = over_list {
+                self.active_pane = p;
+            }
+            self.exec(&cmd);
             return;
         }
         let lines = 3.0 * delta as f32 / 120.0;
@@ -505,24 +518,49 @@ impl App {
         self.suppress_char = false;
         self.hide_tip();
         self.schedule_key_menu_prepare();
-        if self.menu.is_some() {
-            self.suppress_char = true;
-            return self.menu_key(vk);
+        let chord = KeyChord { ctrl: mods.ctrl, shift: mods.shift, alt: mods.alt, vk, when: Scope::Global };
+        // 「開始篩選」之後按了字元以外的鍵：取消
+        if self.filter_armed && !chord.is_printable() {
+            self.filter_armed = false;
         }
-        if self.welcome.is_some() {
-            self.suppress_char = true;
-            return self.welcome_key(vk, mods.shift);
-        }
-        // 鍵盤操作命令列中（F10）
-        if self.bar_focus.is_some() && self.cmdbar_key(vk) {
-            self.suppress_char = true;
-            return true;
-        }
-        // 快速鍵編輯面板正在錄製或依按鍵搜尋：按鍵交給面板
+        // 快速鍵編輯面板正在錄製或依按鍵搜尋：按鍵交給面板（任何按鍵都要錄得到）
         if self.keys_capturing() {
             self.suppress_char = true;
             self.keys_key(vk, mods);
             return true;
+        }
+        // 彈出清單：下拉選單、歡迎畫面、命令列（F10）。按鍵先找 popup 情境的命令（ui.* 交給 App::ui）；
+        // 命令列沒有處理的（例如 Tab）照樣往下找全域的快速鍵
+        if self.menu.is_some() || self.welcome.is_some() || self.bar_focus.is_some() {
+            match self.popup_key(chord, Scope::Popup) {
+                PopupKey::Cmd(cmd) => {
+                    if self.popup_command(&cmd) {
+                        self.suppress_char = true;
+                        return true;
+                    }
+                    if self.menu.is_some() || self.welcome.is_some() {
+                        self.suppress_char = true;
+                        return true;
+                    }
+                }
+                PopupKey::Unbound => {
+                    self.suppress_char = true;
+                    return true;
+                }
+                PopupKey::Raw => {}
+            }
+            if self.menu.is_some() {
+                self.suppress_char = true;
+                return self.menu_key(vk);
+            }
+            if self.welcome.is_some() {
+                self.suppress_char = true;
+                return self.welcome_key(vk, mods.shift);
+            }
+            if self.cmdbar_key(vk) {
+                self.suppress_char = true;
+                return true;
+            }
         }
         // 批次重新命名面板開啟、但焦點不在它的輸入框（例如點了面板後）時
         if self.batch.is_some() {
@@ -535,152 +573,46 @@ impl App {
             self.suppress_char = true;
             return true;
         }
-        const VK_BACK: u16 = 0x08;
         let plain = !mods.ctrl && !mods.alt && !mods.shift;
 
-        // 右側面板：Esc 收起展開的選項、回上一層或關閉面板（篩選與選取之前）
-        if plain && vk == VK_ESCAPE.0 && self.side_escape() {
+        // 鍵盤焦點在右側面板：按鍵先找 popup 情境的命令（快速鍵之前），其他照原樣交給面板；
+        // 面板沒有處理的（例如 Tab 回到清單）照樣往下找全域的快速鍵
+        if self.focus == Focus::Side {
+            match self.popup_key(chord, Scope::Popup) {
+                PopupKey::Cmd(cmd) => {
+                    if self.popup_command(&cmd) {
+                        self.suppress_char = true;
+                        return true;
+                    }
+                }
+                PopupKey::Unbound => {
+                    self.suppress_char = true;
+                    return true;
+                }
+                PopupKey::Raw => {
+                    if self.side_key(vk, mods.ctrl || mods.alt) {
+                        self.suppress_char = true;
+                        return true;
+                    }
+                }
+            }
+        } else if plain && vk == VK_ESCAPE.0 && self.side_escape() {
+            // 焦點不在右側面板時，Esc 照樣先收起面板的選項、回上一層或關閉面板（篩選與選取之前）
             self.side_settle();
             return true;
         }
-        // 鍵盤焦點在右側面板：方向鍵、Enter、空白鍵交給面板（快速鍵之前）
-        if self.focus == Focus::Side && self.side_key(vk, mods.ctrl || mods.alt) {
-            self.suppress_char = true;
-            return true;
-        }
 
-        // 篩選字串不為空時，Backspace 刪字、Esc 清除，優先於快速鍵
-        if self.focus == Focus::List && plain && !self.tab().filter.is_empty() {
-            if vk == VK_BACK {
-                let mut f = self.tab().filter.clone();
-                f.pop();
-                self.set_filter(f);
-                return true;
-            }
-            if vk == VK_ESCAPE.0 {
-                self.set_filter(String::new());
-                return true;
-            }
+        let scope = self.key_scope();
+        // 篩選中：沒有 Ctrl、Alt 的字元鍵是篩選文字（WM_CHAR）；filter 情境自己綁定的按鍵除外
+        if scope == Scope::Filter && chord.is_printable() && self.config.command_for(chord.in_scope(Scope::Filter)).is_none() {
+            return false;
         }
-
-        let chord = KeyChord { ctrl: mods.ctrl, shift: mods.shift, alt: mods.alt, vk };
-        // F10 移到命令列（與 Windows 的選單列相同；使用者把 F10 指定給命令時以命令為準）
-        if plain && vk == 0x79 && self.config.command_bar.visible && self.config.command_for(chord).is_none() {
-            self.cmdbar_focus_toggle();
-            self.suppress_char = true;
-            return true;
-        }
-        if let Some(cmd) = self.config.command_for(chord).map(str::to_string) {
+        if let Some(cmd) = self.config.command_in(scope, chord).map(str::to_string) {
             self.exec(&cmd);
             self.suppress_char = true;
             return true;
         }
-
-        match self.focus {
-            Focus::List => self.list_key(vk, mods),
-            Focus::Tree => self.tree_key(vk, mods),
-            Focus::Side => false,
-        }
-    }
-
-    fn list_key(&mut self, vk: u16, mods: Mods) -> bool {
-        let p = self.active_pane;
-        let list = self.layout.panes.get(p).map(|pl| pl.list);
-        let grid = list.and_then(|l| self.grid(p, l));
-        // 縮圖：上下一列是 cols 項，一頁是可見列數 × cols
-        let cols = grid.map_or(1, |g| g.cols);
-        let line_h = grid.map_or(self.row_h(), |g| g.cell_h);
-        let page = list.map_or(10, |l| (l.h() / line_h).floor().max(1.0) as usize) * cols;
-        let tab = self.panes[p].tab_mut();
-        let n = tab.view.len();
-        if n == 0 && vk != VK_ESCAPE.0 {
-            return false;
-        }
-        let last = n.saturating_sub(1);
-        let target = match vk {
-            v if v == VK_UP.0 => Some(tab.focus.saturating_sub(cols)),
-            v if v == VK_DOWN.0 => Some((tab.focus + cols).min(last)),
-            v if v == VK_LEFT.0 && grid.is_some() => Some(tab.focus.saturating_sub(1)),
-            v if v == VK_RIGHT.0 && grid.is_some() => Some((tab.focus + 1).min(last)),
-            v if v == VK_PRIOR.0 => Some(tab.focus.saturating_sub(page)),
-            v if v == VK_NEXT.0 => Some((tab.focus + page).min(last)),
-            v if v == VK_HOME.0 => Some(0),
-            v if v == VK_END.0 => Some(last),
-            v if v == VK_SPACE.0 && tab.filter.is_empty() => {
-                let f = tab.focus;
-                if mods.ctrl { tab.toggle(f) } else { tab.select_only(f) }
-                self.suppress_char = true;
-                self.invalidate();
-                return true;
-            }
-            v if v == VK_ESCAPE.0 => {
-                tab.clear_selection();
-                self.invalidate();
-                return true;
-            }
-            _ => None,
-        };
-        let Some(t) = target else { return false };
-        if mods.shift {
-            tab.select_range(t, mods.ctrl);
-        } else if mods.ctrl {
-            tab.focus = t;
-        } else {
-            tab.select_only(t);
-        }
-        self.ensure_visible(p);
-        self.invalidate();
-        true
-    }
-
-    fn tree_key(&mut self, vk: u16, mods: Mods) -> bool {
-        let n = self.tree.nodes.len();
-        if n == 0 {
-            return false;
-        }
-        let i = self.tree.focus.min(n - 1);
-        // Ctrl+↑／↓：調整我的最愛的順序
-        if mods.ctrl && (vk == VK_UP.0 || vk == VK_DOWN.0) {
-            if self.tree.nodes[i].kind != NodeKind::Favorite {
-                return false;
-            }
-            let p = self.tree.nodes[i].path.clone();
-            if let Err(e) = self.move_favorite(&p, if vk == VK_UP.0 { -1 } else { 1 }) {
-                self.set_status(e, true);
-            }
-            return true;
-        }
-        match vk {
-            v if v == VK_UP.0 => self.tree.focus = i.saturating_sub(1),
-            v if v == VK_DOWN.0 => self.tree.focus = (i + 1).min(n - 1),
-            v if v == VK_RIGHT.0 => {
-                if self.tree.nodes[i].expanded {
-                    self.tree.focus = (i + 1).min(n - 1);
-                } else {
-                    self.toggle_tree_node(i);
-                }
-            }
-            v if v == VK_LEFT.0 => {
-                if self.tree.nodes[i].expanded {
-                    self.toggle_tree_node(i);
-                } else {
-                    let d = self.tree.nodes[i].depth;
-                    if let Some(parent) = self.tree.nodes[..i].iter().rposition(|x| x.depth < d) {
-                        self.tree.focus = parent;
-                    }
-                }
-            }
-            v if v == VK_SPACE.0 => {
-                self.open_tree_node(i);
-                self.suppress_char = true;
-            }
-            v if v == VK_ESCAPE.0 => self.focus = Focus::List,
-            _ => return false,
-        }
-        let f = self.tree.focus;
-        self.ensure_tree_visible(f);
-        self.invalidate();
-        true
+        false
     }
 
     pub fn on_char(&mut self, ch: u16) {
@@ -690,13 +622,7 @@ impl App {
         if self.focus != Focus::List || ch < 0x20 || ch == 0x7F || (0xD800..0xE000).contains(&ch) {
             return;
         }
-        let c = char::from_u32(ch as u32).unwrap_or(' ');
-        if c == ' ' && self.tab().filter.is_empty() {
-            return;
-        }
-        let mut f = self.tab().filter.clone();
-        f.push(c);
-        self.set_filter(f);
+        self.list_typed(char::from_u32(ch as u32).unwrap_or(' '));
     }
 
     /// 拖放進來時的目標資料夾（螢幕座標轉成 DIP 後由呼叫端傳入）

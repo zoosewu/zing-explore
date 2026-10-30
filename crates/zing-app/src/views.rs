@@ -14,7 +14,6 @@ use crate::services::Msg;
 /// Ctrl+滾輪的縮圖大小範圍與每格的變化量
 pub const THUMB_MIN: u16 = 48;
 pub const THUMB_MAX: u16 = 256;
-pub const THUMB_STEP: i32 = 16;
 
 fn file() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("zing-explore").join("folders.tsv"))

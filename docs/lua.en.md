@@ -1040,3 +1040,309 @@ Open the welcome screen (the common settings shown on first launch)
 ```lua
 welcome.show()
 ```
+
+### `cursor.up(opts?)`
+
+List: move the focus up and select it (in thumbnail views left/right is one cell, up/down one row)
+
+- `opts?`: {extend?: boolean, keep?: boolean} extend extends the selection (Shift); keep moves only the focus without changing the selection (Ctrl); both extend while keeping the existing selection
+
+```lua
+cursor.up{ extend = true }
+```
+
+### `cursor.down(opts?)`
+
+List: move the focus down and select it (in thumbnail views left/right is one cell, up/down one row)
+
+- `opts?`: {extend?: boolean, keep?: boolean} extend extends the selection (Shift); keep moves only the focus without changing the selection (Ctrl); both extend while keeping the existing selection
+
+```lua
+cursor.down{ extend = true }
+```
+
+### `cursor.left(opts?)`
+
+List: move the focus left and select it (in thumbnail views left/right is one cell, up/down one row)
+
+- `opts?`: {extend?: boolean, keep?: boolean} extend extends the selection (Shift); keep moves only the focus without changing the selection (Ctrl); both extend while keeping the existing selection
+
+```lua
+cursor.left{ extend = true }
+```
+
+### `cursor.right(opts?)`
+
+List: move the focus right and select it (in thumbnail views left/right is one cell, up/down one row)
+
+- `opts?`: {extend?: boolean, keep?: boolean} extend extends the selection (Shift); keep moves only the focus without changing the selection (Ctrl); both extend while keeping the existing selection
+
+```lua
+cursor.right{ extend = true }
+```
+
+### `cursor.pageup(opts?)`
+
+List: move the focus one page up and select it (in thumbnail views left/right is one cell, up/down one row)
+
+- `opts?`: {extend?: boolean, keep?: boolean} extend extends the selection (Shift); keep moves only the focus without changing the selection (Ctrl); both extend while keeping the existing selection
+
+```lua
+cursor.pageup{ extend = true }
+```
+
+### `cursor.pagedown(opts?)`
+
+List: move the focus one page down and select it (in thumbnail views left/right is one cell, up/down one row)
+
+- `opts?`: {extend?: boolean, keep?: boolean} extend extends the selection (Shift); keep moves only the focus without changing the selection (Ctrl); both extend while keeping the existing selection
+
+```lua
+cursor.pagedown{ extend = true }
+```
+
+### `cursor.first(opts?)`
+
+List: move the focus to the first item and select it (in thumbnail views left/right is one cell, up/down one row)
+
+- `opts?`: {extend?: boolean, keep?: boolean} extend extends the selection (Shift); keep moves only the focus without changing the selection (Ctrl); both extend while keeping the existing selection
+
+```lua
+cursor.first{ extend = true }
+```
+
+### `cursor.last(opts?)`
+
+List: move the focus to the last item and select it (in thumbnail views left/right is one cell, up/down one row)
+
+- `opts?`: {extend?: boolean, keep?: boolean} extend extends the selection (Shift); keep moves only the focus without changing the selection (Ctrl); both extend while keeping the existing selection
+
+```lua
+cursor.last{ extend = true }
+```
+
+### `cursor.select()`
+
+List: select only the focused item
+
+```lua
+cursor.select()
+```
+
+### `cursor.toggle()`
+
+List: toggle the selection of the focused item (others unchanged)
+
+```lua
+cursor.toggle()
+```
+
+### `filter.backspace()`
+
+Delete the last character of the filter (the filter ends when it is empty)
+
+```lua
+filter.backspace()
+```
+
+### `filter.start()`
+
+Start filtering: characters typed next become the filter (for when typing in the list is set to do nothing)
+
+```lua
+filter.start()
+```
+
+### `tree.up()`
+
+Tree: move the focus up
+
+```lua
+tree.up()
+```
+
+### `tree.down()`
+
+Tree: move the focus down
+
+```lua
+tree.down()
+```
+
+### `tree.expand()`
+
+Tree: expand the focused node (move to its first child if already expanded)
+
+```lua
+tree.expand()
+```
+
+### `tree.collapse()`
+
+Tree: collapse the focused node (move to its parent if already collapsed)
+
+```lua
+tree.collapse()
+```
+
+### `tree.open()`
+
+Tree: go to the focused node's folder
+
+```lua
+tree.open()
+```
+
+### `tree.leave()`
+
+Tree: move the keyboard focus back to the file list
+
+```lua
+tree.leave()
+```
+
+### `tree.moveup()`
+
+Tree: move the focused favorite up (does nothing on other nodes)
+
+```lua
+tree.moveup()
+```
+
+### `tree.movedown()`
+
+Tree: move the focused favorite down (does nothing on other nodes)
+
+```lua
+tree.movedown()
+```
+
+### `ui.up()`
+
+Popups (menus, command palette, command bar, side panels): up
+
+```lua
+ui.up()
+```
+
+### `ui.down()`
+
+Popups (menus, command palette, command bar, side panels): down
+
+```lua
+ui.down()
+```
+
+### `ui.left()`
+
+Popups (menus, command palette, command bar, side panels): left (command bar, submenus)
+
+```lua
+ui.left()
+```
+
+### `ui.right()`
+
+Popups (menus, command palette, command bar, side panels): right (command bar, submenus)
+
+```lua
+ui.right()
+```
+
+### `ui.pageup()`
+
+Popups (menus, command palette, command bar, side panels): one page up
+
+```lua
+ui.pageup()
+```
+
+### `ui.pagedown()`
+
+Popups (menus, command palette, command bar, side panels): one page down
+
+```lua
+ui.pagedown()
+```
+
+### `ui.first()`
+
+Popups (menus, command palette, command bar, side panels): to the first item
+
+```lua
+ui.first()
+```
+
+### `ui.last()`
+
+Popups (menus, command palette, command bar, side panels): to the last item
+
+```lua
+ui.last()
+```
+
+### `ui.accept()`
+
+Popups (menus, command palette, command bar, side panels): accept (run the selected item)
+
+```lua
+ui.accept()
+```
+
+### `ui.cancel()`
+
+Popups (menus, command palette, command bar, side panels): cancel (close)
+
+```lua
+ui.cancel()
+```
+
+### `ui.select()`
+
+Popups (menus, command palette, command bar, side panels): toggle the focused item (switches, options)
+
+```lua
+ui.select()
+```
+
+### `ui.next()`
+
+Popups (menus, command palette, command bar, side panels): next field
+
+```lua
+ui.next()
+```
+
+### `ui.prev()`
+
+Popups (menus, command palette, command bar, side panels): previous field
+
+```lua
+ui.prev()
+```
+
+### `search.sort(opts)`
+
+Whole-drive search: sort by a column (again to reverse); none removes the sort
+
+- `opts`: {by: "name"|"path"|"ext"|"size"|"date"|"none"}
+
+```lua
+search.sort{ by = "size" }
+```
+
+### `search.openitem()`
+
+Whole-drive search: open the selected result (enter folders; Enter goes to its location instead)
+
+```lua
+search.openitem()
+```
+
+### `cmdbar.focus()`
+
+Move the keyboard focus to the command bar (←→ move, Enter runs, Esc leaves); run again to leave
+
+```lua
+cmdbar.focus()
+```

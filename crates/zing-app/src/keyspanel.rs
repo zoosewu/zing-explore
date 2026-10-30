@@ -4,11 +4,13 @@
 //! - 「＋」後按下新的組合鍵就加上；按鍵已被其他命令使用時，在下一列詢問「取代」或「取消」，不會默默搶走。
 //!   錄製中 Esc 取消（所以 Esc 本身不能指定）。
 //! - 與預設（預設設定＋config.toml）不同的命令有 ↺ 還原；底部「全部還原」。
-//! - 上方的搜尋框依名稱篩選；「依按鍵搜尋」後按一個組合鍵，找出用這個按鍵的命令。
+//! - 上方的搜尋框依名稱篩選；「依按鍵搜尋」後按一個組合鍵，找出用這個按鍵的命令（不分情境）。
+//! - 按鍵屬於命令的情境（`Scope::of_command`：清單、樹狀列、彈出清單的命令只在那裡有效），衝突只在同一個情境內檢查；
+//!   分組標題是情境的名稱，同一個按鍵可以在不同情境做不同的事。
 //! - 每次變更立即生效，並在背景把與預設不同的按鍵寫進程式旁的 `keys.toml`（`zing_core::keyedit`）；隔離模式不寫檔。
 
 use zing_core::keyedit;
-use zing_core::keymap::KeyChord;
+use zing_core::keymap::{KeyChord, Scope};
 
 use crate::app::{App, EditKind};
 use crate::gfx::{Font, Rect};
@@ -104,7 +106,7 @@ impl App {
                 continue;
             }
             if let Some(k) = kp.key_filter
-                && self.config.command_for(k) != Some(cmd.as_str())
+                && !self.config.keys.iter().any(|(c, x)| c.in_scope(Scope::Global) == k && *x == cmd)
             {
                 continue;
             }
@@ -341,7 +343,7 @@ impl App {
             self.invalidate();
             return;
         }
-        let chord = KeyChord { ctrl: mods.ctrl, shift: mods.shift, alt: mods.alt, vk };
+        let chord = KeyChord { ctrl: mods.ctrl, shift: mods.shift, alt: mods.alt, vk, when: Scope::Global };
         if kp.awaiting_filter {
             kp.awaiting_filter = false;
             kp.key_filter = Some(chord);
@@ -352,6 +354,8 @@ impl App {
         }
         let Some(cmd) = kp.recording.take() else { return };
         let title = self.cmd_title(&cmd);
+        // 按鍵屬於命令的情境：清單的命令只在清單中有效，衝突也只在清單中檢查
+        let chord = chord.in_scope(Scope::of_command(&cmd));
         match self.config.command_for(chord).map(str::to_string) {
             Some(other) if other == cmd => {
                 let msg = tr!("「{title}」已經是 {chord}", title, chord = chord.to_string());

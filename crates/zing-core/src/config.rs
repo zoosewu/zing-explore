@@ -2,9 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::keymap::KeyChord;
+use crate::keymap::{KeyChord, Scope};
 
 pub const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
+/// 有情境（`when`）的預設快速鍵：清單、樹狀列、彈出清單的按鍵（不複製進使用者的 config.toml）
+const DEFAULT_KEYS: &str = include_str!("default_keys.toml");
 /// 英文、日文版的預設設定（只有註解與按鈕名稱不同）：建立使用者設定檔時當作範本
 const DEFAULT_CONFIG_EN: &str = include_str!("default_config.en.toml");
 const DEFAULT_CONFIG_JA: &str = include_str!("default_config.ja.toml");
@@ -106,10 +108,32 @@ impl Default for UpdateConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct KeyBinding {
     pub key: String,
     pub cmd: String,
+    /// 生效的情境（`keymap::Scope` 的名稱）；省略為全域
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
+}
+
+/// 在清單中直接打字（沒有綁定命令的字元鍵）
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Typing {
+    /// 篩選目前的資料夾
+    #[default]
+    Filter,
+    /// 跳到名稱開頭相符的項目（與 Windows 檔案總管相同）
+    Jump,
+    /// 不做事（字元鍵全部留給快速鍵；`filter.start` 開始篩選）
+    None,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ListConfig {
+    pub typing: Typing,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -182,6 +206,7 @@ pub struct RawConfig {
     pub command_bar: Option<CommandBarConfig>,
     pub context_menu: Option<ContextMenuConfig>,
     pub update: Option<UpdateConfig>,
+    pub list: Option<ListConfig>,
     pub key: Vec<KeyBinding>,
     pub button: Option<Vec<Button>>,
     pub thumbnailer: Vec<Thumbnailer>,
@@ -211,6 +236,7 @@ pub struct Config {
     pub command_bar: CommandBarConfig,
     pub context_menu: ContextMenuConfig,
     pub update: UpdateConfig,
+    pub list: ListConfig,
     /// 命令列的按鈕（toolbar.toml，沒有時為預設＋舊版的 [[button]]）
     pub cmdbar: Vec<crate::cmdbar::Item>,
     /// 解析後的快速鍵；後定義者優先
@@ -254,11 +280,18 @@ impl Config {
             }
             None => Vec::new(),
         };
+        let scoped: RawKeys = toml::from_str(DEFAULT_KEYS).expect("內建的預設快速鍵必須合法");
         let mut keys = Vec::new();
         let mut apply = |list: &[KeyBinding], keys: &mut Vec<(KeyChord, String)>| {
             for b in list {
+                let when = b.when.as_deref().unwrap_or("");
+                let Some(scope) = Scope::parse(when) else {
+                    warnings.push(tr!("快速鍵 {key} 的 when 不是已知的情境：{when}", key = b.key, when));
+                    continue;
+                };
                 match KeyChord::parse(&b.key) {
                     Ok(chord) => {
+                        let chord = chord.in_scope(scope);
                         keys.retain(|(c, _)| *c != chord);
                         if !b.cmd.trim().is_empty() {
                             keys.push((chord, b.cmd.clone()));
@@ -269,6 +302,7 @@ impl Config {
             }
         };
         apply(&base.key, &mut keys);
+        apply(&scoped.key, &mut keys);
         apply(&user.key, &mut keys);
         let config_keys = keys.clone();
         apply(&edited, &mut keys);
@@ -298,6 +332,7 @@ impl Config {
             command_bar: user.command_bar.or(base.command_bar).unwrap_or_default(),
             context_menu: user.context_menu.or(base.context_menu).unwrap_or_default(),
             update: user.update.or(base.update).unwrap_or_default(),
+            list: user.list.or(base.list).unwrap_or_default(),
             cmdbar: Vec::new(),
             buttons: user.button.or(base.button).unwrap_or_default(),
             thumbnailers: user.thumbnailer.into_iter().chain(base.thumbnailer).collect(),
@@ -309,8 +344,14 @@ impl Config {
         (cfg, warnings)
     }
 
+    /// 這個按鍵（含情境）綁定的命令
     pub fn command_for(&self, chord: KeyChord) -> Option<&str> {
         self.keys.iter().find(|(c, _)| *c == chord).map(|(_, cmd)| cmd.as_str())
+    }
+
+    /// 在 `scope` 按下按鍵時執行的命令：依 `Scope::chain` 由具體到一般找第一個綁定（`chord.when` 不看）
+    pub fn command_in(&self, scope: Scope, chord: KeyChord) -> Option<&str> {
+        scope.chain().iter().find_map(|&s| self.command_for(chord.in_scope(s)))
     }
 
     pub fn key_for(&self, cmd: &str) -> Option<KeyChord> {
@@ -347,6 +388,37 @@ mod tests {
         assert_eq!((cfg.startup, cfg.start_tabs.len()), (Startup::Session, 0));
         let (cfg, _) = Config::load(Some("startup = 'new'\nstart_path = 'E:\\a'"));
         assert_eq!(cfg.startup, Startup::New);
+    }
+
+    #[test]
+    fn scoped_keys() {
+        let k = |s: &str| KeyChord::parse(s).unwrap();
+        let (cfg, w) = Config::load(None);
+        assert!(w.is_empty(), "{w:?}");
+        // 同一個按鍵在不同情境
+        assert_eq!(cfg.command_in(Scope::List, k("Down")), Some("cursor.down"));
+        assert_eq!(cfg.command_in(Scope::Tree, k("Down")), Some("tree.down"));
+        assert_eq!(cfg.command_in(Scope::Popup, k("Down")), Some("ui.down"));
+        assert_eq!(cfg.command_in(Scope::Global, k("Down")), None);
+        // 篩選中的 Backspace 刪字，沒有篩選時是全域的上一層
+        assert_eq!(cfg.command_in(Scope::Filter, k("Backspace")), Some("filter.backspace"));
+        assert_eq!(cfg.command_in(Scope::List, k("Backspace")), Some("nav.up"));
+        // 全域的快速鍵在清單、樹狀列也有效，在彈出清單無效
+        assert_eq!(cfg.command_in(Scope::Tree, k("F5")), Some("nav.refresh"));
+        assert_eq!(cfg.command_in(Scope::Popup, k("F5")), None);
+        assert_eq!(cfg.command_in(Scope::Search, k("Down")), Some("ui.down"));
+        assert_eq!(cfg.command_in(Scope::Search, k("Ctrl+4")), Some("search.sort --by=size"));
+        assert_eq!(cfg.command_in(Scope::List, k("Ctrl+WheelUp")), Some("view.thumbsize --delta=16"));
+        // 使用者以 when 覆蓋、解除，未知的情境警告
+        let src = "[[key]]\nkey = \"J\"\ncmd = \"cursor.down\"\nwhen = \"list\"\n\n[[key]]\nkey = \"Down\"\ncmd = \"\"\nwhen = \"list\"\n\n[[key]]\nkey = \"K\"\ncmd = \"x\"\nwhen = \"nowhere\"\n";
+        let (cfg, w) = Config::load(Some(src));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(cfg.command_in(Scope::List, k("J")), Some("cursor.down"));
+        assert_eq!(cfg.command_in(Scope::List, k("Down")), None);
+        assert_eq!(cfg.command_in(Scope::Tree, k("Down")), Some("tree.down"));
+        assert_eq!(cfg.list.typing, Typing::Filter);
+        let (cfg, _) = Config::load(Some("[list]\ntyping = \"jump\""));
+        assert_eq!(cfg.list.typing, Typing::Jump);
     }
 
     #[test]

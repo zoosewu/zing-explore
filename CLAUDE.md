@@ -125,6 +125,14 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 歡迎畫面（`welcome.rs`，命令 `welcome.show`）：程式旁還沒有 session.toml 時（第一次啟動，`App::first_run`）在第一幀之後
   顯示；項目是 `PREFS` 的一部分（`welcome::ITEMS`），改值一律經 `App::set_pref`（與設定頁相同），選項用 menu.rs 的下拉選單
   （`Action::Pref`）。開著時攔下滑鼠與鍵盤（命中判定、`on_key` 在下拉選單之後）。隔離模式不是第一次啟動。
+- 快速鍵的情境（`zing_core::keymap::Scope`：global、list、filter、tree、popup、search）：`KeyChord` 帶著情境，同一個按鍵在
+  不同情境是不同的快速鍵；按下時依 `Scope::chain` 由具體到一般找（`Config::command_in`），彈出清單不往全域找。
+  有情境的預設按鍵在 `default_keys.toml`（不複製進使用者的 config.toml），內容必須與原本寫死的行為相同。
+  清單、樹狀列、彈出清單的按鍵一律經命令（`navkeys.rs`：`cursor.*`、`filter.*`、`tree.*`、`ui.*`、`search.sort`／`openitem`），
+  不要再在 `on_key` 判斷方向鍵；彈出清單的 `ui.*` 轉成標準按鍵交給各自的處理（`App::ui`），沒有綁定的標準按鍵不做事，
+  沒有處理的照樣往全域找。篩選中沒有 Ctrl、Alt 的字元鍵一律是篩選文字。命令的情境由名稱決定（`Scope::of_command`，
+  快速鍵編輯器以此決定錄下的按鍵屬於哪個情境）；只在某個情境有作用的命令不列在命令面板。
+  命令名稱不可與 prelude 的 Lua 函式同名（`list`、`map`…），否則命名空間會把函式變成表格、管線失效（所以是 `cursor.*`）。
 - 介面要讓不會寫程式的人也能用：能用 UI 調整的就不要求改設定檔或寫命令（選單、開關、滑桿、色票，改了立即看到效果）；
   設定檔與命令腳本留給進階使用者。主題編輯面板在 `themepanel.rs`（檔案操作在 `themeedit.rs`）。
   命令面板視為只有工程師會用：每個操作都要能從命令列（`cmdbar.rs`，內容在 `zing_core::cmdbar`）、「⋯」選單、右鍵或面板完成

@@ -19,6 +19,7 @@ mod keyspanel;
 mod luadebug;
 mod menu;
 mod model;
+mod navkeys;
 mod palette;
 mod perf;
 mod prefspage;

@@ -1040,3 +1040,309 @@ update.check()
 ```lua
 welcome.show()
 ```
+
+### `cursor.up(opts?)`
+
+清單：焦點向上移動並選取（縮圖檢視中左右是一格、上下是一列）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取
+
+```lua
+cursor.up{ extend = true }
+```
+
+### `cursor.down(opts?)`
+
+清單：焦點向下移動並選取（縮圖檢視中左右是一格、上下是一列）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取
+
+```lua
+cursor.down{ extend = true }
+```
+
+### `cursor.left(opts?)`
+
+清單：焦點向左移動並選取（縮圖檢視中左右是一格、上下是一列）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取
+
+```lua
+cursor.left{ extend = true }
+```
+
+### `cursor.right(opts?)`
+
+清單：焦點向右移動並選取（縮圖檢視中左右是一格、上下是一列）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取
+
+```lua
+cursor.right{ extend = true }
+```
+
+### `cursor.pageup(opts?)`
+
+清單：焦點往上一頁移動並選取（縮圖檢視中左右是一格、上下是一列）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取
+
+```lua
+cursor.pageup{ extend = true }
+```
+
+### `cursor.pagedown(opts?)`
+
+清單：焦點往下一頁移動並選取（縮圖檢視中左右是一格、上下是一列）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取
+
+```lua
+cursor.pagedown{ extend = true }
+```
+
+### `cursor.first(opts?)`
+
+清單：焦點到第一個移動並選取（縮圖檢視中左右是一格、上下是一列）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取
+
+```lua
+cursor.first{ extend = true }
+```
+
+### `cursor.last(opts?)`
+
+清單：焦點到最後一個移動並選取（縮圖檢視中左右是一格、上下是一列）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取
+
+```lua
+cursor.last{ extend = true }
+```
+
+### `cursor.select()`
+
+清單：只選取焦點項目
+
+```lua
+cursor.select()
+```
+
+### `cursor.toggle()`
+
+清單：切換焦點項目的選取（其他項目不變）
+
+```lua
+cursor.toggle()
+```
+
+### `filter.backspace()`
+
+篩選文字刪去最後一個字（刪完就結束篩選）
+
+```lua
+filter.backspace()
+```
+
+### `filter.start()`
+
+開始篩選：之後打的字成為篩選文字（「在清單中打字」設為不做事時使用）
+
+```lua
+filter.start()
+```
+
+### `tree.up()`
+
+樹狀列：焦點往上
+
+```lua
+tree.up()
+```
+
+### `tree.down()`
+
+樹狀列：焦點往下
+
+```lua
+tree.down()
+```
+
+### `tree.expand()`
+
+樹狀列：展開焦點節點（已展開時移到第一個子節點）
+
+```lua
+tree.expand()
+```
+
+### `tree.collapse()`
+
+樹狀列：收合焦點節點（已收合時移到上層）
+
+```lua
+tree.collapse()
+```
+
+### `tree.open()`
+
+樹狀列：前往焦點節點的資料夾
+
+```lua
+tree.open()
+```
+
+### `tree.leave()`
+
+樹狀列：鍵盤焦點回到檔案清單
+
+```lua
+tree.leave()
+```
+
+### `tree.moveup()`
+
+樹狀列：焦點所在的我的最愛上移（不是我的最愛時不做事）
+
+```lua
+tree.moveup()
+```
+
+### `tree.movedown()`
+
+樹狀列：焦點所在的我的最愛下移（不是我的最愛時不做事）
+
+```lua
+tree.movedown()
+```
+
+### `ui.up()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：往上
+
+```lua
+ui.up()
+```
+
+### `ui.down()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：往下
+
+```lua
+ui.down()
+```
+
+### `ui.left()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：往左（命令列、子選單）
+
+```lua
+ui.left()
+```
+
+### `ui.right()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：往右（命令列、子選單）
+
+```lua
+ui.right()
+```
+
+### `ui.pageup()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：往上一頁
+
+```lua
+ui.pageup()
+```
+
+### `ui.pagedown()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：往下一頁
+
+```lua
+ui.pagedown()
+```
+
+### `ui.first()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：到第一個
+
+```lua
+ui.first()
+```
+
+### `ui.last()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：到最後一個
+
+```lua
+ui.last()
+```
+
+### `ui.accept()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：確定（執行選取的項目）
+
+```lua
+ui.accept()
+```
+
+### `ui.cancel()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：取消（關閉）
+
+```lua
+ui.cancel()
+```
+
+### `ui.select()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：切換焦點項目（開關、選項）
+
+```lua
+ui.select()
+```
+
+### `ui.next()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：下一個欄位
+
+```lua
+ui.next()
+```
+
+### `ui.prev()`
+
+彈出清單（選單、命令面板、命令列、右側面板）：上一個欄位
+
+```lua
+ui.prev()
+```
+
+### `search.sort(opts)`
+
+全磁碟搜尋：依欄位排序（再按一次反向），none 取消排序
+
+- `opts`：{by: "name"|"path"|"ext"|"size"|"date"|"none"}
+
+```lua
+search.sort{ by = "size" }
+```
+
+### `search.openitem()`
+
+全磁碟搜尋：開啟選取的結果（資料夾就進入；Enter 則是前往所在的資料夾）
+
+```lua
+search.openitem()
+```
+
+### `cmdbar.focus()`
+
+鍵盤焦點移到命令列（←→ 移動、Enter 執行、Esc 離開）；再執行一次離開
+
+```lua
+cmdbar.focus()
+```

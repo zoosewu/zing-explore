@@ -49,11 +49,18 @@ allow_slow = []
 # false: calculate only when Ctrl+Shift+S (view.foldersizes) is pressed
 auto = true
 
+[list]
+# Typing in the list (character keys without a shortcut): filter (filter the current folder) | jump (jump to the item whose name starts with it, like File Explorer)
+# | none (do nothing; leave character keys to shortcuts; bind filter.start to a key to start filtering)
+typing = "filter"
+
 [update]
 # Check for a new version at startup: connects to GitHub only when more than 24 hours have passed since the last check (at most once a day),
 # and shows a notice on the status bar only for feature releases (a newer major or minor version), which can be downloaded and installed
 check = true
 
+# Shortcuts: when limits a key to a context (list, filter = while filtering, tree, popup = menus and panels, search = whole-drive search); omit it for global keys.
+# Scoped defaults (arrow keys in the list, tree and menus: cursor.*, tree.*, ui.*…) are built in; override them here with the same key and when, or unbind with cmd = "".
 # ---- Navigation ----
 [[key]]
 key = "Alt+Left"

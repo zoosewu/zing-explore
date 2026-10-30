@@ -71,7 +71,11 @@ impl App {
     fn palette_entries(&self) -> Vec<Entry> {
         let key = |cmd: &str| self.config.key_for(cmd).map(|k| k.to_string());
         let mut v: Vec<Entry> =
-            zing_core::builtin::palette().map(|(cmd, title)| Entry { title: zing_core::i18n::tr(title).into(), cmd: cmd.into(), key: key(cmd) }).collect();
+            zing_core::builtin::palette()
+                // 只在清單、樹狀列、彈出清單中有作用的（list.down、ui.accept…）不列出
+                .filter(|(cmd, _)| zing_core::keymap::Scope::of_command(cmd) == zing_core::keymap::Scope::Global)
+                .map(|(cmd, title)| Entry { title: zing_core::i18n::tr(title).into(), cmd: cmd.into(), key: key(cmd) })
+                .collect();
         for b in &self.config.buttons {
             if !v.iter().any(|e| e.cmd == b.cmd) {
                 v.push(Entry { title: tr!("按鈕：{label}", label = zing_core::i18n::tr_str(&b.label)), cmd: b.cmd.clone(), key: key(&b.cmd) });
@@ -82,8 +86,8 @@ impl App {
                 v.push(Entry { title: tr!("腳本：{title}", title), cmd: name.clone(), key: key(name) });
             }
         }
-        for (chord, cmd) in &self.config.keys {
-            if cmd != "palette.open" && !v.iter().any(|e| &e.cmd == cmd) {
+        for (chord, cmd) in self.config.keys.iter().filter(|(c, _)| c.when == zing_core::keymap::Scope::Global) {
+            if cmd != "palette.open" && zing_core::keymap::Scope::of_command(cmd) == zing_core::keymap::Scope::Global && !v.iter().any(|e| &e.cmd == cmd) {
                 v.push(Entry { title: cmd.clone(), cmd: cmd.clone(), key: Some(chord.to_string()) });
             }
         }
@@ -206,7 +210,8 @@ impl App {
         let Some(mut p) = self.palette.take() else { return };
         self.close_palette_edit();
         if let Some(r) = p.search.take() {
-            let open = crate::input::Mods::current().ctrl;
+            // 鍵盤：依按下的命令（ui.accept 前往、search.openitem 開啟）；滑鼠：Ctrl+點選開啟
+            let open = self.palette_open.take().unwrap_or_else(|| crate::input::Mods::current().ctrl);
             if let Some(it) = p.matches.get(index.unwrap_or(p.sel)).and_then(|&k| r.items.into_iter().nth(k)) {
                 self.open_search_item(it, open);
             }

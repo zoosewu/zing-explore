@@ -4,7 +4,7 @@
 //! 內容是「與預設＋config.toml 不同的按鍵」：改成別的命令或解除（`cmd = ""`）。`config.toml` 與其中的註解不動。
 
 use crate::config::KeyBinding;
-use crate::keymap::KeyChord;
+use crate::keymap::{KeyChord, Scope};
 
 /// 一個命令的按鍵（依設定中的順序）
 pub fn chords_for(keys: &[(KeyChord, String)], cmd: &str) -> Vec<KeyChord> {
@@ -55,17 +55,18 @@ pub fn reset(keys: &mut Vec<(KeyChord, String)>, defaults: &[(KeyChord, String)]
     taken
 }
 
-/// 與 `defaults` 不同的按鍵：寫進 `keys.toml` 的內容（依按鍵排序，結果固定）
+/// 與 `defaults` 不同的按鍵：寫進 `keys.toml` 的內容（依情境、按鍵排序，結果固定）
 pub fn overrides(defaults: &[(KeyChord, String)], keys: &[(KeyChord, String)]) -> Vec<KeyBinding> {
     let find = |list: &[(KeyChord, String)], k: KeyChord| list.iter().find(|(c, _)| *c == k).map(|(_, cmd)| cmd.clone());
     let mut chords: Vec<KeyChord> = defaults.iter().chain(keys).map(|(k, _)| *k).collect();
-    chords.sort_by_key(|k| k.to_string());
+    chords.sort_by_key(|k| (k.when, k.to_string()));
     chords.dedup();
     chords
         .into_iter()
         .filter_map(|k| {
             let now = find(keys, k);
-            (now != find(defaults, k)).then(|| KeyBinding { key: k.to_string(), cmd: now.unwrap_or_default() })
+            let when = (k.when != Scope::Global).then(|| k.when.name().to_string());
+            (now != find(defaults, k)).then(|| KeyBinding { key: k.to_string(), cmd: now.unwrap_or_default(), when })
         })
         .collect()
 }
@@ -78,6 +79,9 @@ pub fn to_toml(bindings: &[KeyBinding]) -> String {
     );
     for b in bindings {
         s.push_str(&format!("\n[[key]]\nkey = {}\ncmd = {}\n", quote(&b.key), quote(&b.cmd)));
+        if let Some(w) = &b.when {
+            s.push_str(&format!("when = {}\n", quote(w)));
+        }
     }
     s
 }
@@ -134,6 +138,26 @@ mod tests {
     }
 
     #[test]
+    fn scoped_overrides_round_trip() {
+        let (base, _) = Config::load(None);
+        let mut keys = base.config_keys.clone();
+        let down = k("Down").in_scope(Scope::List);
+        // 只改清單的 Down，樹狀列與彈出清單的不受影響
+        assert_eq!(assign(&mut keys, "cursor.down", k("J").in_scope(Scope::List)), None);
+        assert!(chords_for(&keys, "cursor.down").iter().all(|c| c.when == Scope::List));
+        assert!(!keys.iter().any(|(c, _)| *c == down));
+        let o = overrides(&base.config_keys, &keys);
+        let pairs: Vec<(&str, &str, Option<&str>)> = o.iter().map(|b| (b.key.as_str(), b.cmd.as_str(), b.when.as_deref())).collect();
+        assert_eq!(pairs, [("Down", "", Some("list")), ("J", "cursor.down", Some("list"))]);
+        let (cfg, warn) = Config::load_with_keys(None, Some(&to_toml(&o)));
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(cfg.command_in(Scope::List, k("J")), Some("cursor.down"));
+        assert_eq!(cfg.command_in(Scope::List, k("Down")), None);
+        assert_eq!(cfg.command_in(Scope::Tree, k("Down")), Some("tree.down"));
+        assert_eq!(cfg.command_in(Scope::Global, k("J")), None);
+    }
+
+    #[test]
     fn overrides_round_trip() {
         let defaults = list(&[("Ctrl+C", "file.copy"), ("F5", "nav.refresh"), ("F2", "file.rename")]);
         let mut keys = defaults.clone();
@@ -150,7 +174,7 @@ mod tests {
         assert_eq!(cfg.command_for(k("F2")), None);
         assert_eq!(cfg.command_for(k("Ctrl+C")), Some("file.copy"));
         // 引號與反斜線
-        let s = to_toml(&[KeyBinding { key: "Ctrl+Q".into(), cmd: r#"run "C:\a b\x.exe""#.into() }]);
+        let s = to_toml(&[KeyBinding { key: "Ctrl+Q".into(), cmd: r#"run "C:\a b\x.exe""#.into(), when: None }]);
         let (cfg, _) = Config::load_with_keys(None, Some(&s));
         assert_eq!(cfg.command_for(k("Ctrl+Q")), Some(r#"run "C:\a b\x.exe""#));
     }

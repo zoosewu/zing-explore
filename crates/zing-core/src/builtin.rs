@@ -14,6 +14,9 @@ const TABS: &str = tr_key!("分頁與窗格");
 const FAVORITES: &str = tr_key!("我的最愛");
 const LOOK: &str = tr_key!("外觀");
 const TOOLS: &str = tr_key!("工具");
+const LIST: &str = tr_key!("清單");
+const TREE: &str = tr_key!("樹狀列");
+const POPUP: &str = tr_key!("彈出清單");
 /// 不屬於任何命令的分組（腳本的命令、`run …`）
 pub const OTHER: &str = tr_key!("其他");
 
@@ -167,6 +170,42 @@ builtins! {
     AppExit, OTHER, None => spec("app.exit", &[], tr_key!("結束程式"), "app.exit()");
     UpdateCheck, OTHER, None => spec("update.check", &[], tr_key!("立即檢查新版本（不受每天一次與設定的限制；有任何較新的版本都提示，包括修補版與略過的版本）"), "update.check()");
     WelcomeShow, OTHER, None => spec("welcome.show", &[], tr_key!("開啟歡迎畫面（第一次啟動時顯示的常用設定）"), "welcome.show()");
+    ListUp, LIST, None => spec("cursor.up", &[tr_key!("opts? {extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取")], tr_key!("清單：焦點向上移動並選取（縮圖檢視中左右是一格、上下是一列）"), "cursor.up{ extend = true }");
+    ListDown, LIST, None => spec("cursor.down", &[tr_key!("opts? {extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取")], tr_key!("清單：焦點向下移動並選取（縮圖檢視中左右是一格、上下是一列）"), "cursor.down{ extend = true }");
+    ListLeft, LIST, None => spec("cursor.left", &[tr_key!("opts? {extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取")], tr_key!("清單：焦點向左移動並選取（縮圖檢視中左右是一格、上下是一列）"), "cursor.left{ extend = true }");
+    ListRight, LIST, None => spec("cursor.right", &[tr_key!("opts? {extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取")], tr_key!("清單：焦點向右移動並選取（縮圖檢視中左右是一格、上下是一列）"), "cursor.right{ extend = true }");
+    ListPageup, LIST, None => spec("cursor.pageup", &[tr_key!("opts? {extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取")], tr_key!("清單：焦點往上一頁移動並選取（縮圖檢視中左右是一格、上下是一列）"), "cursor.pageup{ extend = true }");
+    ListPagedown, LIST, None => spec("cursor.pagedown", &[tr_key!("opts? {extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取")], tr_key!("清單：焦點往下一頁移動並選取（縮圖檢視中左右是一格、上下是一列）"), "cursor.pagedown{ extend = true }");
+    ListFirst, LIST, None => spec("cursor.first", &[tr_key!("opts? {extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取")], tr_key!("清單：焦點到第一個移動並選取（縮圖檢視中左右是一格、上下是一列）"), "cursor.first{ extend = true }");
+    ListLast, LIST, None => spec("cursor.last", &[tr_key!("opts? {extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取")], tr_key!("清單：焦點到最後一個移動並選取（縮圖檢視中左右是一格、上下是一列）"), "cursor.last{ extend = true }");
+    ListSelect, LIST, None => spec("cursor.select", &[], tr_key!("清單：只選取焦點項目"), "cursor.select()");
+    ListToggle, LIST, None => spec("cursor.toggle", &[], tr_key!("清單：切換焦點項目的選取（其他項目不變）"), "cursor.toggle()");
+    FilterBackspace, LIST, None => spec("filter.backspace", &[], tr_key!("篩選文字刪去最後一個字（刪完就結束篩選）"), "filter.backspace()");
+    FilterStart, LIST, None => spec("filter.start", &[], tr_key!("開始篩選：之後打的字成為篩選文字（「在清單中打字」設為不做事時使用）"), "filter.start()");
+    TreeUp, TREE, None => spec("tree.up", &[], tr_key!("樹狀列：焦點往上"), "tree.up()");
+    TreeDown, TREE, None => spec("tree.down", &[], tr_key!("樹狀列：焦點往下"), "tree.down()");
+    TreeExpand, TREE, None => spec("tree.expand", &[], tr_key!("樹狀列：展開焦點節點（已展開時移到第一個子節點）"), "tree.expand()");
+    TreeCollapse, TREE, None => spec("tree.collapse", &[], tr_key!("樹狀列：收合焦點節點（已收合時移到上層）"), "tree.collapse()");
+    TreeOpen, TREE, None => spec("tree.open", &[], tr_key!("樹狀列：前往焦點節點的資料夾"), "tree.open()");
+    TreeLeave, TREE, None => spec("tree.leave", &[], tr_key!("樹狀列：鍵盤焦點回到檔案清單"), "tree.leave()");
+    TreeMoveup, TREE, None => spec("tree.moveup", &[], tr_key!("樹狀列：焦點所在的我的最愛上移（不是我的最愛時不做事）"), "tree.moveup()");
+    TreeMovedown, TREE, None => spec("tree.movedown", &[], tr_key!("樹狀列：焦點所在的我的最愛下移（不是我的最愛時不做事）"), "tree.movedown()");
+    UiUp, POPUP, None => spec("ui.up", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：往上"), "ui.up()");
+    UiDown, POPUP, None => spec("ui.down", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：往下"), "ui.down()");
+    UiLeft, POPUP, None => spec("ui.left", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：往左（命令列、子選單）"), "ui.left()");
+    UiRight, POPUP, None => spec("ui.right", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：往右（命令列、子選單）"), "ui.right()");
+    UiPageup, POPUP, None => spec("ui.pageup", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：往上一頁"), "ui.pageup()");
+    UiPagedown, POPUP, None => spec("ui.pagedown", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：往下一頁"), "ui.pagedown()");
+    UiFirst, POPUP, None => spec("ui.first", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：到第一個"), "ui.first()");
+    UiLast, POPUP, None => spec("ui.last", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：到最後一個"), "ui.last()");
+    UiAccept, POPUP, None => spec("ui.accept", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：確定（執行選取的項目）"), "ui.accept()");
+    UiCancel, POPUP, None => spec("ui.cancel", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：取消（關閉）"), "ui.cancel()");
+    UiSelect, POPUP, None => spec("ui.select", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：切換焦點項目（開關、選項）"), "ui.select()");
+    UiNext, POPUP, None => spec("ui.next", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：下一個欄位"), "ui.next()");
+    UiPrev, POPUP, None => spec("ui.prev", &[], tr_key!("彈出清單（選單、命令面板、命令列、右側面板）：上一個欄位"), "ui.prev()");
+    SearchSort, TOOLS, None => spec("search.sort", &[tr_key!("opts {by: \"name\"|\"path\"|\"ext\"|\"size\"|\"date\"|\"none\"}")], tr_key!("全磁碟搜尋：依欄位排序（再按一次反向），none 取消排序"), "search.sort{ by = \"size\" }");
+    SearchOpenitem, TOOLS, None => spec("search.openitem", &[], tr_key!("全磁碟搜尋：開啟選取的結果（資料夾就進入；Enter 則是前往所在的資料夾）"), "search.openitem()");
+    CmdbarFocus, OTHER, None => spec("cmdbar.focus", &[], tr_key!("鍵盤焦點移到命令列（←→ 移動、Enter 執行、Esc 離開）；再執行一次離開"), "cmdbar.focus()");
 }
 
 /// 在終端機開啟目前的資料夾
@@ -247,8 +286,8 @@ pub const PRESETS: &[Preset] = &[
     titled("jobs.clear", tr_key!("清除已完成的檔案作業")),
     titled("favorites.add", tr_key!("加入我的最愛")),
     titled("favorites.remove", tr_key!("從我的最愛移除")),
-    titled("favorites.move --by=-1", tr_key!("我的最愛：上移（樹狀列 Ctrl+↑）")),
-    titled("favorites.move --by=1", tr_key!("我的最愛：下移（樹狀列 Ctrl+↓）")),
+    titled("favorites.move --by=-1", tr_key!("我的最愛：上移")),
+    titled("favorites.move --by=1", tr_key!("我的最愛：下移")),
     titled_short("theme.toggle", tr_key!("切換深色／淺色主題"), tr_key!("切換深色／淺色")),
     titled("theme.set system", tr_key!("主題：緊湊（預設，跟隨系統深淺色）")),
     titled("theme.set dark", tr_key!("主題：緊湊深色")),
@@ -269,6 +308,71 @@ pub const PRESETS: &[Preset] = &[
     titled("update.check", tr_key!("檢查更新")),
     titled_short("welcome.show", tr_key!("歡迎畫面（常用設定）"), tr_key!("歡迎畫面…")),
     titled_short("app.exit", tr_key!("結束 zing-explore"), tr_key!("結束")),
+    titled("cursor.up", tr_key!("清單：向上")),
+    titled("cursor.up --extend", tr_key!("清單：向上延伸選取")),
+    titled("cursor.up --keep", tr_key!("清單：焦點向上（不改選取）")),
+    titled("cursor.up --extend --keep", tr_key!("清單：向上延伸選取（保留原本的選取）")),
+    titled("cursor.down", tr_key!("清單：向下")),
+    titled("cursor.down --extend", tr_key!("清單：向下延伸選取")),
+    titled("cursor.down --keep", tr_key!("清單：焦點向下（不改選取）")),
+    titled("cursor.down --extend --keep", tr_key!("清單：向下延伸選取（保留原本的選取）")),
+    titled("cursor.left", tr_key!("清單：向左")),
+    titled("cursor.left --extend", tr_key!("清單：向左延伸選取")),
+    titled("cursor.left --keep", tr_key!("清單：焦點向左（不改選取）")),
+    titled("cursor.left --extend --keep", tr_key!("清單：向左延伸選取（保留原本的選取）")),
+    titled("cursor.right", tr_key!("清單：向右")),
+    titled("cursor.right --extend", tr_key!("清單：向右延伸選取")),
+    titled("cursor.right --keep", tr_key!("清單：焦點向右（不改選取）")),
+    titled("cursor.right --extend --keep", tr_key!("清單：向右延伸選取（保留原本的選取）")),
+    titled("cursor.pageup", tr_key!("清單：往上一頁")),
+    titled("cursor.pageup --extend", tr_key!("清單：往上一頁延伸選取")),
+    titled("cursor.pageup --keep", tr_key!("清單：焦點往上一頁（不改選取）")),
+    titled("cursor.pageup --extend --keep", tr_key!("清單：往上一頁延伸選取（保留原本的選取）")),
+    titled("cursor.pagedown", tr_key!("清單：往下一頁")),
+    titled("cursor.pagedown --extend", tr_key!("清單：往下一頁延伸選取")),
+    titled("cursor.pagedown --keep", tr_key!("清單：焦點往下一頁（不改選取）")),
+    titled("cursor.pagedown --extend --keep", tr_key!("清單：往下一頁延伸選取（保留原本的選取）")),
+    titled("cursor.first", tr_key!("清單：到第一個")),
+    titled("cursor.first --extend", tr_key!("清單：到第一個延伸選取")),
+    titled("cursor.first --keep", tr_key!("清單：焦點到第一個（不改選取）")),
+    titled("cursor.first --extend --keep", tr_key!("清單：到第一個延伸選取（保留原本的選取）")),
+    titled("cursor.last", tr_key!("清單：到最後一個")),
+    titled("cursor.last --extend", tr_key!("清單：到最後一個延伸選取")),
+    titled("cursor.last --keep", tr_key!("清單：焦點到最後一個（不改選取）")),
+    titled("cursor.last --extend --keep", tr_key!("清單：到最後一個延伸選取（保留原本的選取）")),
+    titled("cursor.select", tr_key!("清單：選取焦點項目")),
+    titled("cursor.toggle", tr_key!("清單：切換焦點項目的選取")),
+    titled("filter.backspace", tr_key!("篩選：刪去最後一個字")),
+    titled("filter.start", tr_key!("開始篩選")),
+    titled("tree.up", tr_key!("樹狀列：焦點往上")),
+    titled("tree.down", tr_key!("樹狀列：焦點往下")),
+    titled("tree.expand", tr_key!("樹狀列：展開")),
+    titled("tree.collapse", tr_key!("樹狀列：收合")),
+    titled("tree.open", tr_key!("樹狀列：前往")),
+    titled("tree.leave", tr_key!("樹狀列：回到檔案清單")),
+    titled("tree.moveup", tr_key!("樹狀列：我的最愛上移")),
+    titled("tree.movedown", tr_key!("樹狀列：我的最愛下移")),
+    titled("ui.up", tr_key!("彈出清單：往上")),
+    titled("ui.down", tr_key!("彈出清單：往下")),
+    titled("ui.left", tr_key!("彈出清單：往左（命令列、子選單）")),
+    titled("ui.right", tr_key!("彈出清單：往右（命令列、子選單）")),
+    titled("ui.pageup", tr_key!("彈出清單：往上一頁")),
+    titled("ui.pagedown", tr_key!("彈出清單：往下一頁")),
+    titled("ui.first", tr_key!("彈出清單：到第一個")),
+    titled("ui.last", tr_key!("彈出清單：到最後一個")),
+    titled("ui.accept", tr_key!("彈出清單：確定（執行選取的項目）")),
+    titled("ui.cancel", tr_key!("彈出清單：取消（關閉）")),
+    titled("ui.select", tr_key!("彈出清單：切換焦點項目（開關、選項）")),
+    titled("ui.next", tr_key!("彈出清單：下一個欄位")),
+    titled("ui.prev", tr_key!("彈出清單：上一個欄位")),
+    titled("search.sort --by=name", tr_key!("全磁碟搜尋：依名稱排序")),
+    titled("search.sort --by=path", tr_key!("全磁碟搜尋：依路徑排序")),
+    titled("search.sort --by=ext", tr_key!("全磁碟搜尋：依副檔名排序")),
+    titled("search.sort --by=size", tr_key!("全磁碟搜尋：依大小排序")),
+    titled("search.sort --by=date", tr_key!("全磁碟搜尋：依日期排序")),
+    titled("search.sort --by=none", tr_key!("全磁碟搜尋：取消排序")),
+    titled("search.openitem", tr_key!("全磁碟搜尋：開啟項目")),
+    titled("cmdbar.focus", tr_key!("移到命令列")),
     short("view.sort --asc", tr_key!("遞增")),
     short("view.sort --desc", tr_key!("遞減")),
 ];

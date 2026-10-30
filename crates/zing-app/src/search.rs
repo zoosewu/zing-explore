@@ -111,6 +111,18 @@ impl App {
     }
 
     /// 搜尋面板的排序按鍵：改寫後的查詢（不是搜尋面板時為 None）。`key` 為 None 表示取消排序
+    /// `search.sort`（Lua、命令）：改寫搜尋框的內容並重新查詢。從按鍵觸發時由輸入框自己改寫（window.rs），
+    /// 這裡在 App 借用中，輸入框送出的 EN_CHANGE 借不到 App，所以直接呼叫 `edit_changed`
+    pub fn search_sort(&mut self, key: Option<zing_core::namequery::SortKey>) {
+        let Some(text) = self.search_sort_text(key) else { return };
+        let Some(hwnd) = self.edit.as_ref().filter(|e| matches!(e.kind, crate::app::EditKind::Palette)).map(|e| e.hwnd) else { return };
+        let w = zing_core::text::wide_z(&text);
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(hwnd, windows::core::PCWSTR(w.as_ptr()));
+        }
+        self.edit_changed(hwnd, text);
+    }
+
     pub fn search_sort_text(&self, key: Option<zing_core::namequery::SortKey>) -> Option<String> {
         let p = self.palette.as_ref().filter(|p| p.search.is_some())?;
         Some(zing_core::namequery::set_sort(&p.query, key))

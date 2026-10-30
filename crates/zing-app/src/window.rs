@@ -562,34 +562,76 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             }
             return DefSubclassProc(hwnd, msg, wparam, lparam);
         }
+        // 命令面板、全磁碟搜尋：按鍵先找 popup（搜尋時 search）情境的命令（navkeys.rs）
+        if msg == WM_KEYDOWN && data & edit::LIST_KEYS != 0 {
+            let m = Mods::current();
+            let vk = wparam.0 as u16;
+            let chord = zing_core::keymap::KeyChord { ctrl: m.ctrl, shift: m.shift, alt: m.alt, vk, when: Default::default() };
+            let key = with_app(|a| {
+                let scope = if a.palette.as_ref().is_some_and(|p| p.search.is_some()) {
+                    zing_core::keymap::Scope::Search
+                } else {
+                    zing_core::keymap::Scope::Popup
+                };
+                a.popup_key(chord, scope)
+            });
+            let page = crate::palette::MAX_ROWS as isize;
+            // Home、End、←→ 在輸入框中是移動游標
+            let text_key = !m.ctrl && !m.alt && !m.shift && matches!(vk, 0x23 | 0x24 | 0x25 | 0x27);
+            match key {
+                Some(crate::navkeys::PopupKey::Cmd(cmd)) => {
+                    let name = cmd.split_whitespace().next().unwrap_or("");
+                    let mv = match name {
+                        "ui.up" => Some(-1),
+                        "ui.down" => Some(1),
+                        "ui.pageup" => Some(-page),
+                        "ui.pagedown" => Some(page),
+                        "ui.first" if !text_key => Some(isize::MIN / 2),
+                        "ui.last" if !text_key => Some(isize::MAX / 2),
+                        _ => None,
+                    };
+                    if let Some(d) = mv {
+                        with_app(|a| a.palette_move(d));
+                        return LRESULT(0);
+                    }
+                    match name {
+                        "ui.accept" | "search.openitem" => {
+                            with_app(|a| a.palette_open = Some(name == "search.openitem"));
+                            done(true);
+                            return LRESULT(0);
+                        }
+                        "ui.cancel" => {
+                            done(false);
+                            return LRESULT(0);
+                        }
+                        // 依欄位排序（再按一次反向）：改寫輸入框的內容（EN_CHANGE 會照常查詢）；
+                        // 在 with_app 之外設定，EN_CHANGE 才能再借用 App
+                        "search.sort" => {
+                            if let Some(key) = crate::navkeys::sort_key_of(&cmd)
+                                && let Some(Some(text)) = with_app(|a| a.search_sort_text(key))
+                            {
+                                let w = zing_core::text::wide_z(&text);
+                                let _ = SetWindowTextW(hwnd, PCWSTR(w.as_ptr()));
+                                let n = text.encode_utf16().count();
+                                SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(n)), Some(LPARAM(n as isize)));
+                            }
+                            return LRESULT(0);
+                        }
+                        _ => {}
+                    }
+                }
+                // 解除了的標準按鍵（命令面板原本攔下的那些）不做事；輸入框自己的按鍵照常
+                Some(crate::navkeys::PopupKey::Unbound) if !text_key && matches!(vk, 0x0D | 0x1B | 0x21 | 0x22 | 0x26 | 0x28) => {
+                    return LRESULT(0);
+                }
+                _ => {}
+            }
+        }
         match msg {
             WM_GETDLGCODE => return LRESULT(DLGC_WANTALLKEYS as isize),
             WM_KEYDOWN if wparam.0 == 0x0D || wparam.0 == 0x1B => {
                 done(wparam.0 == 0x0D);
                 return LRESULT(0);
-            }
-            // 命令面板：上下鍵、PageUp/PageDown 移動清單選取
-            WM_KEYDOWN if data & edit::LIST_KEYS != 0 && matches!(wparam.0, 0x21 | 0x22 | 0x26 | 0x28) => {
-                let delta = match wparam.0 {
-                    0x26 => -1,
-                    0x28 => 1,
-                    0x21 => -(crate::palette::MAX_ROWS as isize),
-                    _ => crate::palette::MAX_ROWS as isize,
-                };
-                with_app(|a| a.palette_move(delta));
-                return LRESULT(0);
-            }
-            // 搜尋面板：Ctrl+1–5 依名稱、路徑、副檔名、大小、日期排序（再按一次反向），Ctrl+0 取消排序。
-            // 改寫輸入框的內容（EN_CHANGE 會照常查詢）；在 with_app 之外設定，EN_CHANGE 才能再借用 App
-            WM_KEYDOWN if data & edit::LIST_KEYS != 0 && (0x30..=0x35).contains(&wparam.0) && Mods::current().ctrl => {
-                let key = wparam.0.checked_sub(0x31).map(|i| zing_core::namequery::SortKey::ALL[i]);
-                if let Some(Some(text)) = with_app(|a| a.search_sort_text(key)) {
-                    let w = zing_core::text::wide_z(&text);
-                    let _ = SetWindowTextW(hwnd, PCWSTR(w.as_ptr()));
-                    let n = text.encode_utf16().count();
-                    SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(n)), Some(LPARAM(n as isize)));
-                    return LRESULT(0);
-                }
             }
             // Ctrl+A 全選（舊版 EDIT 控制項不支援）
             WM_KEYDOWN if wparam.0 == b'A' as usize && Mods::current().ctrl => {
@@ -597,6 +639,8 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 return LRESULT(0);
             }
             WM_CHAR if wparam.0 == 0x0D || wparam.0 == 0x1B || wparam.0 == 0x01 => return LRESULT(0),
+            // 命令面板：Ctrl+字母綁定的快速鍵（例如 Ctrl+J 往下）產生的控制字元不輸入、不發出提示音
+            WM_CHAR if data & edit::LIST_KEYS != 0 && wparam.0 < 0x20 && wparam.0 != 0x08 => return LRESULT(0),
             // 失去焦點：重新命名、網址列、面板的欄位視為確認；命令面板、ask() 視為取消
             WM_KILLFOCUS => done(data & edit::BLUR_CANCELS == 0),
             _ => {}

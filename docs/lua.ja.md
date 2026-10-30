@@ -1040,3 +1040,309 @@ update.check()
 ```lua
 welcome.show()
 ```
+
+### `cursor.up(opts?)`
+
+一覧：フォーカスを上へ移動して選択（縮小表示では左右が 1 マス、上下が 1 行）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend は選択を広げる（Shift）。keep はフォーカスだけ移動し選択を変えない（Ctrl）。両方なら既存の選択を保ったまま広げる
+
+```lua
+cursor.up{ extend = true }
+```
+
+### `cursor.down(opts?)`
+
+一覧：フォーカスを下へ移動して選択（縮小表示では左右が 1 マス、上下が 1 行）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend は選択を広げる（Shift）。keep はフォーカスだけ移動し選択を変えない（Ctrl）。両方なら既存の選択を保ったまま広げる
+
+```lua
+cursor.down{ extend = true }
+```
+
+### `cursor.left(opts?)`
+
+一覧：フォーカスを左へ移動して選択（縮小表示では左右が 1 マス、上下が 1 行）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend は選択を広げる（Shift）。keep はフォーカスだけ移動し選択を変えない（Ctrl）。両方なら既存の選択を保ったまま広げる
+
+```lua
+cursor.left{ extend = true }
+```
+
+### `cursor.right(opts?)`
+
+一覧：フォーカスを右へ移動して選択（縮小表示では左右が 1 マス、上下が 1 行）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend は選択を広げる（Shift）。keep はフォーカスだけ移動し選択を変えない（Ctrl）。両方なら既存の選択を保ったまま広げる
+
+```lua
+cursor.right{ extend = true }
+```
+
+### `cursor.pageup(opts?)`
+
+一覧：フォーカスを1 ページ上へ移動して選択（縮小表示では左右が 1 マス、上下が 1 行）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend は選択を広げる（Shift）。keep はフォーカスだけ移動し選択を変えない（Ctrl）。両方なら既存の選択を保ったまま広げる
+
+```lua
+cursor.pageup{ extend = true }
+```
+
+### `cursor.pagedown(opts?)`
+
+一覧：フォーカスを1 ページ下へ移動して選択（縮小表示では左右が 1 マス、上下が 1 行）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend は選択を広げる（Shift）。keep はフォーカスだけ移動し選択を変えない（Ctrl）。両方なら既存の選択を保ったまま広げる
+
+```lua
+cursor.pagedown{ extend = true }
+```
+
+### `cursor.first(opts?)`
+
+一覧：フォーカスを先頭へ移動して選択（縮小表示では左右が 1 マス、上下が 1 行）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend は選択を広げる（Shift）。keep はフォーカスだけ移動し選択を変えない（Ctrl）。両方なら既存の選択を保ったまま広げる
+
+```lua
+cursor.first{ extend = true }
+```
+
+### `cursor.last(opts?)`
+
+一覧：フォーカスを末尾へ移動して選択（縮小表示では左右が 1 マス、上下が 1 行）
+
+- `opts?`：{extend?: boolean, keep?: boolean} extend は選択を広げる（Shift）。keep はフォーカスだけ移動し選択を変えない（Ctrl）。両方なら既存の選択を保ったまま広げる
+
+```lua
+cursor.last{ extend = true }
+```
+
+### `cursor.select()`
+
+一覧：フォーカスの項目だけを選択
+
+```lua
+cursor.select()
+```
+
+### `cursor.toggle()`
+
+一覧：フォーカスの項目の選択を切り替える（ほかは変えない）
+
+```lua
+cursor.toggle()
+```
+
+### `filter.backspace()`
+
+フィルターの最後の 1 文字を削除（空になるとフィルター終了）
+
+```lua
+filter.backspace()
+```
+
+### `filter.start()`
+
+フィルター開始：続けて入力した文字がフィルターになる（一覧での入力を「何もしない」にしたとき用）
+
+```lua
+filter.start()
+```
+
+### `tree.up()`
+
+ツリー：フォーカスを上へ
+
+```lua
+tree.up()
+```
+
+### `tree.down()`
+
+ツリー：フォーカスを下へ
+
+```lua
+tree.down()
+```
+
+### `tree.expand()`
+
+ツリー：フォーカスのノードを展開（展開済みなら最初の子へ）
+
+```lua
+tree.expand()
+```
+
+### `tree.collapse()`
+
+ツリー：フォーカスのノードを折りたたむ（折りたたみ済みなら親へ）
+
+```lua
+tree.collapse()
+```
+
+### `tree.open()`
+
+ツリー：フォーカスのノードのフォルダーへ移動
+
+```lua
+tree.open()
+```
+
+### `tree.leave()`
+
+ツリー：キーボード フォーカスをファイル一覧に戻す
+
+```lua
+tree.leave()
+```
+
+### `tree.moveup()`
+
+ツリー：フォーカスのお気に入りを上へ移動（お気に入り以外では何もしない）
+
+```lua
+tree.moveup()
+```
+
+### `tree.movedown()`
+
+ツリー：フォーカスのお気に入りを下へ移動（お気に入り以外では何もしない）
+
+```lua
+tree.movedown()
+```
+
+### `ui.up()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：上へ
+
+```lua
+ui.up()
+```
+
+### `ui.down()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：下へ
+
+```lua
+ui.down()
+```
+
+### `ui.left()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：左へ（コマンド バー、サブメニュー）
+
+```lua
+ui.left()
+```
+
+### `ui.right()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：右へ（コマンド バー、サブメニュー）
+
+```lua
+ui.right()
+```
+
+### `ui.pageup()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：1 ページ上へ
+
+```lua
+ui.pageup()
+```
+
+### `ui.pagedown()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：1 ページ下へ
+
+```lua
+ui.pagedown()
+```
+
+### `ui.first()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：先頭へ
+
+```lua
+ui.first()
+```
+
+### `ui.last()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：末尾へ
+
+```lua
+ui.last()
+```
+
+### `ui.accept()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：決定（選択した項目を実行）
+
+```lua
+ui.accept()
+```
+
+### `ui.cancel()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：キャンセル（閉じる）
+
+```lua
+ui.cancel()
+```
+
+### `ui.select()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：フォーカスの項目を切り替える（スイッチ、選択肢）
+
+```lua
+ui.select()
+```
+
+### `ui.next()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：次の欄
+
+```lua
+ui.next()
+```
+
+### `ui.prev()`
+
+ポップアップ（メニュー、コマンド パレット、コマンド バー、サイド パネル）：前の欄
+
+```lua
+ui.prev()
+```
+
+### `search.sort(opts)`
+
+ドライブ全体の検索：列で並べ替え（もう一度で逆順）。none で並べ替えを解除
+
+- `opts`：{by: "name"|"path"|"ext"|"size"|"date"|"none"}
+
+```lua
+search.sort{ by = "size" }
+```
+
+### `search.openitem()`
+
+ドライブ全体の検索：選択した結果を開く（フォルダーなら入る。Enter は場所へ移動）
+
+```lua
+search.openitem()
+```
+
+### `cmdbar.focus()`
+
+キーボード フォーカスをコマンド バーへ（←→ 移動、Enter 実行、Esc で戻る）。もう一度で戻る
+
+```lua
+cmdbar.focus()
+```

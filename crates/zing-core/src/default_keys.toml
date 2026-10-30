@@ -1,0 +1,349 @@
+# 有情境（when）的預設快速鍵：清單與樹狀列的移動、篩選、彈出清單、全磁碟搜尋、滾輪。
+# 與 default_config.toml 的 [[key]] 一起構成預設值，但不複製進使用者的 config.toml（內容與現有行為相同，不必每個人都帶著）。
+# 使用者以快速鍵編輯器或 config.toml 的 [[key]]（加上同樣的 when）覆蓋；cmd = "" 解除。
+# when：list 清單｜filter 清單篩選中（優先於 list）｜tree 樹狀列｜popup 彈出清單｜search 全磁碟搜尋（優先於 popup）
+
+# ---- 全域
+[[key]]
+key = "F10"
+cmd = "cmdbar.focus"
+
+# ---- 清單：移動焦點並選取；Shift 延伸選取；Ctrl 只移動焦點；Ctrl+Shift 延伸並保留原本的選取
+[[key]]
+key = "Up"
+cmd = "cursor.up"
+when = "list"
+
+[[key]]
+key = "Shift+Up"
+cmd = "cursor.up --extend"
+when = "list"
+
+[[key]]
+key = "Ctrl+Up"
+cmd = "cursor.up --keep"
+when = "list"
+
+[[key]]
+key = "Ctrl+Shift+Up"
+cmd = "cursor.up --extend --keep"
+when = "list"
+
+[[key]]
+key = "Down"
+cmd = "cursor.down"
+when = "list"
+
+[[key]]
+key = "Shift+Down"
+cmd = "cursor.down --extend"
+when = "list"
+
+[[key]]
+key = "Ctrl+Down"
+cmd = "cursor.down --keep"
+when = "list"
+
+[[key]]
+key = "Ctrl+Shift+Down"
+cmd = "cursor.down --extend --keep"
+when = "list"
+
+[[key]]
+key = "Left"
+cmd = "cursor.left"
+when = "list"
+
+[[key]]
+key = "Shift+Left"
+cmd = "cursor.left --extend"
+when = "list"
+
+[[key]]
+key = "Ctrl+Left"
+cmd = "cursor.left --keep"
+when = "list"
+
+[[key]]
+key = "Ctrl+Shift+Left"
+cmd = "cursor.left --extend --keep"
+when = "list"
+
+[[key]]
+key = "Right"
+cmd = "cursor.right"
+when = "list"
+
+[[key]]
+key = "Shift+Right"
+cmd = "cursor.right --extend"
+when = "list"
+
+[[key]]
+key = "Ctrl+Right"
+cmd = "cursor.right --keep"
+when = "list"
+
+[[key]]
+key = "Ctrl+Shift+Right"
+cmd = "cursor.right --extend --keep"
+when = "list"
+
+[[key]]
+key = "PageUp"
+cmd = "cursor.pageup"
+when = "list"
+
+[[key]]
+key = "Shift+PageUp"
+cmd = "cursor.pageup --extend"
+when = "list"
+
+[[key]]
+key = "Ctrl+PageUp"
+cmd = "cursor.pageup --keep"
+when = "list"
+
+[[key]]
+key = "Ctrl+Shift+PageUp"
+cmd = "cursor.pageup --extend --keep"
+when = "list"
+
+[[key]]
+key = "PageDown"
+cmd = "cursor.pagedown"
+when = "list"
+
+[[key]]
+key = "Shift+PageDown"
+cmd = "cursor.pagedown --extend"
+when = "list"
+
+[[key]]
+key = "Ctrl+PageDown"
+cmd = "cursor.pagedown --keep"
+when = "list"
+
+[[key]]
+key = "Ctrl+Shift+PageDown"
+cmd = "cursor.pagedown --extend --keep"
+when = "list"
+
+[[key]]
+key = "Home"
+cmd = "cursor.first"
+when = "list"
+
+[[key]]
+key = "Shift+Home"
+cmd = "cursor.first --extend"
+when = "list"
+
+[[key]]
+key = "Ctrl+Home"
+cmd = "cursor.first --keep"
+when = "list"
+
+[[key]]
+key = "Ctrl+Shift+Home"
+cmd = "cursor.first --extend --keep"
+when = "list"
+
+[[key]]
+key = "End"
+cmd = "cursor.last"
+when = "list"
+
+[[key]]
+key = "Shift+End"
+cmd = "cursor.last --extend"
+when = "list"
+
+[[key]]
+key = "Ctrl+End"
+cmd = "cursor.last --keep"
+when = "list"
+
+[[key]]
+key = "Ctrl+Shift+End"
+cmd = "cursor.last --extend --keep"
+when = "list"
+
+[[key]]
+key = "Space"
+cmd = "cursor.select"
+when = "list"
+
+[[key]]
+key = "Ctrl+Space"
+cmd = "cursor.toggle"
+when = "list"
+
+[[key]]
+key = "Esc"
+cmd = "sel.none"
+when = "list"
+
+[[key]]
+key = "Ctrl+WheelUp"
+cmd = "view.thumbsize --delta=16"
+when = "list"
+
+[[key]]
+key = "Ctrl+WheelDown"
+cmd = "view.thumbsize --delta=-16"
+when = "list"
+
+# ---- 清單篩選中（篩選字串不為空；沒有 Ctrl、Alt 的字元鍵一律是篩選文字）
+[[key]]
+key = "Esc"
+cmd = "filter.clear"
+when = "filter"
+
+[[key]]
+key = "Backspace"
+cmd = "filter.backspace"
+when = "filter"
+
+# ---- 樹狀列
+[[key]]
+key = "Up"
+cmd = "tree.up"
+when = "tree"
+
+[[key]]
+key = "Down"
+cmd = "tree.down"
+when = "tree"
+
+[[key]]
+key = "Right"
+cmd = "tree.expand"
+when = "tree"
+
+[[key]]
+key = "Left"
+cmd = "tree.collapse"
+when = "tree"
+
+[[key]]
+key = "Space"
+cmd = "tree.open"
+when = "tree"
+
+[[key]]
+key = "Esc"
+cmd = "tree.leave"
+when = "tree"
+
+[[key]]
+key = "Ctrl+Up"
+cmd = "tree.moveup"
+when = "tree"
+
+[[key]]
+key = "Ctrl+Down"
+cmd = "tree.movedown"
+when = "tree"
+
+# ---- 彈出清單（下拉選單、命令面板、命令列、右側面板、歡迎畫面）
+[[key]]
+key = "Up"
+cmd = "ui.up"
+when = "popup"
+
+[[key]]
+key = "Down"
+cmd = "ui.down"
+when = "popup"
+
+[[key]]
+key = "Left"
+cmd = "ui.left"
+when = "popup"
+
+[[key]]
+key = "Right"
+cmd = "ui.right"
+when = "popup"
+
+[[key]]
+key = "PageUp"
+cmd = "ui.pageup"
+when = "popup"
+
+[[key]]
+key = "PageDown"
+cmd = "ui.pagedown"
+when = "popup"
+
+[[key]]
+key = "Home"
+cmd = "ui.first"
+when = "popup"
+
+[[key]]
+key = "End"
+cmd = "ui.last"
+when = "popup"
+
+[[key]]
+key = "Enter"
+cmd = "ui.accept"
+when = "popup"
+
+[[key]]
+key = "Esc"
+cmd = "ui.cancel"
+when = "popup"
+
+[[key]]
+key = "Space"
+cmd = "ui.select"
+when = "popup"
+
+[[key]]
+key = "Tab"
+cmd = "ui.next"
+when = "popup"
+
+[[key]]
+key = "Shift+Tab"
+cmd = "ui.prev"
+when = "popup"
+
+# ---- 全磁碟搜尋（Enter 前往所在的資料夾是 ui.accept）
+[[key]]
+key = "Ctrl+Enter"
+cmd = "search.openitem"
+when = "search"
+
+[[key]]
+key = "Ctrl+1"
+cmd = "search.sort --by=name"
+when = "search"
+
+[[key]]
+key = "Ctrl+2"
+cmd = "search.sort --by=path"
+when = "search"
+
+[[key]]
+key = "Ctrl+3"
+cmd = "search.sort --by=ext"
+when = "search"
+
+[[key]]
+key = "Ctrl+4"
+cmd = "search.sort --by=size"
+when = "search"
+
+[[key]]
+key = "Ctrl+5"
+cmd = "search.sort --by=date"
+when = "search"
+
+[[key]]
+key = "Ctrl+0"
+cmd = "search.sort --by=none"
+when = "search"

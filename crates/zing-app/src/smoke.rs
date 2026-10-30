@@ -1613,7 +1613,11 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("命令面板：Ctrl+Shift+P 開啟", |c| key(c, "cs", letter('p')), |_, a| {
         palette_open(a)?;
         let n = a.palette.as_ref().map_or(0, |p| p.matches.len());
-        if n >= zing_core::builtin::palette().count() { Ok(()) } else { Err(format!("只列出 {n} 個命令")) }
+        // 只在清單、樹狀列、彈出清單中有作用的命令（cursor.down、ui.accept…）不列出
+        let global = zing_core::builtin::palette().filter(|(c, _)| zing_core::keymap::Scope::of_command(c) == zing_core::keymap::Scope::Global).count();
+        let scoped = a.palette.as_ref().is_some_and(|p| p.entries.iter().any(|e| zing_core::keymap::Scope::of_command(&e.cmd) != zing_core::keymap::Scope::Global));
+        if scoped { return Err("列出了只在特定情境有作用的命令".into()) }
+        if n >= global { Ok(()) } else { Err(format!("只列出 {n} 個命令")) }
     }));
     v.push(step("命令面板：輸入文字篩選", |_| palette_type("隱藏檔"), |_, a| {
         expect("第一項", palette_top(a).as_deref(), Some("view.togglehidden"))
@@ -3337,7 +3341,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
     ));
     v.push(step("縮圖：Ctrl+滾輪縮小一級", |c| ctrl_wheel(c, list_center(), -120), |_, a| {
-        expect("縮圖大小", a.tab().thumb, 128 - crate::views::THUMB_STEP as u16)
+        expect("縮圖大小（Ctrl+WheelDown 是 view.thumbsize --delta=-16）", a.tab().thumb, 128 - 16)
     }));
     v.push(
         step(
@@ -4523,6 +4527,191 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |_, a| {
             expect("顯示隱藏檔案", a.show_hidden, false)?;
             expect("主題", a.config.theme.as_str(), "dark")
+        },
+    ));
+
+    // ------------------------------------------------ 快速鍵的情境（隔離模式只改記憶體中的按鍵）
+    let kc_in = |s: &str, w: zing_core::keymap::Scope| zing_core::keymap::KeyChord::parse(s).unwrap().in_scope(w);
+    use zing_core::keymap::Scope;
+    v.push(step(
+        "快速鍵情境：回到測試資料夾",
+        |c| {
+            let dir = c.dir.clone();
+            with_app(|a| {
+                a.close_side_panels();
+                a.focus = crate::app::Focus::List;
+                let p = a.active_pane;
+                a.navigate(p, dir, true);
+            });
+        },
+        |c, a| {
+            expect("資料夾", a.tab().path.as_str(), c.dir.as_str())?;
+            if a.tab().loading || a.tab().view.len() < 3 { Err("清單還沒載入".into()) } else { Ok(()) }
+        },
+    ));
+    v.push(step(
+        "快速鍵情境：清單中把 J 綁成 cursor.down，J 往下移動（不開始篩選）",
+        move |c| {
+            with_app(|a| {
+                a.config.keys.push((kc_in("J", Scope::List), "cursor.down".into()));
+                a.tab_mut().select_only(0);
+            });
+            key(c, "", letter('j'));
+        },
+        |_, a| {
+            expect("焦點", a.tab().focus, 1)?;
+            expect("篩選", a.tab().filter.as_str(), "")
+        },
+    ));
+    v.push(step(
+        "快速鍵情境：樹狀列中 J 不作用（只綁在清單）",
+        |c| {
+            let before = with_app(|a| {
+                a.focus = crate::app::Focus::Tree;
+                a.tree.focus
+            });
+            c.notes.push(("tree_focus_before", format!("{before:?}")));
+            key(c, "", letter('j'));
+            let after = with_app(|a| {
+                let f = a.tree.focus;
+                a.focus = crate::app::Focus::List;
+                f
+            });
+            c.notes.push(("tree_focus_after", format!("{after:?}")));
+        },
+        |c, a| {
+            expect("樹狀列的焦點", c.note("tree_focus_after"), c.note("tree_focus_before"))?;
+            expect("篩選", a.tab().filter.as_str(), "")
+        },
+    ));
+    v.push(step(
+        "快速鍵情境：解除清單的 Down 後，Down 不做事",
+        move |c| {
+            with_app(|a| {
+                a.config.keys.retain(|(k, _)| *k != kc_in("Down", Scope::List));
+                a.tab_mut().select_only(1);
+            });
+            key(c, "", VK_DOWN);
+        },
+        |_, a| expect("焦點", a.tab().focus, 1),
+    ));
+    v.push(step(
+        "快速鍵情境：篩選中字元鍵是篩選文字（J 綁了命令也一樣），Esc 清除",
+        |c| {
+            key(c, "", letter('a'));
+            key(c, "", letter('j'));
+            let f = with_app(|a| a.tab().filter.clone()).unwrap_or_default();
+            c.notes.push(("filter_typed", f));
+            key(c, "", VK_ESCAPE);
+        },
+        |c, a| {
+            expect("篩選文字", c.note("filter_typed"), Some("aj"))?;
+            expect("Esc 後", a.tab().filter.as_str(), "")
+        },
+    ));
+    v.push(step(
+        "直接打字：跳到名稱開頭相符的項目（list.typing = jump）",
+        |c| {
+            // 目標：後面的項目中名稱開頭是英數字的；從第 1 個項目開始輪流找
+            let plan = with_app(|a| {
+                a.config.list.typing = zing_core::config::Typing::Jump;
+                a.jump = None;
+                let tab = a.tab_mut();
+                tab.select_only(0);
+                let n = tab.view.len();
+                let name = |i: usize| String::from_utf16_lossy(tab.listing.name(tab.view[i] as usize)).to_lowercase();
+                let first = (1..n).rev().find_map(|i| name(i).chars().next().filter(|c| c.is_ascii_alphanumeric()))?;
+                let expected = (1..=n).map(|k| k % n).find(|&i| name(i).starts_with(first))?;
+                Some((first, expected))
+            })
+            .flatten();
+            c.notes.push(("jump_expected", plan.map_or(String::new(), |(_, e)| e.to_string())));
+            if let Some((ch, _)) = plan {
+                key(c, "", letter(ch));
+            }
+        },
+        |c, a| {
+            let expected = c.note("jump_expected").and_then(|e| e.parse::<usize>().ok()).ok_or("找不到可測試的項目")?;
+            expect("焦點", a.tab().focus, expected)?;
+            expect("篩選", a.tab().filter.as_str(), "")
+        },
+    ));
+    v.push(step(
+        "直接打字：不做事；filter.start 之後才開始篩選",
+        |c| {
+            with_app(|a| a.config.list.typing = zing_core::config::Typing::None);
+            key(c, "", letter('x'));
+            let f = with_app(|a| a.tab().filter.clone()).unwrap_or_default();
+            c.notes.push(("typed_none", f));
+            exec("filter.start");
+            key(c, "", letter('x'));
+        },
+        |c, a| {
+            expect("不做事", c.note("typed_none"), Some(""))?;
+            expect("filter.start 之後", a.tab().filter.as_str(), "x")
+        },
+    ));
+    v.push(step(
+        "直接打字：還原（篩選）",
+        |_| {
+            with_app(|a| {
+                a.config.list.typing = zing_core::config::Typing::Filter;
+                a.set_filter(String::new());
+            });
+        },
+        |_, a| {
+            expect("篩選", a.tab().filter.as_str(), "")?;
+            expect("設定", a.config.list.typing, zing_core::config::Typing::Filter)
+        },
+    ));
+    v.push(step(
+        "快速鍵情境：命令面板中 Ctrl+J 綁成 ui.down 後往下移動",
+        move |c| {
+            with_app(|a| a.config.keys.push((kc_in("Ctrl+J", Scope::Popup), "ui.down".into())));
+            key(c, "cs", letter('p'));
+            if let Some(h) = edit_hwnd() {
+                key_to(h, "c", letter('j'));
+                key_to(h, "c", letter('j'));
+            }
+        },
+        |_, a| {
+            palette_open(a)?;
+            let p = a.palette.as_ref().ok_or("面板已關閉")?;
+            expect("選取", p.sel, 2)?;
+            expect("輸入框", p.query.as_str(), "")
+        },
+    ));
+    v.push(step("快速鍵情境：Esc 關閉命令面板", |_| palette_key(VK_ESCAPE), |_, a| palette_closed(a)));
+    v.push(step(
+        "快速鍵編輯器：在清單的命令上錄下的按鍵屬於清單情境",
+        |c| {
+            with_app(|a| {
+                a.open_keys_panel();
+                if let Some(kp) = a.keys_panel_mut() {
+                    kp.query = "清單：向下".into();
+                    kp.recording = Some("cursor.down".into());
+                }
+            });
+            key(c, "s", letter('j'));
+        },
+        move |_, a| {
+            expect("清單的 Shift+J", a.config.command_for(kc_in("Shift+J", Scope::List)), Some("cursor.down"))?;
+            expect("全域的 Shift+J", a.config.command_for(kc_in("Shift+J", Scope::Global)), None)
+        },
+    ));
+    v.push(step("截圖：快速鍵編輯器（清單的命令）", |_| {}, |c, _| screenshot(c, "29-快速鍵情境")));
+    v.push(step(
+        "快速鍵情境：還原所有按鍵並關閉面板",
+        |_| {
+            with_app(|a| {
+                a.config.keys = a.config.config_keys.clone();
+                a.close_side_panels();
+            });
+        },
+        move |_, a| {
+            expect("面板", a.keys_panel().is_none(), true)?;
+            expect("清單的 Down", a.config.command_for(kc_in("Down", Scope::List)), Some("cursor.down"))?;
+            expect("清單的 J", a.config.command_for(kc_in("J", Scope::List)), None)
         },
     ));
 
