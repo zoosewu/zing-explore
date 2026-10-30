@@ -302,6 +302,8 @@ struct Driver {
     last_step: String,
     /// 測試開始前使用者的剪貼簿
     clip: ClipBackup,
+    /// 已回報過 zing 變成前景視窗（只回報第一次，即造成的那一步）
+    took_foreground: bool,
 }
 
 thread_local! {
@@ -318,6 +320,12 @@ pub fn start(hwnd: HWND, smoke: Smoke) {
         notes: Vec::new(),
     };
     crate::window::TEST_NO_HISTORY.store(true, std::sync::atomic::Ordering::Relaxed);
+    // 不搶前景：zing 由前景程序（終端機）啟動，有前景權限；模擬的點擊、輸入框的 SetFocus 會啟用視窗而變成前景，
+    // 之後使用者點別的視窗時輸入框失去焦點而關閉（步驟偶發失敗），打的字也會進到測試中的 zing。
+    // 鎖住後使用者按 Alt 或點視窗時系統會自動解除
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::LockSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::LSFW_LOCK);
+    }
     let clip = harness_io(clip_backup);
     let driver = Driver {
         clip,
@@ -329,6 +337,7 @@ pub fn start(hwnd: HWND, smoke: Smoke) {
         last_status: String::new(),
         violations: Vec::new(),
         last_step: String::new(),
+        took_foreground: false,
     };
     DRIVER.with(|d| *d.borrow_mut() = Some(driver));
     unsafe { SetTimer(Some(hwnd), TIMER_SMOKE, 10, None) };
@@ -387,6 +396,10 @@ impl Driver {
         let ms = elapsed.as_secs_f64() * 1000.0;
         match r {
             Some(Ok(())) => {
+                if !self.took_foreground && foreground_is_zing() {
+                    self.took_foreground = true;
+                    self.violations.push(format!("zing 變成前景視窗，冒煙測試不可搶前景（步驟：{}）", step.name));
+                }
                 self.results.push((step.name.clone(), true, ms, String::new()));
                 self.steps.pop_front();
                 self.steps.is_empty()
@@ -823,8 +836,20 @@ fn palette_top(a: &App) -> Option<String> {
 fn palette_open(a: &App) -> Result<(), String> {
     match (&a.palette, &a.edit) {
         (Some(_), Some(e)) if matches!(e.kind, EditKind::Palette) => Ok(()),
-        _ => Err("命令面板沒有開啟".into()),
+        _ => Err(edit_missing("命令面板沒有開啟", a)),
     }
+}
+
+/// 前景視窗是不是這個程序的（冒煙測試不可搶前景：使用者點別的視窗時，zing 的輸入框會因失去焦點而關閉）
+fn foreground_is_zing() -> bool {
+    let mut pid = 0;
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow(), Some(&mut pid)) };
+    pid == std::process::id()
+}
+
+/// 輸入框該出現卻沒有時的訊息：附上最後一次輸入框失去焦點的情形（焦點去了哪裡、前景視窗）
+fn edit_missing(what: &str, a: &App) -> String {
+    format!("{what}（輸入框：{}；最後一次失去焦點：{}）", if a.edit.is_some() { "有" } else { "無" }, crate::window::last_edit_blur())
 }
 
 fn palette_closed(a: &App) -> Result<(), String> {
@@ -1530,7 +1555,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     // ------------------------------------------------ 網址列
     v.push(step("網址列：Ctrl+L 開啟編輯", |c| key(c, "c", letter('l')), |_, a| match &a.edit {
         Some(e) if matches!(e.kind, EditKind::Address) => Ok(()),
-        _ => Err("網址列編輯框沒有出現".into()),
+        _ => Err(edit_missing("網址列編輯框沒有出現", a)),
     }));
     v.push(step(
         "網址列：輸入路徑後 Enter",
@@ -4138,7 +4163,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         move |_, a| at(a, &d)
     }));
     v.push(step("Lua：ask() 顯示輸入框", |_| exec("smoke_ask"), |_, a| {
-        if a.ask.is_some() && a.edit.is_some() { Ok(()) } else { Err(format!("沒有輸入框：ask={} 狀態={:?}", a.ask.is_some(), status(a))) }
+        if a.ask.is_some() && a.edit.is_some() { Ok(()) } else { Err(format!("{}；ask={} 狀態={:?}", edit_missing("沒有輸入框", a), a.ask.is_some(), status(a))) }
     }));
     v.push(
         step(

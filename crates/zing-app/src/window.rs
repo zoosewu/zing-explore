@@ -642,7 +642,11 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             // 命令面板：Ctrl+字母綁定的快速鍵（例如 Ctrl+J 往下）產生的控制字元不輸入、不發出提示音
             WM_CHAR if data & edit::LIST_KEYS != 0 && wparam.0 < 0x20 && wparam.0 != 0x08 => return LRESULT(0),
             // 失去焦點：重新命名、網址列、面板的欄位視為確認；命令面板、ask() 視為取消
-            WM_KILLFOCUS => done(data & edit::BLUR_CANCELS == 0),
+            WM_KILLFOCUS => {
+                #[cfg(feature = "smoke")]
+                record_edit_blur(parent, HWND(wparam.0 as _));
+                done(data & edit::BLUR_CANCELS == 0)
+            }
             _ => {}
         }
         DefSubclassProc(hwnd, msg, wparam, lparam)
@@ -670,6 +674,39 @@ pub fn exclude_from_stall<R>(f: impl FnOnce() -> R) -> R {
     let r = f();
     EXCLUDED.with(|e| e.set(e.get() + t.elapsed()));
     r
+}
+
+#[cfg(feature = "smoke")]
+thread_local! {
+    /// 最後一次輸入框失去焦點時焦點去了哪裡、前景視窗是誰（冒煙測試的輸入框步驟失敗時附在訊息中）
+    static LAST_EDIT_BLUR: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+#[cfg(feature = "smoke")]
+fn record_edit_blur(main: HWND, to: HWND) {
+    fn describe(main: HWND, h: HWND) -> String {
+        if h.0.is_null() {
+            return "（無）".into();
+        }
+        if h == main {
+            return "主視窗".into();
+        }
+        let mut class = [0u16; 128];
+        let n = unsafe { GetClassNameW(h, &mut class) }.max(0) as usize;
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+        let own = if pid == std::process::id() { "本程序" } else { "其他程序" };
+        format!("{}（{own} {pid}）", String::from_utf16_lossy(&class[..n]))
+    }
+    let fg = unsafe { GetForegroundWindow() };
+    let text = format!("焦點給了 {}，前景視窗是 {}", describe(main, to), describe(main, fg));
+    LAST_EDIT_BLUR.with(|b| *b.borrow_mut() = text);
+}
+
+/// 冒煙測試：最後一次輸入框失去焦點的情形
+#[cfg(feature = "smoke")]
+pub fn last_edit_blur() -> String {
+    LAST_EDIT_BLUR.with(|b| b.borrow().clone())
 }
 
 /// 這次訊息處理中有已知會阻塞、但受 COM 限制必須在 UI 執行緒的 Shell 呼叫（見 CLAUDE.md 已知缺口）
