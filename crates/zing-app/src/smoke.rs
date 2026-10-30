@@ -1553,6 +1553,41 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         let d = d.clone();
         move |_, a| at(a, &d)
     }));
+    v.push(step(
+        "網址列：再進入資料夾A",
+        {
+            let dir_a = dir_a.clone();
+            move |_| {
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, dir_a.clone(), true);
+                });
+            }
+        },
+        {
+            let dir_a = dir_a.clone();
+            move |_, a| at(a, &dir_a)
+        },
+    ));
+    v.push(step(
+        "網址列：點完整路徑中的上一層就到那一層（目前的資料夾不是可點的一層）",
+        {
+            let (d, dir_a) = (d.clone(), dir_a.clone());
+            move |c| {
+                let crumbs = with_app(|a| a.compute_layout().crumbs).unwrap_or_default();
+                let mid = |p: &str| crumbs.iter().find(|(_, q)| q.eq_ignore_ascii_case(p)).map(|(r, _)| ((r.l + r.r) / 2.0, (r.t + r.b) / 2.0));
+                c.notes.push(("crumb_self", mid(&dir_a).is_some().to_string()));
+                click(c, "", mid(&d));
+            }
+        },
+        {
+            let d = d.clone();
+            move |c, a| {
+                expect("目前的資料夾可以點", c.note("crumb_self"), Some("false"))?;
+                at(a, &d)
+            }
+        },
+    ));
 
     // ------------------------------------------------ 分頁、窗格、樹狀列
     v.push(step("分頁：Ctrl+T 新增", |c| key(c, "c", letter('t')), |_, a| {

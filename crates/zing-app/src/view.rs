@@ -222,8 +222,9 @@ impl App {
             right -= cw + 6.0;
         }
         lay.address = Rect::new(x + 6.0, cy - hh + 1.0, right.max(x + 120.0), cy + hh - 1.0);
-        if self.theme.chrome.address == AddressStyle::Breadcrumb {
-            self.layout_crumbs(&mut lay);
+        match self.theme.chrome.address {
+            AddressStyle::Breadcrumb => self.layout_crumbs(&mut lay),
+            AddressStyle::Path => self.layout_path_crumbs(&mut lay),
         }
 
         // 檔案作業面板與狀態列上的進度
@@ -302,6 +303,28 @@ impl App {
             let r = Rect::new(x, lay.address.t + 3.0, (x + widths[k]).min(inner_r), lay.address.b - 3.0);
             lay.crumbs.push((r, full.clone()));
             x += widths[k] + sep;
+        }
+    }
+
+    /// 完整路徑樣式：路徑中每一層（目前的資料夾除外）是可以點的範圍，與檔案總管的網址列相同點了就到那一層；
+    /// 目前的資料夾與右側空白處點了進入編輯
+    fn layout_path_crumbs(&self, lay: &mut Layout) {
+        let path = &self.tab().path;
+        let (inner_l, inner_r) = (lay.address.l + 8.0, lay.address.r - 8.0);
+        let segs = path::segments(path);
+        let mut start = 0;
+        for (_, full) in segs.iter().skip(1).take(segs.len().saturating_sub(2)) {
+            if !path.starts_with(full.as_str()) {
+                break;
+            }
+            let l = inner_l + self.gfx.measure(&path[..start], Font::Mono);
+            let r = (inner_l + self.gfx.measure(full, Font::Mono)).min(inner_r);
+            if l >= inner_r {
+                break;
+            }
+            lay.crumbs.push((Rect::new(l - 2.0, lay.address.t + 3.0, r + 2.0, lay.address.b - 3.0), full.clone()));
+            // 下一層從分隔的「\」之後開始（磁碟根目錄本身就以「\」結尾）
+            start = if full.ends_with('\\') { full.len() } else { full.len() + 1 };
         }
     }
 
@@ -569,6 +592,9 @@ impl App {
             // 完整路徑；點一下進入編輯（與麵包屑的空白處相同）
             let a = lay.address;
             let r = Rect::new(a.l + 8.0, a.t, a.r - 8.0, a.b);
+            if let Some((h, _)) = lay.crumbs.iter().find(|(_, p)| self.hover == Hit::Crumb(p.clone())) {
+                g.fill_round(*h, 3.0, c.hover);
+            }
             if tab.path.is_empty() {
                 // 「此電腦」用一般字型：等寬字型沒有中文字形，啟動的第一幀會多一次字型後備查詢（約 1 ms）
                 g.text(tr!("此電腦"), Font::Text, r, c.text_secondary);
@@ -581,7 +607,8 @@ impl App {
         }
         let segs = path::segments(&tab.path);
         let first = segs.len() - lay.crumbs.len();
-        for (k, (r, p)) in lay.crumbs.iter().enumerate() {
+        let crumbs = if self.theme.chrome.address == AddressStyle::Breadcrumb { &lay.crumbs[..] } else { &[] };
+        for (k, (r, p)) in crumbs.iter().enumerate() {
             if self.hover == Hit::Crumb(p.clone()) {
                 g.fill_round(*r, 4.0, c.hover);
             }
