@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "zing-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mlua",
  "serde",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "zing-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "regex",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "zing-index"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "windows",
  "zing-core",
