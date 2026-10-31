@@ -80,24 +80,28 @@ impl App {
             out.push(Row::Group(zing_core::i18n::tr(group)));
             out.extend(cmds.into_iter().map(|c| Row::Avail(c.to_string(), core::label_for(c).to_string())));
         }
-        if !self.scripts.commands.is_empty() {
-            out.push(Row::Group(tr!("腳本")));
-            out.extend(self.scripts.commands.iter().map(|(n, t)| Row::Avail(n.clone(), t.clone())));
-        }
+        out.push(Row::Group(tr!("腳本")));
+        out.extend(self.script_rows());
         out.push(Row::Custom);
         out
     }
 
     /// 搜尋結果：符合的命令（保留分組標題），最後是自訂命令
+    /// 「腳本」分組：最上方是重新載入，接著是腳本定義的命令
+    fn script_rows(&self) -> Vec<Row> {
+        let reload = Row::Avail(core::SCRIPT_RELOAD.to_string(), core::label_for(core::SCRIPT_RELOAD).to_string());
+        std::iter::once(reload).chain(self.scripts.commands.iter().map(|(n, t)| Row::Avail(n.clone(), t.clone()))).collect()
+    }
+
     fn bar_search_rows(&self, q: &str) -> Vec<Row> {
         let long = |cmd: &str| zing_core::builtin::preset(cmd).and_then(|p| p.title).map_or("", zing_core::i18n::tr);
         let hit = |cmd: &str, title: &str| [cmd, title, long(cmd)].iter().any(|s| s.to_lowercase().contains(q));
         let mut out = vec![Row::Header(tr!("搜尋結果"))];
         let mut groups: Vec<(&'static str, Vec<Row>)> = core::catalog()
             .into_iter()
-            .map(|(g, cmds)| (zing_core::i18n::tr(g), cmds.into_iter().filter(|c| hit(c, core::label_for(c))).map(|c| Row::Avail(c.to_string(), core::label_for(c).to_string())).collect()))
+            .map(|(g, cmds)| (zing_core::i18n::tr(g), cmds.into_iter().filter(|c| hit(c, &core::label_for(c))).map(|c| Row::Avail(c.to_string(), core::label_for(c).to_string())).collect()))
             .collect();
-        groups.push((tr!("腳本"), self.scripts.commands.iter().filter(|(n, t)| hit(n, t)).map(|(n, t)| Row::Avail(n.clone(), t.clone())).collect()));
+        groups.push((tr!("腳本"), self.script_rows().into_iter().filter(|r| matches!(r, Row::Avail(n, t) if hit(n, t))).collect()));
         let before = out.len();
         for (g, rows) in groups.into_iter().filter(|(_, r)| !r.is_empty()) {
             out.push(Row::Group(g));

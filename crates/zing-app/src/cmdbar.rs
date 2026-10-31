@@ -182,18 +182,20 @@ impl App {
                 if !items.is_empty() {
                     items.push(MenuItem::separator());
                 }
-                // 腳本定義的命令
-                let scripts: Vec<MenuItem> = self.scripts.commands.iter().map(|(name, title)| MenuItem {
+                // 腳本：最上方是重新載入，接著是腳本定義的命令
+                let mut scripts = vec![self.cmd_menu_item(core::SCRIPT_RELOAD)];
+                if !self.scripts.commands.is_empty() {
+                    scripts.push(MenuItem::separator());
+                }
+                scripts.extend(self.scripts.commands.iter().map(|(name, title)| MenuItem {
                     key: self.key_text(name),
                     cmd: Some(name.clone()),
                     icon: core::glyph("script"),
                     ..MenuItem::new(title.clone(), Action::Exec(name.clone()))
-                }).collect();
+                }));
                 let mut more = self.menu_entries(core::MORE_MENU);
-                if !scripts.is_empty() {
-                    let at = more.iter().position(|m| m.separator).unwrap_or(more.len());
-                    more.insert(at, MenuItem { sub: scripts, ..MenuItem::new(tr!("腳本"), Action::None) });
-                }
+                let at = more.iter().position(|m| m.separator).unwrap_or(more.len());
+                more.insert(at, MenuItem { sub: scripts, ..MenuItem::new(tr!("腳本"), Action::None) });
                 items.extend(more);
             } else {
                 items = self.menu_entries(core::menu(&it.cmd));

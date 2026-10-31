@@ -4,7 +4,11 @@
 //! - 呼叫時一併傳入當下狀態的快照（目前資料夾、選取、焦點）。
 //! - 每次執行有 CPU 時間上限（命令 30 秒、縮圖規則 0.3 秒），超過時以指令計數鉤子中止。
 //!   以腳本執行緒的 CPU 時間計算：等待 `ask()`、外部程式（`os.execute`）、檔案 I/O 不計，只攔下失控的迴圈。
-//! - 全域函式就是命令（標題取自上方的 `---` 註解）；`on_navigate`、`thumbnail` 是事件。
+//! - 全域函式就是命令（標題取自上方的 `---` 註解，命令列按鈕的名稱取自 `---@label`，沒有時同標題）；
+//!   `on_navigate`、`thumbnail` 是事件。
+//! - 監看 scripts 資料夾：.lua 檔案改變（存檔、新增、刪除、改名）後停 300 ms 沒有再變動就自動重新載入
+//!   （`TIMER_SCRIPT_RELOAD`）；只比對 .lua 的名稱、大小、修改時間，腳本寫 zing.log 不會觸發。
+//!   重新載入排在執行中的腳本之後，不會中斷它。
 //!
 //! release build 是 `panic = "abort"`：Lua 的錯誤（Windows 上是 SEH 展開的 longjmp）只要穿過 Rust 的堆疊框架，
 //! 程序就會直接結束。因此錯誤只能在 Lua 內部丟出、由 Lua 內部（pcall）接住：
@@ -89,6 +93,8 @@ impl Queue {
 pub struct Loaded {
     /// (命令名稱, 標題)
     pub commands: Vec<(String, String)>,
+    /// (命令名稱, 按鈕的名稱)：`---@label`，沒有時同標題
+    pub labels: Vec<(String, String)>,
     pub on_navigate: bool,
     pub errors: Vec<String>,
 }
@@ -102,6 +108,8 @@ pub struct Scripts {
     pub loaded: bool,
     /// 隔離模式（冒煙測試）：除錯器的管道名稱加上程序 ID
     isolated: bool,
+    /// scripts 資料夾的監看（第一次載入時開始）
+    watch: Option<services::Watcher>,
 }
 
 /// 縮圖執行緒用：腳本有 `thumbnail` 時才送出請求
@@ -123,6 +131,47 @@ pub fn scripts_dir() -> PathBuf {
     crate::settings::app_dir().join("scripts")
 }
 
+fn is_lua(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("lua"))
+}
+
+/// scripts 資料夾中 .lua 檔案的名稱、大小、修改時間（排序過，用來判斷是否改變）
+fn lua_files(dir: &Path) -> Vec<(PathBuf, u64, Option<std::time::SystemTime>)> {
+    zing_core::guard::io("讀取 scripts 資料夾");
+    let mut v: Vec<_> = std::fs::read_dir(dir)
+        .map(|r| {
+            r.flatten()
+                .filter(|e| is_lua(&e.path()))
+                .map(|e| {
+                    let m = e.metadata().ok();
+                    (e.path(), m.as_ref().map_or(0, |m| m.len()), m.and_then(|m| m.modified().ok()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// 監看 scripts 資料夾：.lua 檔案改變時送出 `Msg::ScriptsChanged`（其他檔案的寫入不算）
+fn watch_scripts(n: &Notifier) -> Option<services::Watcher> {
+    use windows::Win32::Storage::FileSystem::{FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE};
+    let dir = scripts_dir();
+    let path = dir.to_string_lossy().into_owned();
+    let n = n.clone();
+    services::watch_dir(&path, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE, move || {
+        let _ = std::fs::create_dir_all(&dir);
+        let mut last = lua_files(&dir);
+        move || {
+            let now = lua_files(&dir);
+            if now != last {
+                last = now;
+                n.send(Msg::ScriptsChanged);
+            }
+        }
+    })
+}
+
 impl Scripts {
     fn send(&mut self, n: &Notifier, job: Job) {
         if self.tx.is_none() {
@@ -142,6 +191,9 @@ impl Scripts {
     pub fn load(&mut self, n: &Notifier, isolated: bool) {
         self.isolated = isolated;
         self.send(n, Job::Load(scripts_dir()));
+        if self.watch.is_none() {
+            self.watch = watch_scripts(n);
+        }
     }
 
     pub fn has(&self, name: &str) -> bool {
@@ -163,6 +215,7 @@ impl Scripts {
     }
 
     pub fn on_loaded(&mut self, l: Loaded) {
+        zing_core::cmdbar::set_script_labels(l.labels);
         self.commands = l.commands;
         self.on_navigate = l.on_navigate;
         self.loaded = true;
@@ -388,14 +441,27 @@ fn append(file: &Path, text: &str) {
 }
 
 /// 函式上方的 `---` 註解當作命令面板的標題
-fn titles(src: &str) -> Vec<(String, String)> {
+/// 命令上方的 `---` 註解：第一行是標題，`---@label` 是命令列按鈕的名稱
+#[derive(Debug, Default, PartialEq)]
+struct Doc {
+    title: String,
+    label: Option<String>,
+}
+
+fn titles(src: &str) -> Vec<(String, Doc)> {
     let mut out = Vec::new();
-    let mut doc: Option<String> = None;
+    let mut doc: Option<Doc> = None;
     for line in src.lines() {
         let t = line.trim();
         if let Some(d) = t.strip_prefix("---") {
-            if doc.is_none() {
-                doc = Some(d.trim().to_string());
+            let d = d.trim();
+            let doc = doc.get_or_insert_with(Doc::default);
+            match d.strip_prefix("@label") {
+                Some(label) if label.is_empty() || label.starts_with(char::is_whitespace) => doc.label = Some(label.trim().to_string()),
+                // 其他標記（LuaLS 的 ---@param…）不是標題
+                _ if d.starts_with('@') => {}
+                _ if doc.title.is_empty() => doc.title = d.to_string(),
+                _ => {}
             }
             continue;
         }
@@ -733,7 +799,7 @@ fn add_process_fns(lua: &Lua) -> mlua::Result<()> {
 }
 
 fn load(dir: &Path, n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -> (Option<Lua>, Loaded) {
-    let mut loaded = Loaded { commands: Vec::new(), on_navigate: false, errors: Vec::new() };
+    let mut loaded = Loaded { commands: Vec::new(), labels: Vec::new(), on_navigate: false, errors: Vec::new() };
     let _ = std::fs::create_dir_all(dir.join(".zing"));
     write_if_changed(&dir.join(".zing").join("zing.d.lua"), &scriptapi::luals_meta(zing_core::i18n::lang()));
     // 沒有或仍是舊版 zing 寫的（使用者沒改過）時寫入新版
@@ -757,7 +823,7 @@ fn load(dir: &Path, n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -
     let baseline: std::collections::HashSet<String> =
         lua.globals().pairs::<Value, Value>().flatten().map(|(k, _)| text(&k)).collect();
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|r| r.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("lua"))).collect())
+        .map(|r| r.flatten().map(|e| e.path()).filter(|p| is_lua(p)).collect())
         .unwrap_or_default();
     files.sort();
     let mut docs = Vec::new();
@@ -781,7 +847,10 @@ fn load(dir: &Path, n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -
         let k = k.to_string_lossy();
         if matches!(v, Value::Function(_)) && !baseline.contains(&k) && !k.starts_with("__") && !HOOK_NAMES.contains(&k.as_str())
         {
-            let title = docs.iter().find(|(n, _)| *n == k).map_or_else(|| k.clone(), |(_, t)| t.clone());
+            let doc = docs.iter().find(|(n, _)| *n == k).map(|(_, d)| d);
+            let title = doc.map(|d| d.title.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| k.clone());
+            let label = doc.and_then(|d| d.label.clone()).filter(|l| !l.is_empty()).unwrap_or_else(|| title.clone());
+            loaded.labels.push((k.clone(), label));
             loaded.commands.push((k, title));
         }
     }
@@ -812,6 +881,21 @@ impl crate::app::App {
             sel: tab.selected_entries().into_iter().map(|e| tab.full_path(e)).collect(),
             focus: tab.focused_entry().filter(|_| !tab.view.is_empty()).map(|e| tab.full_path(e)),
         }
+    }
+
+    /// .lua 檔案改變：停 300 ms 沒有再變動才重新載入（存檔時編輯器可能分好幾次寫入）
+    pub fn on_scripts_changed(&mut self) {
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), crate::app::TIMER_SCRIPT_RELOAD, 300, None);
+        }
+    }
+
+    pub fn on_script_reload_timer(&mut self) {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(self.hwnd), crate::app::TIMER_SCRIPT_RELOAD);
+        }
+        let n = self.notifier.clone();
+        self.scripts.load(&n, self.isolated);
     }
 
     pub fn on_scripts_loaded(&mut self, l: Loaded) {
@@ -1462,6 +1546,10 @@ mod tests {
     #[test]
     fn command_titles_from_doc_comments() {
         let t = titles("--- 整理相片\nfunction sort_photos()\nend\nlocal function helper() end\n--- 另一個\nother = function() end\nfunction no_doc() end");
-        assert_eq!(t, vec![("sort_photos".to_string(), "整理相片".to_string()), ("other".to_string(), "另一個".to_string())]);
+        let doc = |title: &str, label: Option<&str>| Doc { title: title.into(), label: label.map(Into::into) };
+        assert_eq!(t, vec![("sort_photos".to_string(), doc("整理相片", None)), ("other".to_string(), doc("另一個", None))]);
+        // ---@label 是按鈕的名稱，其他標記不是標題
+        let t = titles("---@param x string\n--- 多層解壓縮\n---@label 解壓縮\nfunction extract(x) end\n---@labels 不是\n--- 另一個\nfunction other() end");
+        assert_eq!(t, vec![("extract".to_string(), doc("多層解壓縮", Some("解壓縮"))), ("other".to_string(), doc("另一個", None))]);
     }
 }

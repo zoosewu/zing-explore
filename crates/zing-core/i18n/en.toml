@@ -815,6 +815,7 @@
 "歡迎畫面…" = "Welcome…"
 "歡迎畫面（常用設定）" = "Welcome screen (common settings)"
 "開啟歡迎畫面（第一次啟動時顯示的常用設定）" = "Open the welcome screen (the common settings shown on first launch)"
+"重新載入腳本" = "Reload scripts"
 "開始使用" = "Get started"
 
 # 情境快速鍵（keymap::Scope、default_keys.toml）

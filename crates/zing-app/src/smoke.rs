@@ -4089,6 +4089,47 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     );
     v.push(
         step(
+            "Lua：存檔後自動重新載入（不執行 script.reload），按鈕名稱取自 ---@label",
+            |_| {
+                let dir = crate::script::scripts_dir();
+                let text = format!("{SMOKE_LUA}
+--- 自動載入
+---@label 自動
+function smoke_auto() end
+");
+                let _ = harness_io(|| std::fs::write(dir.join("smoke.lua"), text));
+            },
+            |_, a| {
+                let want = ("smoke_auto".to_string(), "自動載入".to_string());
+                if !a.scripts.commands.contains(&want) {
+                    return Err(format!("命令：{:?}", a.scripts.commands));
+                }
+                // 命令列按鈕的名稱：---@label，沒有時是標題（不是函式名稱）
+                expect("按鈕名稱", zing_core::cmdbar::Item::new("smoke_auto").title(), "自動".to_string())?;
+                expect("沒有 @label", zing_core::cmdbar::Item::new("smoke_cmd").title(), "冒煙測試命令".to_string())
+            },
+        )
+        .slow(),
+    );
+    v.push(step(
+        "Lua：「⋯」的「腳本」最上方是重新載入，接著是腳本的命令",
+        |c| {
+            click(c, "", bar_button_pos(zing_core::cmdbar::MENU_MORE));
+            hover_at(c, menu_item_pos(0, "腳本"));
+        },
+        |_, a| {
+            let m = a.menu.as_ref().ok_or("選單沒有開啟")?;
+            let sub = m.levels.get(1).ok_or("沒有子選單")?;
+            expect("第一項", sub.items.first().and_then(|i| i.cmd.as_deref()), Some("script.reload"))?;
+            expect("腳本的命令", sub.items.iter().any(|i| i.cmd.as_deref() == Some("smoke_auto")), true)
+        },
+    ));
+    v.push(step("Lua：Esc 關閉選單", |c| {
+        key(c, "", VK_ESCAPE);
+        key(c, "", VK_ESCAPE);
+    }, |_, a| expect("關閉", a.menu.is_none(), true)));
+    v.push(
+        step(
             "Lua：執行自訂命令（sel、管線、msg）",
             |c| {
                 click(c, "", row_pos("a2.txt"));

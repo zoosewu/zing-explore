@@ -5,6 +5,8 @@
 //! - 特殊的命令：`-` 分隔線；`menu.new`、`menu.sort`、`menu.view`、`menu.more` 開啟下拉選單。
 //! - 圖示：空字串用命令的預設圖示；`glyph:名稱` 是 `GLYPHS` 中的 Fluent 圖示；其他視為圖片檔的路徑。
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 pub const SEPARATOR: &str = "-";
@@ -41,7 +43,7 @@ impl Item {
 
     /// 顯示的名稱
     pub fn title(&self) -> String {
-        if self.label.is_empty() { label_for(&self.cmd).to_string() } else { crate::i18n::tr_str(&self.label).into_owned() }
+        if self.label.is_empty() { label_for(&self.cmd).into_owned() } else { crate::i18n::tr_str(&self.label).into_owned() }
     }
 
     /// 圖示：Fluent 字碼或圖片路徑
@@ -224,12 +226,25 @@ const LABELS: &[(&str, &str)] = &[
     (MENU_MORE, tr_key!("更多")),
 ];
 
-/// 命令的顯示名稱：短名稱、命令面板的標題，都沒有就是命令本身
-pub fn label_for(cmd: &str) -> &str {
-    if let Some((_, l)) = LABELS.iter().find(|(c, _)| *c == cmd) {
-        return crate::i18n::tr(l);
+/// 腳本命令的顯示名稱（函式名稱, 名稱）：`---@label`，沒有時是 `---` 的標題。腳本載入後由程式設定
+static SCRIPT_LABELS: std::sync::RwLock<Vec<(String, String)>> = std::sync::RwLock::new(Vec::new());
+
+pub fn set_script_labels(labels: Vec<(String, String)>) {
+    if let Ok(mut l) = SCRIPT_LABELS.write() {
+        *l = labels;
     }
-    crate::builtin::preset(cmd).and_then(|p| p.short.or(p.title)).map_or(cmd, |t| crate::i18n::tr(t))
+}
+
+/// 命令的顯示名稱：短名稱、命令面板的標題、腳本的名稱，都沒有就是命令本身
+pub fn label_for(cmd: &str) -> Cow<'_, str> {
+    if let Some((_, l)) = LABELS.iter().find(|(c, _)| *c == cmd) {
+        return Cow::Borrowed(crate::i18n::tr(l));
+    }
+    if let Some(t) = crate::builtin::preset(cmd).and_then(|p| p.short.or(p.title)) {
+        return Cow::Borrowed(crate::i18n::tr(t));
+    }
+    let script = SCRIPT_LABELS.read().ok().and_then(|l| l.iter().find(|(c, _)| c == cmd).map(|(_, t)| t.clone()));
+    script.map_or(Cow::Borrowed(cmd), Cow::Owned)
 }
 
 /// Fluent 圖示（自訂按鈕時可選）：（名稱, 字元）
@@ -300,12 +315,16 @@ pub fn default_icon(cmd: &str) -> Option<&'static str> {
 
 pub use crate::builtin::group_of;
 
-/// 自訂面板「可加入的命令」的分組：（分組名稱, 命令）。腳本的命令由程式另外加上
+/// 腳本分組最上方的命令（「⋯」選單的「腳本」、自訂面板的「腳本」分組；後面接腳本定義的命令）
+pub const SCRIPT_RELOAD: &str = "script.reload";
+
+/// 自訂面板「可加入的命令」的分組：（分組名稱, 命令）。「腳本」分組（`SCRIPT_RELOAD` 與腳本的命令）由程式另外加上
 pub fn catalog() -> Vec<(&'static str, Vec<&'static str>)> {
     let mut out: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
     let cmds = [MENU_NEW, MENU_SORT, MENU_VIEW, MENU_MORE, "file.newfile", TERMINAL, "cmdbar.edit"]
         .into_iter()
-        .chain(crate::builtin::palette().map(|(c, _)| c));
+        .chain(crate::builtin::palette().map(|(c, _)| c))
+        .filter(|&c| c != SCRIPT_RELOAD);
     for cmd in cmds {
         let g = if cmd.starts_with("menu.") && crate::builtin::Cmd::of_script(cmd).is_none() { tr_key!("選單") } else { group_of(cmd) };
         match out.iter_mut().find(|(n, _)| *n == g) {

@@ -51,7 +51,7 @@ impl App {
     fn tip_for(&self, hit: &Hit) -> Option<(TipText, Rect)> {
         let lay = &self.layout;
         match *hit {
-            Hit::Nav(i) => Some((self.tip_text(label_for(NAV[i]), NAV[i], true), lay.nav[i])),
+            Hit::Nav(i) => Some((self.tip_text(&label_for(NAV[i]), NAV[i], true), lay.nav[i])),
             Hit::SettingsGear => Some((self.tip_text(tr!("設定"), "settings.open", false), lay.settings_btn)),
             Hit::CmdButton(k) => {
                 let bl = lay.cmdbar.as_ref()?;

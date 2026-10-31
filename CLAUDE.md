@@ -178,6 +178,10 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   同一個訊息中被測程式碼的時間照樣監看；檢查階段整段扣除。
 - Lua 腳本（`script.rs`、`prelude.lua`）：
   - 腳本只在腳本執行緒執行；UI 只送工作，腳本要求的動作以訊息送回。每次呼叫都要設定時間上限。
+  - scripts 資料夾以 `services::watch_dir` 監看，.lua 的名稱、大小、修改時間改變後停 300 ms 自動重新載入（腳本寫的
+    zing.log 不算）。「⋯」選單與自訂命令列的「腳本」分組最上方是 `script.reload`（`cmdbar::SCRIPT_RELOAD`）。
+  - 腳本命令的標題是 `---` 註解的第一行，命令列按鈕的名稱是 `---@label`（沒有時同標題）：載入後以
+    `cmdbar::set_script_labels` 登記，`cmdbar::label_for` 查得到，所以按鈕的 `label` 留空就跟著腳本改。
   - release 是 `panic = "abort"`，Lua 的錯誤不可穿過 Rust 的堆疊框架：Rust 提供給 Lua 的函式一律經 `script::lua_fn`
     （參數只收 `Value`、不回傳錯誤）；不用 mlua 的 `set_hook`（時間上限在 prelude 用 `debug.sethook`）；Rust 端讀寫表格只用
     `raw_get`／`raw_set`。`clippy.toml` 的 `disallowed-methods` 會擋下違規；冒煙測試的 debug build 用 `debug-abort` profile

@@ -13,7 +13,7 @@ use zing_core::sort::{SortSpec, sorted_order};
 use zing_core::text::{natural_cmp, wide_z};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Storage::FileSystem::{
-    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
+    FILE_NOTIFY_CHANGE, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
     FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification,
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
@@ -114,6 +114,8 @@ pub enum Msg {
     IndexOutdated { installed: u32 },
     /// 歡迎畫面開啟時查詢索引服務是否已安裝的結果
     IndexInstalled(bool),
+    /// scripts 資料夾中的 .lua 檔案改變了（script.rs 的監看）
+    ScriptsChanged,
     /// 檢查新版本的結果：最新版的標籤（沒有任何 Release 時為 None）、略過的版本；`manual` 為 update.check 命令
     UpdateChecked { latest: Result<Option<String>, String>, skipped: Option<zing_core::update::Version>, manual: bool },
     /// 下載更新的進度（0–100）
@@ -356,22 +358,25 @@ pub fn watch(path: &str, n: &Notifier, tab: TabId, generation: u64) -> Option<Wa
     if path.is_empty() {
         return None;
     }
+    let filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE;
+    let n = n.clone();
+    watch_dir(path, filter, move || move || n.send(Msg::DirChanged { tab, generation }))
+}
+
+/// 監看資料夾（不含子資料夾）。`start` 在監看執行緒上、開啟監看之前執行（網路路徑可能很慢，不能卡住 UI），
+/// 回傳每次 `filter` 的變更發生時呼叫的函式。Drop 時停止
+pub fn watch_dir<F: FnMut()>(path: &str, filter: FILE_NOTIFY_CHANGE, start: impl FnOnce() -> F + Send + 'static) -> Option<Watcher> {
     let stop = unsafe { CreateEventW(None, true, false, None).ok()? };
     let stop_raw = stop.0 as isize;
     let path_w = wide_z(path);
-    let n = n.clone();
     let spawned = std::thread::Builder::new().name("zing-watch".into()).spawn(move || {
         let stop = HANDLE(stop_raw as _);
-        // 在背景開啟監看：網路路徑可能很慢，不能卡住 UI
-        let filter = FILE_NOTIFY_CHANGE_FILE_NAME
-            | FILE_NOTIFY_CHANGE_DIR_NAME
-            | FILE_NOTIFY_CHANGE_SIZE
-            | FILE_NOTIFY_CHANGE_LAST_WRITE;
+        let mut on_change = start();
         if let Ok(change) = unsafe { FindFirstChangeNotificationW(PCWSTR(path_w.as_ptr()), false, filter) } {
             loop {
                 let r = unsafe { WaitForMultipleObjects(&[stop, change], false, INFINITE) };
                 if r.0 == WAIT_OBJECT_0.0 + 1 {
-                    n.send(Msg::DirChanged { tab, generation });
+                    on_change();
                     if unsafe { FindNextChangeNotification(change) }.is_err() {
                         break;
                     }

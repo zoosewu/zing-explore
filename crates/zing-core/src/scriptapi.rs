@@ -215,9 +215,12 @@ const MD_HEAD: &str = r#"# Lua 腳本
 
 全域函式就是命令：出現在命令面板（標題取自函式上方的 `---` 註解），可在設定檔綁定快速鍵或按鈕（`cmd = "函式名稱"`）。
 `local` 函式只是輔助用，不會成為命令。函式名稱只能用英文；標題可以是中文。
+`---@label` 是加到命令列時按鈕上的名稱（沒有時用標題）；改了腳本，按鈕上的名稱跟著改。
+腳本存檔後自動重新載入；也可以按「⋯」→「腳本」→「重新載入 Lua 腳本」。
 
 ```lua
 --- 把選取的相片移到「相片\年-月」
+---@label 整理相片
 function sort_photos()
   local dest = ask("目的資料夾", path.join(cwd(), "相片"))
   if not dest then return end
@@ -262,9 +265,12 @@ Scripts can use the complete Lua 5.4 standard library (including `io` and `os`).
 
 Global functions are commands: they appear in the command palette (the title comes from the `---` comment above the function) and can be bound to keys or buttons in the config file (`cmd = "function_name"`).
 `local` functions are helpers only and do not become commands. Function names must be ASCII; titles can be in any language.
+`---@label` is the name shown on the button when the command is added to the command bar (the title is used when it is missing); when you change the script, the button follows.
+Scripts are reloaded automatically when saved; you can also use "⋯" → "Scripts" → "Reload Lua scripts".
 
 ```lua
 --- Move the selected photos to "Photos\year-month"
+---@label Sort photos
 function sort_photos()
   local dest = ask("Destination folder", path.join(cwd(), "Photos"))
   if not dest then return end
@@ -309,9 +315,12 @@ const MD_HEAD_JA: &str = r#"# Lua スクリプト
 
 グローバル関数がそのままコマンドになります：コマンドパレットに表示され（タイトルは関数の上の `---` コメント）、設定ファイルでショートカットキーやボタンに割り当てられます（`cmd = "関数名"`）。
 `local` 関数は補助用で、コマンドにはなりません。関数名には英字だけを使えます。タイトルは日本語でもかまいません。
+`---@label` はコマンドバーに追加したときのボタンの名前です（ないときはタイトル）。スクリプトを変えるとボタンの名前も変わります。
+スクリプトは保存すると自動的に再読み込みされます。「⋯」→「スクリプト」→「Lua スクリプトを再読み込み」でも再読み込みできます。
 
 ```lua
 --- 選択した写真を「写真\年-月」に移動
+---@label 写真を整理
 function sort_photos()
   local dest = ask("移動先のフォルダー", path.join(cwd(), "写真"))
   if not dest then return end

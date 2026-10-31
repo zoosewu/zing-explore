@@ -59,6 +59,8 @@ pub const TIMER_TIP: usize = 14;
 pub const TIMER_MENU_PREPARE: usize = 15;
 /// 清單的按鍵停住後預先準備鍵盤開啟的右鍵選單
 pub const TIMER_KEY_MENU_PREPARE: usize = 16;
+/// scripts 資料夾的 .lua 改變後停一下才重新載入（script.rs）
+pub const TIMER_SCRIPT_RELOAD: usize = 17;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -1036,6 +1038,7 @@ impl App {
             Msg::IndexAction { text, error, changed } => self.on_index_action(text, error, changed),
             Msg::IndexOutdated { installed } => self.on_index_outdated(installed),
             Msg::IndexInstalled(installed) => self.on_index_installed(installed),
+            Msg::ScriptsChanged => self.on_scripts_changed(),
             Msg::UpdateChecked { latest, skipped, manual } => self.on_update_checked(latest, skipped, manual),
             Msg::UpdateProgress { percent } => self.on_update_progress(percent),
             Msg::UpdateInstalled(result) => self.on_update_installed(result),

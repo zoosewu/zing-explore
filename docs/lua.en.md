@@ -12,9 +12,12 @@ Scripts can use the complete Lua 5.4 standard library (including `io` and `os`).
 
 Global functions are commands: they appear in the command palette (the title comes from the `---` comment above the function) and can be bound to keys or buttons in the config file (`cmd = "function_name"`).
 `local` functions are helpers only and do not become commands. Function names must be ASCII; titles can be in any language.
+`---@label` is the name shown on the button when the command is added to the command bar (the title is used when it is missing); when you change the script, the button follows.
+Scripts are reloaded automatically when saved; you can also use "⋯" → "Scripts" → "Reload Lua scripts".
 
 ```lua
 --- Move the selected photos to "Photos\year-month"
+---@label Sort photos
 function sort_photos()
   local dest = ask("Destination folder", path.join(cwd(), "Photos"))
   if not dest then return end
