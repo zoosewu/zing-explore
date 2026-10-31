@@ -196,7 +196,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_LEFT, VK_MENU, VK_OEM_5, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, ICON_BIG, KillTimer, SendMessageW, SetTimer, WM_CHAR, WM_COPYDATA, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    GetClientRect, ICON_BIG, KillTimer, SendMessageW, SetTimer, WM_ACTIVATE, WM_CHAR, WM_COPYDATA, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTEXT, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONUP,
 };
 
@@ -1686,6 +1686,11 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         if scoped { return Err("列出了只在特定情境有作用的命令".into()) }
         if n >= global { Ok(()) } else { Err(format!("只列出 {n} 個命令")) }
     }));
+    v.push(step(
+        "命令面板：主視窗被啟用時輸入框保留焦點（zing 不是前景時開啟輸入框會啟用主視窗）",
+        |c| send(c.hwnd, WM_ACTIVATE, 1, 0),
+        |_, a| palette_open(a),
+    ));
     v.push(step("命令面板：輸入文字篩選", |_| palette_type("隱藏檔"), |_, a| {
         expect("第一項", palette_top(a).as_deref(), Some("view.togglehidden"))
     }));

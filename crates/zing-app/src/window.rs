@@ -1088,6 +1088,13 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         WM_ACTIVATE => {
             if wparam.0 & 0xFFFF != 0 {
                 with_app(|a| a.preview.host.raise());
+                // DefWindowProc 會把焦點設給主視窗，開著的輸入框就失去焦點而關閉（zing 不是前景時開啟輸入框，
+                // SetFocus 會先啟用主視窗）：焦點留在輸入框。這時通常正在建立輸入框（App 借用中），所以直接找子視窗
+                let edit = unsafe { FindWindowExW(Some(hwnd), None, w!("EDIT"), PCWSTR::null()) };
+                if let Ok(edit) = edit {
+                    focus_edit(edit);
+                    return Some(LRESULT(0));
+                }
             }
             None
         }
