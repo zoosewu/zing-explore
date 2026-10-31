@@ -228,6 +228,7 @@ impl App {
                 let pane = self.active_pane;
                 self.navigate(pane, p, true);
             }
+            Hit::CrumbMenu(p) => self.open_crumb_menu(p),
             Hit::Address => crate::window::begin_address_edit(self),
             Hit::FilterChip => self.set_filter(String::new()),
             Hit::CmdButton(k) => {
@@ -467,7 +468,10 @@ impl App {
     pub fn on_wheel(&mut self, x: f32, y: f32, delta: i16, ctrl: bool) {
         self.hide_tip();
         if self.menu.is_some() {
-            self.close_menu();
+            // 在選單上捲動選單（放不下所有項目時），在選單外關閉
+            if !self.menu_wheel(x, y, delta) {
+                self.close_menu();
+            }
             return;
         }
         if self.welcome.is_some() {

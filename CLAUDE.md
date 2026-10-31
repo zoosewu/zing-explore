@@ -99,6 +99,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 資料夾底下有開啟中的監看（分頁、樹狀列）時，Windows 拒絕改名、移動、刪除到資源回收筒（監看它自己不影響）。
   `App::submit_op` 送出前暫停 `FileOp::vacated` 之下的監看（`pause_watches`），`Msg::FileOpDone` 的 `vacated` 恢復；
   新增會移走項目的作業時同步更新 `vacated`。
+- 網址列每一層後面的「›」（完整路徑樣式是分隔的「\」，`Layout::crumb_menus`）在背景列出那一層的子資料夾
+  （`services::crumb_folders`），回來時「›」還在才開啟選單，目前路徑經過的打勾。
 - 內容對話方塊一律經 `App::show_properties`（命令、樹狀列的右鍵選單、Alt+雙擊清單或樹狀列；冒煙測試以 `ctxmenu::TEST_PROPERTIES` 記下對象）。
 - 右鍵選單、內容對話方塊、剪貼簿一律交給 `ShellHost`（shellhost.rs）：獨立的 STA 執行緒，UI 只送請求不等待，結果以訊息送回。主機忙碌超過 3 秒時下一個請求會改用新主機。
   右鍵選單最慢的是 `QueryContextMenu`（Windows 查詢動詞，文字檔約 200 ms；第一次載入擴充功能可達數秒），所以游標在清單停住 150 ms
@@ -144,7 +146,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   `App::run` 對 `Cmd` 窮舉，漏了實作會編譯失敗；命令面板的標題與命令列的短名稱在同一檔的 `PRESETS`。
   新增命令時同步加進 `zing_core::cmdbar` 的選單（或確認已在其中）；
   不能用時在 `App::cmd_disabled` 回傳原因（按鈕變灰、提示顯示原因）。圖示按鈕都要有提示（`tooltip.rs`）。
-  下拉選單用 `menu.rs`（D2D 自繪、跟著主題）。命令列可只用鍵盤操作（F10，`App::bar_focus`、`cmdbar_key`），新的按鈕種類
+  下拉選單用 `menu.rs`（D2D 自繪、跟著主題；項目比視窗高時以滾輪、方向鍵捲動）。命令列可只用鍵盤操作（F10，`App::bar_focus`、`cmdbar_key`），新的按鈕種類
   也要能用鍵盤啟動。右側面板（設定、主題、自訂命令列、快速鍵）是 `App::side` 一個欄位（`sidepanel.rs`），一次只開一個；
   宿主只經過 `side_hit`／`side_click`／`side_wheel`／`side_escape`／`paint_side`，捲動、列的位置、捲到看得見（`side_reveal`，
   冒煙測試也用它找列）、底部按鈕是共用的。新面板加一個 `SidePanel` 變體與這些分派，不要再在 view.rs、input.rs 各接一次。

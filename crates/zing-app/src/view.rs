@@ -49,6 +49,8 @@ pub struct Layout {
     pub settings_btn: Rect,
     pub address: Rect,
     pub crumbs: Vec<(Rect, String)>,
+    /// 每一層後面的「›」（完整路徑樣式是分隔的「\」）：點了列出那一層的子資料夾（範圍, 那一層的路徑）
+    pub crumb_menus: Vec<(Rect, String)>,
     pub crumb_overflow: bool,
     pub filter_chip: Option<Rect>,
     /// 篩選標籤可用位置的右緣（寬度 0；還沒有篩選時也有），輸入法組字視窗以此對齊
@@ -81,6 +83,8 @@ pub enum Hit {
     WelcomePanel,
     Nav(usize),
     Crumb(String),
+    /// 網址列某一層後面的「›」：列出那一層的子資料夾
+    CrumbMenu(String),
     Address,
     FilterChip,
     Button(usize),
@@ -302,29 +306,40 @@ impl App {
         for (k, (_, full)) in segs.iter().enumerate().skip(first) {
             let r = Rect::new(x, lay.address.t + 3.0, (x + widths[k]).min(inner_r), lay.address.b - 3.0);
             lay.crumbs.push((r, full.clone()));
+            if r.r + sep <= inner_r {
+                lay.crumb_menus.push((Rect::new(r.r, r.t, r.r + sep, r.b), full.clone()));
+            }
             x += widths[k] + sep;
         }
     }
 
     /// 完整路徑樣式：路徑中每一層（目前的資料夾除外）是可以點的範圍，與檔案總管的網址列相同點了就到那一層；
-    /// 目前的資料夾與右側空白處點了進入編輯
+    /// 每一層後面分隔的「\」點了列出那一層的子資料夾（檔案總管的「›」）；目前的資料夾與右側空白處點了進入編輯
     fn layout_path_crumbs(&self, lay: &mut Layout) {
         let path = &self.tab().path;
         let (inner_l, inner_r) = (lay.address.l + 8.0, lay.address.r - 8.0);
+        let (t, b) = (lay.address.t + 3.0, lay.address.b - 3.0);
+        let x = |i: usize| (inner_l + self.gfx.measure(&path[..i], Font::Mono)).min(inner_r);
         let segs = path::segments(path);
         let mut start = 0;
-        for (_, full) in segs.iter().skip(1).take(segs.len().saturating_sub(2)) {
+        for (k, (_, full)) in segs.iter().enumerate().skip(1) {
             if !path.starts_with(full.as_str()) {
                 break;
             }
-            let l = inner_l + self.gfx.measure(&path[..start], Font::Mono);
-            let r = (inner_l + self.gfx.measure(full, Font::Mono)).min(inner_r);
+            // 這一層的文字到 end 為止，後面是分隔的「\」（磁碟根目錄本身就以「\」結尾）
+            let end = full.trim_end_matches('\\').len();
+            let (l, r) = (x(start), x(end));
             if l >= inner_r {
                 break;
             }
-            lay.crumbs.push((Rect::new(l - 2.0, lay.address.t + 3.0, r + 2.0, lay.address.b - 3.0), full.clone()));
-            // 下一層從分隔的「\」之後開始（磁碟根目錄本身就以「\」結尾）
-            start = if full.ends_with('\\') { full.len() } else { full.len() + 1 };
+            if k + 1 < segs.len() {
+                lay.crumbs.push((Rect::new(l - 2.0, t, r, b), full.clone()));
+            }
+            if end < path.len() && r < inner_r {
+                // 「\」很窄，點擊範圍左右各放寬一點
+                lay.crumb_menus.push((Rect::new(r, t, x(end + 1) + 2.0, b), full.clone()));
+            }
+            start = end + 1;
         }
     }
 
@@ -412,6 +427,9 @@ impl App {
             }
             if lay.filter_chip.is_some_and(|r| r.contains(x, y)) {
                 return Hit::FilterChip;
+            }
+            if let Some((_, p)) = lay.crumb_menus.iter().find(|(r, _)| r.contains(x, y)) {
+                return Hit::CrumbMenu(p.clone());
             }
             if let Some((_, p)) = lay.crumbs.iter().find(|(r, _)| r.contains(x, y)) {
                 return Hit::Crumb(p.clone());
@@ -595,6 +613,9 @@ impl App {
             if let Some((h, _)) = lay.crumbs.iter().find(|(_, p)| self.hover == Hit::Crumb(p.clone())) {
                 g.fill_round(*h, 3.0, c.hover);
             }
+            if let Some((h, _)) = lay.crumb_menus.iter().find(|(_, p)| self.hover == Hit::CrumbMenu(p.clone())) {
+                g.fill_round(*h, 3.0, c.hover);
+            }
             if tab.path.is_empty() {
                 // 「此電腦」用一般字型：等寬字型沒有中文字形，啟動的第一幀會多一次字型後備查詢（約 1 ms）
                 g.text(tr!("此電腦"), Font::Text, r, c.text_secondary);
@@ -615,9 +636,12 @@ impl App {
             let name = &segs[first + k].0;
             let last = k + 1 == lay.crumbs.len();
             g.text(name, if last { Font::Bold } else { Font::Text }, Rect::new(r.l + 6.0, r.t, r.r, r.b), c.text);
-            if !last {
-                g.text(glyph::CHEVRON_RIGHT, Font::GlyphSmall, Rect::new(r.r, r.t, r.r + 16.0, r.b), c.text_secondary);
+        }
+        for (r, p) in lay.crumb_menus.iter().filter(|_| self.theme.chrome.address == AddressStyle::Breadcrumb) {
+            if self.hover == Hit::CrumbMenu(p.clone()) {
+                g.fill_round(*r, 4.0, c.hover);
             }
+            g.text(glyph::CHEVRON_RIGHT, Font::GlyphSmall, Rect::new(r.l + 2.0, r.t, r.r, r.b), c.text_secondary);
         }
 
         if let Some(chip) = lay.filter_chip {

@@ -27,6 +27,8 @@ pub enum Action {
     Update(crate::update::Choice),
     /// 設定 `PREFS[i]` 為這個值（歡迎畫面的選項，welcome.rs）
     Pref(usize, String),
+    /// 目前的窗格切換到這個資料夾（網址列「›」的子資料夾）
+    Go(String),
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +59,8 @@ pub struct Level {
     pub items: Vec<MenuItem>,
     pub rect: Rect,
     pub hover: Option<usize>,
+    /// 項目比視窗高時捲動的距離（滾輪、鍵盤移動時捲到看得見）
+    pub scroll: f32,
 }
 
 pub struct Menu {
@@ -87,14 +91,15 @@ impl App {
             }
         }
         let w = 32.0 + label_w + if key_w > 0.0 { key_w + 32.0 } else { 0.0 } + 28.0;
+        // 比視窗高時只顯示放得下的部分，其餘捲動
         let h = items.iter().map(|i| self.item_h(i)).sum::<f32>() + PAD * 2.0;
-        (w.max(160.0), h)
+        (w.max(160.0), h.min(self.gfx.size().1 - 8.0))
     }
 
     /// 在 `anchor` 下方（放不下就上方）開啟選單
     pub fn open_menu(&mut self, items: Vec<MenuItem>, anchor: Rect) {
         let rect = self.place_menu(&items, anchor.l, anchor.b + 2.0, Some(anchor.t - 2.0));
-        self.menu = Some(Menu { levels: vec![Level { items, rect, hover: None }] });
+        self.menu = Some(Menu { levels: vec![Level { items, rect, hover: None, scroll: 0.0 }] });
         self.hide_tip();
         self.invalidate();
     }
@@ -102,7 +107,7 @@ impl App {
     /// 在 (x, y) 開啟選單（右鍵選單）
     pub fn open_menu_at(&mut self, items: Vec<MenuItem>, x: f32, y: f32) {
         let rect = self.place_menu(&items, x, y, None);
-        self.menu = Some(Menu { levels: vec![Level { items, rect, hover: None }] });
+        self.menu = Some(Menu { levels: vec![Level { items, rect, hover: None, scroll: 0.0 }] });
         self.hide_tip();
         self.invalidate();
     }
@@ -121,9 +126,9 @@ impl App {
         }
     }
 
-    /// 第 i 項的位置
+    /// 第 i 項的位置（捲動後；可能在選單範圍外）
     fn menu_item_rect(&self, level: &Level, i: usize) -> Rect {
-        let mut y = level.rect.t + PAD;
+        let mut y = level.rect.t + PAD - level.scroll;
         for it in &level.items[..i] {
             y += self.item_h(it);
         }
@@ -137,7 +142,7 @@ impl App {
                 continue;
             }
             for i in 0..level.items.len() {
-                if !level.items[i].separator && self.menu_item_rect(level, i).contains(x, y) {
+                if !level.items[i].separator && self.menu_item_rect(level, i).contains(x, y) && y > level.rect.t + PAD && y < level.rect.b - PAD {
                     return Some(Hit::MenuItem(li, i));
                 }
             }
@@ -172,7 +177,7 @@ impl App {
         let t = (r.t - PAD).min(wh - h - 4.0).max(4.0);
         let rect = Rect::new(l, t, l + w, t + h);
         if let Some(m) = self.menu.as_mut() {
-            m.levels.push(Level { items, rect, hover: None });
+            m.levels.push(Level { items, rect, hover: None, scroll: 0.0 });
         }
     }
 
@@ -226,6 +231,38 @@ impl App {
             Action::ShellExt(ext, id) => self.invoke_menu_ext(ext, id),
             Action::Update(c) => self.update_choice(c),
             Action::Pref(i, value) => self.set_pref(i, value),
+            Action::Go(path) => self.navigate(self.active_pane, path, true),
+        }
+    }
+
+    /// 滾輪：游標下的那一層放不下所有項目時捲動；回傳是否在選單上
+    pub fn menu_wheel(&mut self, x: f32, y: f32, delta: i16) -> bool {
+        let max_scroll = |app: &App, level: &Level| {
+            let content = level.items.iter().map(|i| app.item_h(i)).sum::<f32>() + PAD * 2.0;
+            (content - level.rect.h()).max(0.0)
+        };
+        let Some(li) = self.menu.as_ref().and_then(|m| m.levels.iter().rposition(|l| l.rect.contains(x, y))) else { return false };
+        let max = max_scroll(self, &self.menu.as_ref().unwrap().levels[li]);
+        let step = self.menu_row_h() * 3.0 * delta as f32 / 120.0;
+        if let Some(m) = self.menu.as_mut() {
+            // 捲動時關閉這一層之後開啟的子選單（位置已經不對）
+            m.levels.truncate(li + 1);
+            let level = &mut m.levels[li];
+            level.scroll = (level.scroll - step).clamp(0.0, max);
+        }
+        self.invalidate();
+        true
+    }
+
+    /// 鍵盤移動後，把反白的項目捲到看得見
+    fn menu_reveal(&mut self) {
+        let Some((li, i)) = self.menu.as_ref().and_then(|m| m.levels.last().and_then(|l| l.hover).map(|i| (m.levels.len() - 1, i))) else { return };
+        let level = &self.menu.as_ref().unwrap().levels[li];
+        let r = self.menu_item_rect(level, i);
+        let (top, bottom) = (level.rect.t + PAD, level.rect.b - PAD);
+        let d = if r.t < top { r.t - top } else if r.b > bottom { r.b - bottom } else { 0.0 };
+        if let Some(m) = self.menu.as_mut() {
+            m.levels[li].scroll += d;
         }
     }
 
@@ -306,6 +343,9 @@ impl App {
             }
             _ => {}
         }
+        if matches!(vk, 0x26 | 0x28) {
+            self.menu_reveal();
+        }
         self.invalidate();
         true
     }
@@ -321,8 +361,12 @@ impl App {
             g.fill_round(Rect::new(r.l - 1.0, r.t + 1.0, r.r + 2.0, r.b + 4.0), radius + 2.0, shadow);
             g.fill_round(r, radius, c.surface);
             g.stroke_round(r, radius, c.border, 1.0);
+            g.push_clip(Rect::new(r.l, r.t + PAD, r.r, r.b - PAD));
             for (i, it) in level.items.iter().enumerate() {
                 let ir = self.menu_item_rect(level, i);
+                if ir.b < r.t || ir.t > r.b {
+                    continue;
+                }
                 if it.separator {
                     let y = ((ir.t + ir.b) / 2.0).round();
                     g.hline(ir.l + 6.0, ir.r - 6.0, y, c.border);
@@ -347,6 +391,7 @@ impl App {
                     g.text(crate::gfx::glyph::CHEVRON_RIGHT, Font::GlyphSmall, Rect::new(ir.r - 20.0, ir.t, ir.r, ir.b), col);
                 }
             }
+            g.pop_clip();
         }
     }
 }

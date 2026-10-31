@@ -116,6 +116,8 @@ pub enum Msg {
     IndexInstalled(bool),
     /// scripts 資料夾中的 .lua 檔案改變了（script.rs 的監看）
     ScriptsChanged,
+    /// 網址列「›」：那一層的子資料夾名稱
+    CrumbFolders { folder: String, names: Vec<String> },
     /// 檢查新版本的結果：最新版的標籤（沒有任何 Release 時為 None）、略過的版本；`manual` 為 update.check 命令
     UpdateChecked { latest: Result<Option<String>, String>, skipped: Option<zing_core::update::Version>, manual: bool },
     /// 下載更新的進度（0–100）
@@ -305,6 +307,15 @@ pub fn tree_children(pool: &Pool, n: &Notifier, path: String, show_hidden: bool,
     pool.spawn(move || {
         let children = subdirs(&path, show_hidden, use_index, kind == TreeLoad::Probe);
         n.send(Msg::TreeChildren { path, children, kind, show_hidden });
+    });
+}
+
+/// 網址列「›」：列出 `folder` 的子資料夾，結果以 `Msg::CrumbFolders` 送回
+pub fn crumb_folders(pool: &Pool, n: &Notifier, folder: String, show_hidden: bool, use_index: bool) {
+    let n = n.clone();
+    pool.spawn(move || {
+        let names = subdirs(&folder, show_hidden, use_index, false).map(|c| c.names).unwrap_or_default();
+        n.send(Msg::CrumbFolders { folder, names });
     });
 }
 

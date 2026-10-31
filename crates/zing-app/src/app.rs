@@ -20,6 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 use crate::gfx::Gfx;
 use crate::icons::Icons;
+use crate::menu::{Action, MenuItem};
 use crate::jobs::Jobs;
 use crate::model::{Children, Expand, MenuTarget, NodeKind, Pane, Reveal, Tab, Tree};
 use crate::palette::Palette;
@@ -222,6 +223,8 @@ pub struct App {
     pub shell_windows: Option<crate::shellwin::Host>,
     /// 歡迎畫面（welcome.rs）
     pub welcome: Option<crate::welcome::Welcome>,
+    /// 網址列「›」：等待子資料夾清單的那一層（結果回來時仍是它才開啟選單）
+    crumb_menu: Option<String>,
     /// 第一次啟動（程式旁沒有 session.toml）：第一幀之後顯示歡迎畫面
     pub first_run: bool,
     session: Session,
@@ -341,6 +344,7 @@ impl App {
             default_app: None,
             shell_windows: None,
             welcome: None,
+            crumb_menu: None,
             first_run,
             session,
         };
@@ -657,6 +661,36 @@ impl App {
             }
         }
         self.invalidate();
+    }
+
+    /// 網址列「›」：在背景列出那一層的子資料夾，回來後開啟選單
+    pub fn open_crumb_menu(&mut self, folder: String) {
+        self.crumb_menu = Some(folder.clone());
+        services::crumb_folders(&self.pool, &self.notifier, folder, self.show_hidden, !self.isolated);
+    }
+
+    /// 子資料夾的選單：目前路徑經過的那一個打勾；還在同一個資料夾、「›」還在才開啟
+    pub fn on_crumb_folders(&mut self, folder: String, names: Vec<String>) {
+        if self.crumb_menu.as_deref() != Some(folder.as_str()) {
+            return;
+        }
+        self.crumb_menu = None;
+        self.layout = self.compute_layout();
+        let Some(anchor) = self.layout.crumb_menus.iter().find(|(_, p)| *p == folder).map(|(r, _)| *r) else { return };
+        let current = self.tab().path.to_lowercase();
+        let mut items: Vec<MenuItem> = names
+            .into_iter()
+            .map(|name| {
+                let child = zing_core::path::join(&folder, &name);
+                let lower = child.to_lowercase();
+                let on_path = current == lower || current.starts_with(&format!("{}\\", lower.trim_end_matches('\\')));
+                MenuItem { checked: on_path, ..MenuItem::new(name, Action::Go(child)) }
+            })
+            .collect();
+        if items.is_empty() {
+            items.push(MenuItem { enabled: false, ..MenuItem::new(tr!("沒有子資料夾"), Action::None) });
+        }
+        self.open_menu(items, anchor);
     }
 
     fn load_tree(&mut self, path: String, kind: TreeLoad) {
@@ -1039,6 +1073,7 @@ impl App {
             Msg::IndexOutdated { installed } => self.on_index_outdated(installed),
             Msg::IndexInstalled(installed) => self.on_index_installed(installed),
             Msg::ScriptsChanged => self.on_scripts_changed(),
+            Msg::CrumbFolders { folder, names } => self.on_crumb_folders(folder, names),
             Msg::UpdateChecked { latest, skipped, manual } => self.on_update_checked(latest, skipped, manual),
             Msg::UpdateProgress { percent } => self.on_update_progress(percent),
             Msg::UpdateInstalled(result) => self.on_update_installed(result),

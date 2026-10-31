@@ -1620,6 +1620,95 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             }
         },
     ));
+    v.push(step(
+        "網址列：回到資料夾A",
+        {
+            let dir_a = dir_a.clone();
+            move |_| {
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, dir_a.clone(), true);
+                });
+            }
+        },
+        {
+            let dir_a = dir_a.clone();
+            move |_, a| at(a, &dir_a)
+        },
+    ));
+    v.push(
+        step(
+            "網址列：點上一層後面的「\\」列出子資料夾（目前經過的打勾）",
+            {
+                let d = d.clone();
+                move |c| {
+                    let menus = with_app(|a| a.compute_layout().crumb_menus).unwrap_or_default();
+                    let at = menus.iter().find(|(_, q)| q.eq_ignore_ascii_case(&d)).map(|(r, _)| ((r.l + r.r) / 2.0, (r.t + r.b) / 2.0));
+                    click(c, "", at);
+                }
+            },
+            |_, a| {
+                let m = a.menu.as_ref().ok_or("選單沒有開啟")?;
+                let items: Vec<(&str, bool)> = m.levels[0].items.iter().map(|i| (i.label.as_str(), i.checked)).collect();
+                expect("資料夾A 打勾", items.iter().find(|(l, _)| *l == "資料夾A").map(|(_, c)| *c), Some(true))?;
+                expect("資料夾B", items.iter().find(|(l, _)| *l == "資料夾B").map(|(_, c)| *c), Some(false))?;
+                expect("打勾的項目", items.iter().filter(|(_, c)| *c).count(), 1)
+            },
+        )
+        .slow(),
+    );
+    v.push(step("截圖：網址列的子資料夾", |_| {}, |c, _| screenshot(c, "30-網址列的子資料夾")));
+    v.push(step("網址列：選「資料夾B」就到那裡", |c| click(c, "", menu_item_pos(0, "資料夾B")), {
+        let dir_b = dir_b.clone();
+        move |_, a| {
+            expect("選單", a.menu.is_none(), true)?;
+            at(a, &dir_b)
+        }
+    }));
+    v.push(step(
+        "選單：項目比視窗高時以滾輪、方向鍵捲動",
+        |c| {
+            with_app(|a| {
+                let items = (0..300).map(|i| crate::menu::MenuItem::new(format!("項目 {i}"), crate::menu::Action::None)).collect();
+                a.open_menu_at(items, 40.0, 40.0);
+            });
+            let mid = with_app(|a| a.menu.as_ref().map(|m| { let r = m.levels[0].rect; ((r.l + r.r) / 2.0, (r.t + r.b) / 2.0) })).flatten();
+            wheel(c, mid, -120);
+            let after_wheel = with_app(|a| a.menu.as_ref().map(|m| m.levels[0].scroll)).flatten().unwrap_or(0.0);
+            c.notes.push(("menu_wheel_scroll", (after_wheel > 0.0).to_string()));
+            // 從第一項按 ↑ 繞到最後一項：捲到看得見
+            with_app(|a| a.menu_select_first());
+            key(c, "", VK_UP);
+        },
+        |c, a| {
+            expect("滾輪捲動", c.note("menu_wheel_scroll"), Some("true"))?;
+            let m = a.menu.as_ref().ok_or("選單沒有開啟")?;
+            let level = &m.levels[0];
+            expect("反白", level.hover, Some(299))?;
+            let (w, h) = a.gfx.size();
+            if level.rect.b > h || level.rect.r > w {
+                return Err(format!("選單超出視窗：{:?}", level.rect));
+            }
+            if a.menu_hit((level.rect.l + level.rect.r) / 2.0, level.rect.b - 12.0) == Some(crate::view::Hit::MenuItem(0, 299)) { Ok(()) } else { Err("最後一項不在底部".into()) }
+        },
+    ));
+    v.push(step("選單：Esc 關閉", |c| key(c, "", VK_ESCAPE), |_, a| expect("關閉", a.menu.is_none(), true)));
+    v.push(step(
+        "網址列：回到測試資料夾（結束）",
+        {
+            let d = d.clone();
+            move |_| {
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, d.clone(), true);
+                });
+            }
+        },
+        {
+            let d = d.clone();
+            move |_, a| at(a, &d)
+        },
+    ));
 
     // ------------------------------------------------ 分頁、窗格、樹狀列
     v.push(step("分頁：Ctrl+T 新增", |c| key(c, "c", letter('t')), |_, a| {
@@ -3843,7 +3932,10 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |c| click(c, "", theme_option_pos(crate::themepanel::Target::Field(theme_field("網址列")), 1)),
         |_, a| {
             expect("網址列", a.theme.chrome.address, zing_core::theme::AddressStyle::Breadcrumb)?;
-            expect("收起", a.theme_editor().and_then(|e| e.expanded), None)
+            expect("收起", a.theme_editor().and_then(|e| e.expanded), None)?;
+            // 麵包屑的每一層（含目前的資料夾）後面都有「›」
+            let lay = a.compute_layout();
+            expect("「›」", lay.crumb_menus.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(), lay.crumbs.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>())
         },
     ));
     v.push(step("主題：按 ＋ 加大圓角", |c| click(c, "", theme_pos(crate::themepanel::Row::Field(theme_field("圓角")), |r| mid(r.plus))), |_, a| {
