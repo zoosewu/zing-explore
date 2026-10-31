@@ -1035,6 +1035,7 @@ impl App {
             Msg::IndexSizes { parent, result } => self.on_index_sizes(parent, result),
             Msg::IndexAction { text, error, changed } => self.on_index_action(text, error, changed),
             Msg::IndexOutdated { installed } => self.on_index_outdated(installed),
+            Msg::IndexInstalled(installed) => self.on_index_installed(installed),
             Msg::UpdateChecked { latest, skipped, manual } => self.on_update_checked(latest, skipped, manual),
             Msg::UpdateProgress { percent } => self.on_update_progress(percent),
             Msg::UpdateInstalled(result) => self.on_update_installed(result),

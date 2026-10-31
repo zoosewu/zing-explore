@@ -165,6 +165,18 @@ impl App {
         });
     }
 
+    /// 在背景查詢索引服務是否已安裝（歡迎畫面）；隔離模式不使用索引，視為沒有安裝
+    pub fn query_index_installed(&mut self) {
+        if self.isolated {
+            self.on_index_installed(false);
+            return;
+        }
+        let n = self.notifier.clone();
+        self.index_pool().spawn(move || {
+            n.send(Msg::IndexInstalled(indexproto::installed_version(&indexproto::query(&Request::Version)).is_some()));
+        });
+    }
+
     pub fn on_index_outdated(&mut self, installed: u32) {
         self.run_index_tool(Tool::Update(installed));
     }

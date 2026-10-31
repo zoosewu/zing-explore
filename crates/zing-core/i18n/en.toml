@@ -808,8 +808,8 @@
 "點一下改成目前開著的分頁；「啟動時開啟」選「指定的分頁」時使用" = "Click to use the tabs that are open now; used when \"On startup, open\" is \"Specific tabs\""
 
 # 歡迎畫面（welcome.rs）
-"先調整幾個常用的設定；之後都能在設定頁（Ctrl+,）修改" = "Adjust a few common settings; you can change them later in Settings (Ctrl+,)"
-"啟用…" = "Enable…"
+"先調整幾個常用的設定，按「開始使用」套用；之後都能在設定頁（Ctrl+,）修改" = "Adjust a few common settings and press Get started to apply them; you can change them later in Settings (Ctrl+,)"
+"已啟用" = "Enabled"
 "更多設定…" = "More settings…"
 "歡迎使用 zing-explore" = "Welcome to zing-explore"
 "歡迎畫面…" = "Welcome…"

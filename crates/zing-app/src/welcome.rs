@@ -1,9 +1,11 @@
 //! 歡迎畫面：第一次啟動時（程式旁還沒有 session.toml）在視窗中央顯示的卡片，列出常用的設定。
 //!
-//! - 項目是 `zing_core::prefs::PREFS` 的一部分（`ITEMS`），改了立即套用並寫回 config.toml（`App::set_pref`，與設定頁相同），
-//!   背後的畫面立即看到效果；選項以下拉選單（menu.rs）選擇。
+//! - 項目是 `zing_core::prefs::PREFS` 的一部分（`ITEMS`）。以下拉選單（menu.rs）選的選項（語言、主題…）立即套用並寫回
+//!   config.toml（`App::set_pref`，與設定頁相同），背後的畫面立即看到效果。
+//! - 開關（顯示隱藏檔案、預設的檔案總管、NTFS 索引服務…）按下按鈕才套用（`Welcome::pending`）：第一次啟動時
+//!   `ITEMS` 標記的預設開啟；Esc 關閉不套用。NTFS 索引服務已安裝時開關是灰色的「已啟用」。
 //! - 第一幀之後才顯示；開著時攔下滑鼠與鍵盤（↑↓／Tab 移動、Enter／空白鍵切換、Esc 關閉）。
-//! - 「更多設定」開啟設定頁；命令 `welcome.show`（「⋯」選單）可再次開啟。
+//! - 「更多設定」套用後開啟設定頁；命令 `welcome.show`（「⋯」選單）可再次開啟。
 
 use zing_core::prefs::{BUILTIN_THEMES, Kind, PREFS, choice_label};
 
@@ -13,15 +15,15 @@ use crate::menu::{Action, MenuItem};
 use crate::sidepanel::footer_buttons;
 use crate::view::Hit;
 
-/// 卡片上的設定（`PREFS` 的 key；空字串的依種類找）
-const ITEMS: &[Item] = &[
-    Item::Key("language"),
-    Item::Key("theme"),
-    Item::DefaultApp,
-    Item::Key("startup"),
-    Item::Key("show_hidden"),
-    Item::Key("update.check"),
-    Item::Action("index.install"),
+/// 卡片上的設定（`PREFS` 的 key；空字串的依種類找）與第一次啟動時開關是否預設開啟
+const ITEMS: &[(Item, bool)] = &[
+    (Item::Key("language"), false),
+    (Item::Key("theme"), false),
+    (Item::DefaultApp, true),
+    (Item::Key("startup"), false),
+    (Item::Key("show_hidden"), true),
+    (Item::Key("update.check"), false),
+    (Item::Action("index.install"), true),
 ];
 pub const BUTTONS: [&str; 2] = [tr_key!("更多設定…"), tr_key!("開始使用")];
 const CARD_W: f32 = 560.0;
@@ -36,6 +38,10 @@ enum Item {
 pub struct Welcome {
     /// 鍵盤焦點：0..項目數是項目，之後是兩個按鈕
     pub focus: usize,
+    /// 每個項目的開關按下按鈕時要改成的值（None：沿用目前的值；選項一律 None）
+    pub pending: Vec<Option<bool>>,
+    /// NTFS 索引服務是否已安裝（背景查詢，None 是還不知道）
+    pub index_installed: Option<bool>,
 }
 
 pub struct WelcomeLayout {
@@ -52,14 +58,16 @@ pub struct WelcomeLayout {
 pub fn items() -> Vec<usize> {
     ITEMS
         .iter()
-        .filter_map(|it| {
-            PREFS.iter().position(|p| match it {
-                Item::Key(k) => p.key == *k,
-                Item::DefaultApp => p.kind == Kind::DefaultApp,
-                Item::Action(cmd) => p.kind == Kind::Action(cmd),
-            })
-        })
+        .filter_map(|(it, _)| item_index(it))
         .collect()
+}
+
+fn item_index(it: &Item) -> Option<usize> {
+    PREFS.iter().position(|p| match it {
+        Item::Key(k) => p.key == *k,
+        Item::DefaultApp => p.kind == Kind::DefaultApp,
+        Item::Action(cmd) => p.kind == Kind::Action(cmd),
+    })
 }
 
 /// 說明的行數（沒有說明是 0）
@@ -73,8 +81,58 @@ impl App {
         self.close_palette();
         self.close_side_panels();
         self.refresh_default_app(false);
-        self.welcome = Some(Welcome::default());
+        let first = self.first_run;
+        let pending = ITEMS.iter().filter(|(it, _)| item_index(it).is_some()).map(|&(_, on)| (first && on).then_some(true)).collect();
+        self.welcome = Some(Welcome { focus: 0, pending, index_installed: None });
+        self.query_index_installed();
         self.invalidate();
+    }
+
+    pub fn on_index_installed(&mut self, installed: bool) {
+        if let Some(w) = self.welcome.as_mut() {
+            w.index_installed = Some(installed);
+            self.invalidate();
+        }
+    }
+
+    /// 第 k 個項目的開關目前的值與能否切換（選項是 None）
+    fn welcome_current(&self, k: usize) -> Option<(bool, bool)> {
+        let p = &PREFS[*items().get(k)?];
+        match p.kind {
+            Kind::Bool => Some((self.config.pref_value(p.key) == "true", true)),
+            Kind::DefaultApp => Some((self.default_app == Some(crate::defaultapp::Status::On), self.default_app.is_some())),
+            // 已安裝的服務在這裡不移除（設定頁的「移除 NTFS 索引服務」）；還不知道時也不能切換
+            Kind::Action(_) => {
+                let installed = self.welcome.as_ref()?.index_installed;
+                Some((installed == Some(true), installed == Some(false)))
+            }
+            Kind::Choice(_) | Kind::Theme | Kind::Text | Kind::Tabs | Kind::SlowList => None,
+        }
+    }
+
+    /// 第 k 個項目的開關畫出來的值（按下按鈕後的值）與能否切換
+    pub fn welcome_switch(&self, k: usize) -> Option<(bool, bool)> {
+        let (current, enabled) = self.welcome_current(k)?;
+        let pending = self.welcome.as_ref()?.pending.get(k).copied().flatten();
+        Some((pending.unwrap_or(current), enabled))
+    }
+
+    /// 按下按鈕：套用與目前不同的開關
+    fn welcome_apply(&mut self) {
+        let Some(pending) = self.welcome.as_ref().map(|w| w.pending.clone()) else { return };
+        for (k, (&i, want)) in items().iter().zip(pending).enumerate() {
+            let (Some(on), Some((current, _))) = (want, self.welcome_current(k)) else { continue };
+            if on == current {
+                continue;
+            }
+            match PREFS[i].kind {
+                Kind::Bool => self.set_pref(i, on.to_string()),
+                Kind::DefaultApp => self.set_default_app(on),
+                // 隔離模式（冒煙測試）不跳出 UAC
+                Kind::Action(cmd) if on && !self.isolated => self.exec(cmd),
+                _ => {}
+            }
+        }
     }
 
     pub fn close_welcome(&mut self) {
@@ -147,6 +205,7 @@ impl App {
     }
 
     fn welcome_button(&mut self, b: usize) {
+        self.welcome_apply();
         self.close_welcome();
         if b == 0 {
             self.open_settings();
@@ -176,12 +235,13 @@ impl App {
                     self.open_menu(menu, control);
                 }
             }
-            Kind::Bool => {
-                let on = self.config.pref_value(p.key) == "true";
-                self.set_pref(i, (!on).to_string());
+            Kind::Bool | Kind::DefaultApp | Kind::Action(_) => {
+                if let Some((on, true)) = self.welcome_switch(k)
+                    && let Some(slot) = self.welcome.as_mut().and_then(|w| w.pending.get_mut(k))
+                {
+                    *slot = Some(!on);
+                }
             }
-            Kind::DefaultApp => self.toggle_default_app(),
-            Kind::Action(cmd) => self.exec(cmd),
             Kind::Text | Kind::Tabs | Kind::SlowList => {}
         }
     }
@@ -221,7 +281,7 @@ impl App {
         g.fill_round(card, radius, c.surface);
         g.stroke_round(card, radius, c.border, 1.0);
         g.text(tr!("歡迎使用 zing-explore"), Font::Bold, lay.title, c.text);
-        g.text(tr!("先調整幾個常用的設定；之後都能在設定頁（Ctrl+,）修改"), Font::Small, lay.subtitle, c.text_secondary);
+        g.text(tr!("先調整幾個常用的設定，按「開始使用」套用；之後都能在設定頁（Ctrl+,）修改"), Font::Small, lay.subtitle, c.text_secondary);
         let rh = self.row_h();
         for (k, (&i, (row, first, control))) in items().iter().zip(&lay.rows).enumerate() {
             let p = &PREFS[i];
@@ -243,21 +303,12 @@ impl App {
                     let v = self.config.pref_value(p.key);
                     g.text(&format!("{} ▾", choice_label(p, &v)), Font::Text, *control, c.accent);
                 }
-                Kind::Bool | Kind::DefaultApp => {
-                    let (on, enabled) = match p.kind {
-                        Kind::Bool => (self.config.pref_value(p.key) == "true", true),
-                        _ => (self.default_app == Some(crate::defaultapp::Status::On), self.default_app.is_some()),
-                    };
+                Kind::Bool | Kind::DefaultApp | Kind::Action(_) => {
+                    let (on, enabled) = self.welcome_switch(k).unwrap_or_default();
                     let right = self.paint_switch(*first, control.l, on, enabled);
-                    let label = if on { tr!("開") } else { tr!("關") };
+                    let installed = matches!(p.kind, Kind::Action(_)) && w.index_installed == Some(true);
+                    let label = if installed { tr!("已啟用") } else if on { tr!("開") } else { tr!("關") };
                     g.text(label, Font::Text, Rect::new(right + 8.0, first.t, control.r, first.b), c.text_secondary);
-                }
-                Kind::Action(_) => {
-                    let label = tr!("啟用…");
-                    let bw = g.measure(label, Font::Text) + 24.0;
-                    let b = Rect::new(control.l, first.t + 3.0, control.l + bw, first.b - 3.0);
-                    g.stroke_round(b, self.theme.metrics.radius, c.border, 1.0);
-                    g.text(label, Font::Text, Rect::new(b.l + 12.0, b.t, b.r, b.b), c.text);
                 }
                 Kind::Text | Kind::Tabs | Kind::SlowList => {}
             }

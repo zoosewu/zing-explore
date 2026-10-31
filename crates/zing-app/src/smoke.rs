@@ -4532,6 +4532,36 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             .flatten()
         }
     };
+    // 第 k 個項目的開關（按下按鈕後的值）
+    fn welcome_on(a: &App, key: &str, kind: Option<zing_core::prefs::Kind>) -> Option<bool> {
+        let i = zing_core::prefs::PREFS.iter().position(|p| if key.is_empty() { Some(p.kind) == kind } else { p.key == key })?;
+        let k = crate::welcome::items().iter().position(|&x| x == i)?;
+        a.welcome_switch(k).map(|(on, _)| on)
+    }
+    use zing_core::prefs::Kind as PrefKind;
+    v.push(step(
+        "歡迎畫面：第一次啟動時預設的檔案總管、顯示隱藏檔案、NTFS 索引服務預設開啟，Esc 關閉不套用",
+        |c| {
+            let before = with_app(|a| format!("{:?}", a.default_app)).unwrap_or_default();
+            c.notes.push(("welcome_default_app", before));
+            with_app(|a| {
+                a.first_run = true;
+                a.open_welcome();
+                a.first_run = false;
+            });
+            let on = with_app(|a| {
+                [welcome_on(a, "", Some(PrefKind::DefaultApp)), welcome_on(a, "show_hidden", None), welcome_on(a, "", Some(PrefKind::Action("index.install")))]
+            });
+            c.notes.push(("welcome_first", format!("{on:?}")));
+            key(c, "", VK_ESCAPE);
+        },
+        |c, a| {
+            expect("開關", c.note("welcome_first"), Some(format!("{:?}", Some([Some(true); 3])).as_str()))?;
+            expect("歡迎畫面", a.welcome.is_none(), true)?;
+            expect("顯示隱藏檔案", a.show_hidden, false)?;
+            expect("預設的檔案總管不變", Some(format!("{:?}", a.default_app)).as_deref(), c.note("welcome_default_app"))
+        },
+    ));
     v.push(step("歡迎畫面：以命令開啟", |_| exec("welcome.show"), |_, a| {
         expect("歡迎畫面", a.welcome.is_some(), true)?;
         expect("第一次啟動", a.first_run, false)?;
@@ -4539,8 +4569,9 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     }));
     v.push(step("截圖：歡迎畫面", |_| {}, |c, _| screenshot(c, "28-歡迎畫面")));
     let hidden_pos = welcome_pos("show_hidden", true);
-    v.push(step("歡迎畫面：點開關切換顯示隱藏檔案", move |c| click(c, "", hidden_pos()), |_, a| {
-        expect("顯示隱藏檔案", a.show_hidden, true)?;
+    v.push(step("歡迎畫面：點開關切換顯示隱藏檔案（按下按鈕才套用）", move |c| click(c, "", hidden_pos()), |_, a| {
+        expect("開關", welcome_on(a, "show_hidden", None), Some(true))?;
+        expect("顯示隱藏檔案", a.show_hidden, false)?;
         expect("歡迎畫面仍開著", a.welcome.is_some(), true)
     }));
     let theme_pos = welcome_pos("theme", true);
@@ -4571,7 +4602,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |c, a| {
             let last = crate::welcome::items().len() + crate::welcome::BUTTONS.len() - 1;
             expect("焦點", c.note("welcome_focus"), Some(format!("{:?}", Some(last)).as_str()))?;
-            expect("歡迎畫面", a.welcome.is_none(), true)
+            expect("歡迎畫面", a.welcome.is_none(), true)?;
+            expect("套用了顯示隱藏檔案", a.show_hidden, true)
         },
     ));
     v.push(step(

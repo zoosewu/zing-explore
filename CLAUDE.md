@@ -126,7 +126,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   多行字串）就回報錯誤、不寫入；隔離模式不寫檔。與主題編輯面板共用右側位置，兩者只開一個。
 - 歡迎畫面（`welcome.rs`，命令 `welcome.show`）：程式旁還沒有 session.toml 時（第一次啟動，`App::first_run`）在第一幀之後
   顯示；項目是 `PREFS` 的一部分（`welcome::ITEMS`），改值一律經 `App::set_pref`（與設定頁相同），選項用 menu.rs 的下拉選單
-  （`Action::Pref`）。開著時攔下滑鼠與鍵盤（命中判定、`on_key` 在下拉選單之後）。隔離模式不是第一次啟動。
+  （`Action::Pref`，立即套用）。開關（預設的檔案總管、顯示隱藏檔案、NTFS 索引服務…）記在 `Welcome::pending`，按下按鈕才套用
+  （Esc 不套用）；第一次啟動時 `ITEMS` 標記的預設開啟。開著時攔下滑鼠與鍵盤（命中判定、`on_key` 在下拉選單之後）。隔離模式不是第一次啟動。
 - 快速鍵的情境（`zing_core::keymap::Scope`：global、list、filter、tree、popup、search）：`KeyChord` 帶著情境，同一個按鍵在
   不同情境是不同的快速鍵；按下時依 `Scope::chain` 由具體到一般找（`Config::command_in`），彈出清單不往全域找。
   有情境的預設按鍵在 `default_keys.toml`（不複製進使用者的 config.toml），內容必須與原本寫死的行為相同。

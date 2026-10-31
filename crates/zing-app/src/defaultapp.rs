@@ -176,7 +176,11 @@ impl App {
     /// 設定頁的開關；隔離模式（冒煙測試）只在記憶體中切換
     pub fn toggle_default_app(&mut self) {
         let Some(current) = self.default_app.clone() else { return };
-        let on = current != Status::On;
+        self.set_default_app(current != Status::On);
+    }
+
+    /// 設為（`on`）或取消預設的檔案總管
+    pub fn set_default_app(&mut self, on: bool) {
         if self.isolated {
             self.on_default_app(Ok(if on { Status::On } else { Status::Off }), true);
             return;
