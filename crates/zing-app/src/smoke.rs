@@ -1459,6 +1459,13 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("排序", (s.key, s.ascending), (SortKey::Name, true))?;
         expect("第一項", names(a)[0].as_str(), "資料夾A")
     }));
+    v.push(step("滑鼠：Alt+雙擊開啟內容（不進入資料夾）", |c| with_mods("a", || double_click(c, row_pos("資料夾B"))), {
+        let (d, dir_b) = (d.clone(), dir_b.clone());
+        move |_, a| {
+            at(a, &d)?;
+            expect("內容", crate::ctxmenu::TEST_PROPERTIES.lock().unwrap().take(), Some(vec![dir_b.clone()]))
+        }
+    }));
     v.push(step("滑鼠：雙擊進入資料夾", |c| double_click(c, row_pos("資料夾B")), {
         let dir_b = dir_b.clone();
         move |_, a| {
@@ -2293,6 +2300,18 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         })
         .flatten()
     };
+    v.push(step(
+        "樹狀列：Alt+雙擊節點開啟內容（不展開、不收合）",
+        move |c| {
+            let expanded = with_app(|a| cur_node(a).map(|k| a.tree.nodes[k].expanded)).flatten();
+            c.notes.push(("tree_expanded", format!("{expanded:?}")));
+            with_mods("a", || double_click(c, cur_node_pos()));
+        },
+        move |c, a| {
+            expect("展開", Some(format!("{:?}", cur_node(a).map(|k| a.tree.nodes[k].expanded))).as_deref(), c.note("tree_expanded"))?;
+            expect("內容", crate::ctxmenu::TEST_PROPERTIES.lock().unwrap().take(), Some(vec![a.tab().path.clone()]))
+        },
+    ));
     let tree_before = std::rc::Rc::new(std::cell::Cell::new(0u32));
     let before = tree_before.clone();
     v.push(step("右鍵選單（樹狀列）：游標停在節點後預先準備", move |c| {

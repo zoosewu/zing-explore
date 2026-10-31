@@ -66,7 +66,23 @@ const BACKGROUND_ITEMS: &[Entry] = &[
     Entry::Cmd(core::TERMINAL),
 ];
 
+/// 冒煙測試：內容對話框改成記下要顯示的路徑（對話框會搶前景，不顯示）
+#[cfg(feature = "smoke")]
+pub static TEST_PROPERTIES: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
 impl App {
+    /// 內容對話框（命令 file.properties、樹狀列的右鍵選單、Alt+雙擊）
+    pub fn show_properties(&mut self, paths: Vec<String>) {
+        #[cfg(feature = "smoke")]
+        if self.isolated {
+            if let Ok(mut t) = TEST_PROPERTIES.lock() {
+                *t = Some(paths);
+            }
+            return;
+        }
+        self.shell_host.submit(ShellJob::Properties { paths });
+    }
+
     /// 顯示清單的右鍵選單；`x`、`y` 是視窗內的座標（DIP），`pt` 是螢幕座標
     pub fn open_context_menu(&mut self, items: Vec<String>, folder: String, x: f32, y: f32, pt: POINT) {
         let (extras, target) = self.entry_menu_extras(&items, &folder);
@@ -214,7 +230,7 @@ impl App {
                 self.shell_host.submit(ShellJob::SetClipboard { paths: vec![target], cut: id == MENU_TREE_CUT });
             }
             MENU_TREE_COPYPATH => self.shell_host.submit(ShellJob::SetText { text: target, status: tr!("已複製路徑").into(), reply: None }),
-            MENU_TREE_PROPERTIES => self.shell_host.submit(ShellJob::Properties { paths: vec![target] }),
+            MENU_TREE_PROPERTIES => self.show_properties(vec![target]),
             MENU_TREE_RENAME => {
                 if let Some(i) = self.tree.find(&target) {
                     crate::window::begin_tree_rename(self, i);

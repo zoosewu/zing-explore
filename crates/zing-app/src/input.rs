@@ -373,7 +373,24 @@ impl App {
         if self.batch.is_some() {
             return;
         }
-        match self.fresh_hit(x, y) {
+        let hit = self.fresh_hit(x, y);
+        // Alt+雙擊：內容（與檔案總管相同），清單與樹狀列都一樣；對象與右鍵選單相同
+        if Mods::current().alt {
+            let paths = match hit {
+                Hit::Row(..) | Hit::ListEmpty(_) => list_spot(&hit).map(|(p, at)| {
+                    self.activate_pane(p);
+                    let t = self.panes[p].tab().menu_target(at);
+                    if t.items.is_empty() { vec![t.folder] } else { t.items }
+                }),
+                Hit::TreeRow(i) | Hit::TreeArrow(i) => self.tree_menu_target(i).map(|t| t.items),
+                _ => None,
+            };
+            if let Some(paths) = paths.filter(|p| p.iter().all(|s| !s.is_empty())) {
+                self.show_properties(paths);
+                return;
+            }
+        }
+        match hit {
             Hit::Row(p, i) => {
                 self.activate_pane(p);
                 self.panes[p].tab_mut().focus = i;

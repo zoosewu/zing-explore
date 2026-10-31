@@ -1286,7 +1286,7 @@ impl App {
             Cmd::FileProperties => {
                 let paths = self.tab().target_paths();
                 let paths = if paths.is_empty() { vec![self.tab().path.clone()] } else { paths };
-                self.shell_host.submit(ShellJob::Properties { paths });
+                self.show_properties(paths);
             }
             Cmd::MenuContext => {
                 // 鍵盤開啟右鍵選單：顯示在焦點項目下方
