@@ -748,8 +748,11 @@ impl App {
                     let line = if active_pane || !multi { c.accent } else { c.border };
                     g.fill(Rect::new(r.l + radius, r.t, r.r - radius, r.t + 2.0), line);
                 }
-            } else if self.hover == Hit::Tab(p, t) || self.hover == Hit::TabClose(p, t) {
+            } else if self.hover == Hit::Tab(p, t) || self.hover == Hit::TabClose(p, t) || self.drop_tab == Some((p, t)) {
                 g.fill_round(r.inset(0.0, 2.0), radius, c.hover);
+            }
+            if self.drop_tab == Some((p, t)) {
+                g.stroke_round(r.inset(1.0, 3.0), radius, c.accent, 2.0);
             }
             let title = pane.tabs[t].title();
             let text_r = if pane.tabs.len() > 1 { pl.tab_close[t].l } else { r.r - 8.0 };

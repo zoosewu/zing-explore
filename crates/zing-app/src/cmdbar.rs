@@ -94,6 +94,7 @@ impl App {
     /// 命令現在不能用的原因（None 表示可以用）
     pub fn cmd_disabled(&self, cmd: &str) -> Option<&'static str> {
         let tab = self.tab();
+        let pane = &self.panes[self.active_pane];
         let in_pc = tab.path.is_empty();
         // 與檔案總管相同：沒有選取（只有焦點）時剪下、複製等按鈕是灰色的
         let has_sel = tab.selection_count().0 > 0;
@@ -107,6 +108,10 @@ impl App {
             "file.paste" if !clipboard_has_files() => Some(tr!("剪貼簿上沒有檔案")),
             "file.newfolder" | "file.newfile" if in_pc => Some(tr!("「此電腦」不能建立新項目")),
             "copy --to={dest}" | "copy --move --to={dest}" | "pane.close" | "pane.focusnext" if self.panes.len() < 2 => Some(tr!("只有一個窗格")),
+            "tab.closeothers" if pane.tabs.len() < 2 => Some(tr!("只有一個分頁")),
+            "tab.closeright" | "tab.moveright" if pane.active + 1 >= pane.tabs.len() => Some(tr!("右側沒有分頁")),
+            "tab.moveleft" if pane.active == 0 => Some(tr!("左側沒有分頁")),
+            "tab.reopen" if !self.has_closed_tabs() => Some(tr!("沒有關閉的分頁")),
             "nav.back" if tab.back.is_empty() => Some(tr!("沒有上一頁")),
             "nav.forward" if tab.forward.is_empty() => Some(tr!("沒有下一頁")),
             "nav.up" if in_pc => Some(tr!("已在最上層")),

@@ -735,6 +735,7 @@ fn run_modal(hwnd: HWND, modal: Modal) {
             let _ = shell::drag_out(hwnd, &paths);
             with_app(|a| {
                 a.drop_hover = None;
+                a.drop_tab = None;
                 a.invalidate();
             });
         }
@@ -820,6 +821,7 @@ fn drop_hover(pt: Option<POINT>) {
     if pt.is_none() {
         with_app(|a| {
             a.drop_hover = None;
+            a.drop_tab = None;
             a.invalidate();
         });
     }

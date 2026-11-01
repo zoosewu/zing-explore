@@ -728,6 +728,46 @@ Previous tab
 tab.prev()
 ```
 
+### `tab.closeothers()`
+
+Close other tabs (in the same pane)
+
+```lua
+tab.closeothers()
+```
+
+### `tab.closeright()`
+
+Close tabs to the right
+
+```lua
+tab.closeright()
+```
+
+### `tab.reopen()`
+
+Reopen the most recently closed tab
+
+```lua
+tab.reopen()
+```
+
+### `tab.moveleft()`
+
+Move tab left
+
+```lua
+tab.moveleft()
+```
+
+### `tab.moveright()`
+
+Move tab right
+
+```lua
+tab.moveright()
+```
+
 ### `pane.split()`
 
 Split off a new pane

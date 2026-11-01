@@ -889,6 +889,22 @@ fn theme_field(label: &str) -> usize {
     zing_core::theme::FIELDS.iter().position(|f| f.label == label).expect("沒有這個欄位")
 }
 
+/// 第 `p` 個窗格第 `t` 個分頁的位置：`at` 是左右的比例（0.5 為中心）
+fn tab_pos(p: usize, t: usize, at: f32) -> Option<(f32, f32)> {
+    with_app(|a| {
+        a.layout = a.compute_layout();
+        let r = *a.layout.panes.get(p)?.tabs.get(t)?;
+        Some((r.l + (r.r - r.l) * at, (r.t + r.b) / 2.0))
+    })
+    .flatten()
+}
+
+/// 使用中窗格的分頁 id（依順序）與使用中的分頁
+fn tab_ids(a: &App) -> (Vec<crate::services::TabId>, usize) {
+    let pane = &a.panes[a.active_pane];
+    (pane.tabs.iter().map(|t| t.id).collect(), pane.active)
+}
+
 fn mid(r: crate::gfx::Rect) -> (f32, f32) {
     ((r.l + r.r) / 2.0, (r.t + r.b) / 2.0)
 }
@@ -1723,6 +1739,99 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             at(a, &d)
         }
     }));
+    // 分頁的拖曳與右鍵選單：開成三個分頁（第二個是上一層，用來測試放到分頁上）
+    let ids = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let (set_ids, parent) = (ids.clone(), path::parent(&d).unwrap_or_default());
+    v.push(step("分頁：開成三個分頁", move |_| {
+        with_app(|a| {
+            a.open_in_new_tab(parent.clone());
+            a.exec("tab.new");
+            *set_ids.borrow_mut() = tab_ids(a).0;
+        });
+    }, |_, a| {
+        let (ids, active) = tab_ids(a);
+        expect("（分頁數, 使用中）", (ids.len(), active), (3, 2))
+    }));
+    let want = ids.clone();
+    v.push(step("分頁：把第一個拖到最右邊", |c| drag(c, tab_pos(0, 0, 0.5), tab_pos(0, 2, 0.9)), move |_, a| {
+        let w = want.borrow();
+        expect("拖曳結束", a.press.is_none(), true)?;
+        expect("（順序, 使用中）", tab_ids(a), (vec![w[1], w[2], w[0]], 2))
+    }));
+    let want = ids.clone();
+    v.push(step("分頁：拖回最左邊", |c| drag(c, tab_pos(0, 2, 0.5), tab_pos(0, 0, 0.1)), move |_, a| {
+        let w = want.borrow();
+        expect("（順序, 使用中）", tab_ids(a), (w.clone(), 0))
+    }));
+    v.push(step("分頁：拖放的檔案放到其他分頁上是那個分頁的資料夾", |_| {}, {
+        let parent = path::parent(&d).unwrap_or_default();
+        move |_, a| {
+            let r = *a.compute_layout().panes[0].tabs.get(1).ok_or("找不到分頁")?;
+            let folder = a.drop_target_at(r.l + 10.0, (r.t + r.b) / 2.0);
+            let marked = a.drop_tab;
+            a.drop_tab = None;
+            a.drop_hover = None;
+            expect("目標", folder.as_deref(), Some(parent.as_str()))?;
+            expect("標示的分頁", marked, Some((0, 1)))
+        }
+    }));
+    v.push(step("分頁：右鍵選單（第二個分頁）", |c| right_click(c, tab_pos(0, 1, 0.5)), |_, a| {
+        expect("使用中", tab_ids(a).1, 1)?;
+        let m = a.menu.as_ref().ok_or("選單沒開")?;
+        let labels: Vec<&str> = m.levels[0].items.iter().filter(|i| !i.separator).map(|i| i.label.as_str()).collect();
+        for want in ["新增分頁", "關閉分頁", "關閉其他分頁", "關閉右側的分頁", "重新開啟關閉的分頁", "分頁往左移", "分頁往右移"] {
+            if !labels.contains(&want) {
+                return Err(format!("缺少「{want}」：{labels:?}"));
+            }
+        }
+        Ok(())
+    }));
+    v.push(step("截圖：分頁的右鍵選單", |_| {}, |c, _| screenshot(c, "31-分頁的右鍵選單")));
+    let want = ids.clone();
+    v.push(step("分頁：點「關閉其他分頁」", |c| click(c, "", menu_item_pos(0, "關閉其他分頁")), move |_, a| {
+        expect("選單關閉", a.menu.is_none(), true)?;
+        expect("（順序, 使用中）", tab_ids(a), (vec![want.borrow()[1]], 0))
+    }));
+    v.push(step("分頁：重新開啟關閉的分頁（回到原本的位置）", |_| {
+        with_app(|a| {
+            a.exec("tab.reopen");
+            a.exec("tab.reopen");
+        });
+    }, {
+        let (d, parent) = (d.clone(), path::parent(&d).unwrap_or_default());
+        move |_, a| {
+            let pane = &a.panes[a.active_pane];
+            let paths: Vec<&str> = pane.tabs.iter().map(|t| t.path.as_str()).collect();
+            // 第三個分頁是在上一層開的新分頁；最後重新開啟的是它
+            expect("（路徑, 使用中）", (paths, pane.active), (vec![d.as_str(), parent.as_str(), parent.as_str()], 2))?;
+            expect("最右邊不能往右移", a.cmd_disabled("tab.moveright").is_some(), true)
+        }
+    }));
+    let moved = std::rc::Rc::new(std::cell::Cell::new(0));
+    let set_moved = moved.clone();
+    v.push(step("分頁：往左移", move |_| {
+        with_app(|a| {
+            let (ids, active) = tab_ids(a);
+            set_moved.set(ids[active]);
+            a.exec("tab.moveleft");
+        });
+    }, move |_, a| {
+        let (ids, active) = tab_ids(a);
+        expect("（使用中, 分頁）", (active, ids[active]), (1, moved.get()))
+    }));
+    v.push(step("分頁：回到第一個分頁、關閉右側的分頁", |_| {
+        with_app(|a| {
+            a.exec("tab.prev");
+            a.exec("tab.closeright");
+        });
+    }, {
+        let d = d.clone();
+        move |_, a| {
+            expect("分頁數", a.panes[a.active_pane].tabs.len(), 1)?;
+            expect("只有一個分頁時不能關閉其他分頁", a.cmd_disabled("tab.closeothers").is_some(), true)?;
+            at(a, &d)
+        }
+    }));
     v.push(step("窗格：Ctrl+\\ 分割", |c| key(c, "c", VK_OEM_5), {
         let d = d.clone();
         move |_, a| {
@@ -1745,6 +1854,20 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("（焦點, 使用中窗格）", (a.focus, a.active_pane), (Focus::List, 0))
     }));
     v.push(step("窗格：Ctrl+Shift+W 關閉", |c| key(c, "cs", letter('w')), |_, a| expect("窗格數", a.panes.len(), 1)));
+    v.push(step("窗格：再分割一次", |_| { with_app(|a| a.exec("pane.split")); }, |_, a| {
+        expect("（窗格數, 使用中）", (a.panes.len(), a.active_pane), (2, 1))
+    }));
+    v.push(step("分頁：把右窗格唯一的分頁拖到左窗格（右窗格關閉）", |c| drag(c, tab_pos(1, 0, 0.5), tab_pos(0, 0, 0.9)), |_, a| {
+        expect("窗格數", a.panes.len(), 1)?;
+        expect("（分頁數, 使用中）", (a.panes[0].tabs.len(), a.panes[0].active), (2, 1))
+    }));
+    v.push(step("分頁：Ctrl+W 關閉拖過來的分頁", |c| key(c, "c", letter('w')), {
+        let d = d.clone();
+        move |_, a| {
+            expect("分頁數", a.panes[0].tabs.len(), 1)?;
+            at(a, &d)
+        }
+    }));
     v.push(step("樹狀列：Ctrl+B 隱藏", |c| key(c, "c", letter('b')), |_, a| expect("顯示", a.tree_visible, false)));
     v.push(step("樹狀列：Ctrl+B 顯示", |c| key(c, "c", letter('b')), |_, a| expect("顯示", a.tree_visible, true)));
     v.push(step("檢視：Ctrl+H 顯示隱藏檔", |c| key(c, "c", letter('h')), |_, a| {

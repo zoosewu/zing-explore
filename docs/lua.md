@@ -728,6 +728,46 @@ tab.next()
 tab.prev()
 ```
 
+### `tab.closeothers()`
+
+關閉其他分頁（同一個窗格）
+
+```lua
+tab.closeothers()
+```
+
+### `tab.closeright()`
+
+關閉右側的分頁
+
+```lua
+tab.closeright()
+```
+
+### `tab.reopen()`
+
+重新開啟最近關閉的分頁
+
+```lua
+tab.reopen()
+```
+
+### `tab.moveleft()`
+
+分頁往左移
+
+```lua
+tab.moveleft()
+```
+
+### `tab.moveright()`
+
+分頁往右移
+
+```lua
+tab.moveright()
+```
+
 ### `pane.split()`
 
 分割出新窗格

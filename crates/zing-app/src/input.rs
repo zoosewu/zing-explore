@@ -8,6 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 use crate::app::{App, Focus, Modal, Press};
 use crate::model::MenuTarget;
+use crate::menu::MenuItem;
 use crate::navkeys::PopupKey;
 use crate::view::{COLUMN_KEYS, Hit, clamp_col};
 
@@ -58,6 +59,12 @@ impl App {
                     if !paths.is_empty() && !tab.path.is_empty() {
                         self.modal = Some(Modal::DragOut { paths });
                     }
+                }
+            }
+            Some(Press::Tab { pane, tab, x: x0, y: y0, moved }) => {
+                if moved || (x - x0).abs() > DRAG_THRESHOLD || (y - y0).abs() > DRAG_THRESHOLD {
+                    let (pane, tab) = self.drag_tab(pane, tab, x, y);
+                    self.press = Some(Press::Tab { pane, tab, x: x0, y: y0, moved: true });
                 }
             }
             Some(Press::Scroll { pane, grab }) => {
@@ -273,6 +280,7 @@ impl App {
                 self.panes[p].active = t;
                 self.focus = Focus::List;
                 self.sync_tree();
+                self.press = Some(Press::Tab { pane: p, tab: t, x, y, moved: false });
             }
             Hit::TabClose(p, t) => self.close_tab(p, t),
             Hit::TabNew(p) => {
@@ -434,9 +442,44 @@ impl App {
                 self.open_context_menu(target.items, target.folder, x, y, screen);
             }
             Hit::TreeRow(i) | Hit::TreeArrow(i) => self.open_tree_menu(i, x, y, screen),
+            Hit::Tab(p, t) | Hit::TabClose(p, t) => {
+                // 選單的命令都對使用中的分頁動作
+                self.active_pane = p;
+                self.panes[p].active = t;
+                self.sync_tree();
+                self.open_tab_menu(true, x, y);
+            }
+            Hit::TabStrip(p) | Hit::TabNew(p) => {
+                self.active_pane = p;
+                self.sync_tree();
+                self.open_tab_menu(false, x, y);
+            }
             _ => {}
         }
         self.invalidate();
+    }
+
+    /// 分頁（`on_tab`）或分頁列空白處的右鍵選單
+    fn open_tab_menu(&mut self, on_tab: bool, x: f32, y: f32) {
+        let cmds: &[&str] = if on_tab {
+            &["tab.new", "", "tab.close", "tab.closeothers", "tab.closeright", "tab.reopen", "", "tab.moveleft", "tab.moveright", "", "pane.split"]
+        } else {
+            &["tab.new", "tab.reopen"]
+        };
+        let items = cmds.iter().map(|c| if c.is_empty() { MenuItem::separator() } else { self.cmd_menu_item(c) }).collect();
+        self.open_menu_at(items, x, y);
+    }
+
+    /// 拖曳分頁：游標在哪個窗格的分頁列就移到那裡（不在任何分頁列時留在原窗格），位置依游標越過了哪些分頁的中線。
+    /// 以中線判斷，換位置後游標仍在拖曳的分頁上，寬度不同的分頁不會來回跳動。回傳分頁的新位置
+    fn drag_tab(&mut self, p: usize, t: usize, x: f32, y: f32) -> (usize, usize) {
+        self.layout = self.compute_layout();
+        let to_p = self.layout.panes.iter().position(|pl| pl.strip.contains(x, y)).unwrap_or(p);
+        let to_t = self.layout.panes[to_p].tabs.iter().enumerate().filter(|&(k, r)| (to_p != p || k != t) && (r.l + r.r) / 2.0 < x).count();
+        if (to_p, to_t) == (p, t) {
+            return (p, t);
+        }
+        self.move_tab(p, t, to_p, to_t)
     }
 
     pub fn on_mbutton_up(&mut self, x: f32, y: f32) {
@@ -649,6 +692,10 @@ impl App {
     /// 拖放進來時的目標資料夾（螢幕座標轉成 DIP 後由呼叫端傳入）
     pub fn drop_target_at(&mut self, x: f32, y: f32) -> Option<String> {
         let hit = self.fresh_hit(x, y);
+        let tab = match hit {
+            Hit::Tab(p, t) | Hit::TabClose(p, t) if t != self.panes[p].active => Some((p, t)),
+            _ => None,
+        };
         let (hover, folder) = match hit {
             Hit::Row(p, i) => {
                 let tab = self.panes[p].tab();
@@ -659,7 +706,9 @@ impl App {
                     (Some((p, None)), Some(tab.path.clone()))
                 }
             }
-            Hit::ListEmpty(p) | Hit::Header(p, _) | Hit::Tab(p, _) | Hit::Scrollbar(p) => {
+            // 其他分頁：放到那個分頁的資料夾
+            Hit::Tab(p, t) | Hit::TabClose(p, t) if t != self.panes[p].active => (None, Some(self.panes[p].tabs[t].path.clone())),
+            Hit::ListEmpty(p) | Hit::Header(p, _) | Hit::Tab(p, _) | Hit::TabClose(p, _) | Hit::Scrollbar(p) => {
                 (Some((p, None)), Some(self.panes[p].tab().path.clone()))
             }
             Hit::TreeRow(i) | Hit::TreeArrow(i) => (None, Some(self.tree.nodes[i].path.clone())),
@@ -668,8 +717,10 @@ impl App {
         };
         let folder = folder.filter(|f| !f.is_empty());
         let hover = if folder.is_some() { hover } else { None };
-        if hover != self.drop_hover {
+        let tab = tab.filter(|_| folder.is_some());
+        if hover != self.drop_hover || tab != self.drop_tab {
             self.drop_hover = hover;
+            self.drop_tab = tab;
             self.invalidate();
         }
         folder

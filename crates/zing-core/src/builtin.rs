@@ -123,6 +123,11 @@ builtins! {
     TabClose, TABS, Some("tab") => spec("tab.close", &[], tr_key!("關閉分頁"), "tab.close()");
     TabNext, TABS, Some("tab") => spec("tab.next", &[], tr_key!("下一個分頁"), "tab.next()");
     TabPrev, TABS, Some("tab") => spec("tab.prev", &[], tr_key!("上一個分頁"), "tab.prev()");
+    TabCloseothers, TABS, Some("tab") => spec("tab.closeothers", &[], tr_key!("關閉其他分頁（同一個窗格）"), "tab.closeothers()");
+    TabCloseright, TABS, Some("tab") => spec("tab.closeright", &[], tr_key!("關閉右側的分頁"), "tab.closeright()");
+    TabReopen, TABS, Some("tab") => spec("tab.reopen", &[], tr_key!("重新開啟最近關閉的分頁"), "tab.reopen()");
+    TabMoveleft, TABS, Some("tab") => spec("tab.moveleft", &[], tr_key!("分頁往左移"), "tab.moveleft()");
+    TabMoveright, TABS, Some("tab") => spec("tab.moveright", &[], tr_key!("分頁往右移"), "tab.moveright()");
     PaneSplit, TABS, Some("split") => spec("pane.split", &[], tr_key!("分割出新窗格"), "pane.split()");
     PaneClose, TABS, Some("split") => spec("pane.close", &[], tr_key!("關閉窗格"), "pane.close()");
     PaneFocusnext, TABS, Some("split") => spec("pane.focusnext", &[], tr_key!("切換到下一個窗格"), "pane.focusnext()");
@@ -259,6 +264,11 @@ pub const PRESETS: &[Preset] = &[
     titled("tab.close", tr_key!("關閉分頁")),
     titled("tab.next", tr_key!("下一個分頁")),
     titled("tab.prev", tr_key!("上一個分頁")),
+    titled("tab.closeothers", tr_key!("關閉其他分頁")),
+    titled("tab.closeright", tr_key!("關閉右側的分頁")),
+    titled("tab.reopen", tr_key!("重新開啟關閉的分頁")),
+    titled("tab.moveleft", tr_key!("分頁往左移")),
+    titled("tab.moveright", tr_key!("分頁往右移")),
     titled("pane.split", tr_key!("分割窗格")),
     titled("pane.close", tr_key!("關閉窗格")),
     titled("pane.focusnext", tr_key!("切換到下一個窗格")),

@@ -728,6 +728,46 @@ tab.next()
 tab.prev()
 ```
 
+### `tab.closeothers()`
+
+他のタブを閉じる（同じペイン）
+
+```lua
+tab.closeothers()
+```
+
+### `tab.closeright()`
+
+右側のタブを閉じる
+
+```lua
+tab.closeright()
+```
+
+### `tab.reopen()`
+
+最近閉じたタブを開き直す
+
+```lua
+tab.reopen()
+```
+
+### `tab.moveleft()`
+
+タブを左へ移動
+
+```lua
+tab.moveleft()
+```
+
+### `tab.moveright()`
+
+タブを右へ移動
+
+```lua
+tab.moveright()
+```
+
 ### `pane.split()`
 
 新しいペインに分割

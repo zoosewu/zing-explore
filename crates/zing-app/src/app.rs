@@ -88,6 +88,8 @@ pub enum Focus {
 pub enum Press {
     Row { pane: usize, row: usize, x: f32, y: f32, deselect_on_up: bool },
     Scroll { pane: usize, grab: f32 },
+    /// 分頁：按下的分頁目前在哪裡（拖曳時跟著移動）；`moved` 表示已開始拖曳
+    Tab { pane: usize, tab: usize, x: f32, y: f32, moved: bool },
     ColResize { col: usize, start_x: f32, start_w: f32 },
     TreeSplit { start_x: f32, start_w: f32 },
     PreviewSplit { start_x: f32, start_w: f32 },
@@ -96,6 +98,16 @@ pub enum Press {
     /// 自訂命令列面板：拖曳按鈕調整順序（`item` 是命令列的第幾個按鈕）
     BarEditDrag { item: usize },
 }
+
+/// 關閉的分頁：重新開啟時回到原本的位置與上一頁／下一頁
+struct ClosedTab {
+    index: usize,
+    path: String,
+    back: Vec<String>,
+    forward: Vec<String>,
+}
+
+const CLOSED_TABS_MAX: usize = 20;
 
 /// 有自己訊息迴圈的動作：必須在釋放 App 借用後才執行（見 window.rs）
 pub enum Modal {
@@ -199,6 +211,8 @@ pub struct App {
     pub press: Option<Press>,
     /// 拖放進來時游標所在的窗格與列（列為 None 表示放到目前資料夾）
     pub drop_hover: Option<(usize, Option<usize>)>,
+    /// 拖放進來時游標所在的分頁（使用中的分頁以外；放到那個分頁的資料夾）
+    pub drop_tab: Option<(usize, usize)>,
     pub edit: Option<Edit>,
     pub modal: Option<Modal>,
     pub palette: Option<Palette>,
@@ -225,6 +239,8 @@ pub struct App {
     pub welcome: Option<crate::welcome::Welcome>,
     /// 網址列「›」：等待子資料夾清單的那一層（結果回來時仍是它才開啟選單）
     crumb_menu: Option<String>,
+    /// 最近關閉的分頁（`tab.reopen`，最新的在最後）
+    closed_tabs: Vec<ClosedTab>,
     /// 第一次啟動（程式旁沒有 session.toml）：第一幀之後顯示歡迎畫面
     pub first_run: bool,
     session: Session,
@@ -329,6 +345,7 @@ impl App {
             hover: Hit::None,
             press: None,
             drop_hover: None,
+            drop_tab: None,
             edit: None,
             modal: None,
             palette: None,
@@ -345,6 +362,7 @@ impl App {
             shell_windows: None,
             welcome: None,
             crumb_menu: None,
+            closed_tabs: Vec::new(),
             first_run,
             session,
         };
@@ -1390,6 +1408,35 @@ impl App {
                 self.open_in_new_tab(target);
             }
             Cmd::TabClose => self.close_tab(p, self.panes[p].active),
+            Cmd::TabCloseothers | Cmd::TabCloseright => {
+                let active = self.panes[p].active;
+                // 由右往左關，前面的索引不變
+                for t in (0..self.panes[p].tabs.len()).rev() {
+                    if t > active || (cmd == Cmd::TabCloseothers && t < active) {
+                        self.close_tab(p, t);
+                    }
+                }
+            }
+            Cmd::TabReopen => {
+                if let Some(c) = self.closed_tabs.pop() {
+                    let mut tab = self.new_tab(c.path);
+                    tab.back = c.back;
+                    tab.forward = c.forward;
+                    let pane = &mut self.panes[p];
+                    let t = c.index.min(pane.tabs.len());
+                    pane.tabs.insert(t, tab);
+                    pane.active = t;
+                    self.load(p, t);
+                    self.sync_tree();
+                }
+            }
+            Cmd::TabMoveleft | Cmd::TabMoveright => {
+                let t = self.panes[p].active;
+                let to = if cmd == Cmd::TabMoveleft { t.checked_sub(1) } else { Some(t + 1).filter(|&k| k < self.panes[p].tabs.len()) };
+                if let Some(to) = to {
+                    self.move_tab(p, t, p, to);
+                }
+            }
             Cmd::TabNext | Cmd::TabPrev => {
                 let pane = &mut self.panes[p];
                 let n = pane.tabs.len();
@@ -1841,14 +1888,50 @@ impl App {
             }
             return;
         }
+        let mut tab = self.take_tab(p, t);
+        tab.cancel.store(true, Ordering::Relaxed);
+        if self.closed_tabs.len() >= CLOSED_TABS_MAX {
+            self.closed_tabs.remove(0);
+        }
+        self.closed_tabs.push(ClosedTab { index: t, path: std::mem::take(&mut tab.path), back: std::mem::take(&mut tab.back), forward: std::mem::take(&mut tab.forward) });
+        self.sync_tree();
+        self.invalidate();
+    }
+
+    pub fn has_closed_tabs(&self) -> bool {
+        !self.closed_tabs.is_empty()
+    }
+
+    /// 從窗格取出分頁（窗格至少還有一個分頁時），使用中的分頁維持不變或移到相鄰的
+    fn take_tab(&mut self, p: usize, t: usize) -> Tab {
         let pane = &mut self.panes[p];
         let tab = pane.tabs.remove(t);
-        tab.cancel.store(true, Ordering::Relaxed);
         if pane.active >= pane.tabs.len() || pane.active > t {
             pane.active = pane.active.saturating_sub(1);
         }
+        tab
+    }
+
+    /// 把第 `p` 個窗格的第 `t` 個分頁移到第 `to_p` 個窗格的第 `to_t` 個位置並切換過去；
+    /// 移走窗格唯一的分頁時關閉那個窗格。回傳分頁的新位置
+    pub fn move_tab(&mut self, p: usize, t: usize, to_p: usize, to_t: usize) -> (usize, usize) {
+        let mut to_p = to_p;
+        let tab = if p == to_p || self.panes[p].tabs.len() > 1 {
+            self.take_tab(p, t)
+        } else {
+            if to_p > p {
+                to_p -= 1;
+            }
+            self.panes.remove(p).tabs.remove(0)
+        };
+        let pane = &mut self.panes[to_p];
+        let to_t = to_t.min(pane.tabs.len());
+        pane.tabs.insert(to_t, tab);
+        pane.active = to_t;
+        self.active_pane = to_p;
         self.sync_tree();
         self.invalidate();
+        (to_p, to_t)
     }
 
     pub fn start_rename(&mut self) {
