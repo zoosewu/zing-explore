@@ -17,6 +17,10 @@ use crate::icons::IconKey;
 use crate::model::NodeKind;
 
 pub const SCROLLBAR_W: f32 = 10.0;
+/// 清單每一列左右不屬於項目的空白（點了取消選取、按右鍵是資料夾本身的選單）：選取與游標停住的底色只畫在中間，
+/// 項目填滿清單時也有地方可以點
+pub const ROW_GUTTER_L: f32 = 8.0;
+pub const ROW_GUTTER_R: f32 = 24.0;
 /// 預覽窗格最多顯示的屬性列數
 const PREVIEW_PROPS: usize = 12;
 pub const NAV_BTN: f32 = 32.0;
@@ -190,7 +194,7 @@ impl App {
             }
             None => {
                 let y = pl.list.t + i as f32 * self.row_h() - scroll;
-                Rect::new(pl.list.l, y, pl.list.r - SCROLLBAR_W, y + self.row_h())
+                Rect::new(pl.list.l + ROW_GUTTER_L, y, pl.list.r - SCROLLBAR_W - ROW_GUTTER_R, y + self.row_h())
             }
         })
     }
@@ -373,21 +377,23 @@ impl App {
         pl.header = Rect::new(area.l, strip.b, area.r, strip.b + header_h);
         pl.list = Rect::new(area.l, pl.header.b, area.r, area.b);
         pl.scrollbar = Rect::new(area.r - SCROLLBAR_W, pl.list.t, area.r, pl.list.b);
-        let content_r = area.r - SCROLLBAR_W;
-        let [cm, ct, cs] = fit_columns(content_r - area.l, self.cols);
+        let (content_l, content_r) = (area.l + ROW_GUTTER_L, area.r - SCROLLBAR_W - ROW_GUTTER_R);
+        let [cm, ct, cs] = fit_columns(content_r - content_l, self.cols);
         let size_l = content_r - cs;
         let type_l = size_l - ct;
         let name_r = type_l - cm;
-        pl.cols = [(area.l, name_r), (name_r, type_l), (type_l, size_l), (size_l, content_r)];
+        pl.cols = [(content_l, name_r), (name_r, type_l), (type_l, size_l), (size_l, content_r)];
         pl
     }
 
+    /// 捲到底時最後一項下方留兩列高的空白：項目填滿清單時仍有空白處可以點（取消選取、資料夾本身的右鍵選單）
     pub fn max_scroll(&self, pane: usize, list_h: f32) -> f32 {
         let t = self.panes[pane].tab();
+        let pad = self.row_h() * 2.0;
         if let Some(g) = self.layout.panes.get(pane).and_then(|pl| self.grid(pane, pl.list)) {
-            return (g.content_h(t.view.len()) - list_h).max(0.0);
+            return (g.content_h(t.view.len()) + pad - list_h).max(0.0);
         }
-        (t.view.len() as f32 * self.row_h() - list_h).max(0.0)
+        (t.view.len() as f32 * self.row_h() + pad - list_h).max(0.0)
     }
 
     pub fn tree_max_scroll(&self, tree_h: f32) -> f32 {
@@ -514,7 +520,8 @@ impl App {
                     };
                 }
                 let i = ((y - pl.list.t + t.scroll) / self.row_h()).floor();
-                if i >= 0.0 && (i as usize) < t.view.len() {
+                let in_row = x >= pl.cols[0].0 && x < pl.cols[3].1;
+                if in_row && i >= 0.0 && (i as usize) < t.view.len() {
                     return Hit::Row(p, i as usize);
                 }
                 return Hit::ListEmpty(p);
@@ -816,7 +823,7 @@ impl App {
             let e = tab.view[i] as usize;
             let entry = &tab.listing.entries[e];
             let y = list.t + i as f32 * rh - tab.scroll;
-            let row = Rect::new(list.l + 4.0, y, list.r - SCROLLBAR_W, y + rh);
+            let row = Rect::new(pl.cols[0].0, y, pl.cols[3].1, y + rh);
             let selected = tab.is_selected(e);
             // 焦點所在的選取列：文字一律用選取文字色（緊湊風格的實心強調色上用深色字）
             let on_selection = selected && list_focused && drop_row != Some(i);

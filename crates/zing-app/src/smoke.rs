@@ -1488,11 +1488,23 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         let s = a.tab().scroll;
         if s > 0.0 { Ok(()) } else { Err(format!("scroll = {s}")) }
     }));
-    v.push(step("鍵盤：End 捲到最後", |c| key(c, "", VK_END), |_, a| {
+    v.push(step("鍵盤：End 捲到最後一列貼齊底部", |c| key(c, "", VK_END), |_, a| {
         expect("焦點", a.tab().focus, B_FILES - 1)?;
         let h = a.layout.panes[a.active_pane].list.h();
-        let max = a.max_scroll(a.active_pane, h);
-        if (a.tab().scroll - max).abs() < 1.0 { Ok(()) } else { Err(format!("scroll {} ≠ {max}", a.tab().scroll)) }
+        let bottom = a.tab().view.len() as f32 * a.row_h() - h;
+        if (a.tab().scroll - bottom).abs() < 1.0 { Ok(()) } else { Err(format!("scroll {} ≠ {bottom}", a.tab().scroll)) }
+    }));
+    v.push(step("滑鼠：捲到底時最後一列下方是空白處（可以對資料夾本身按右鍵）", |c| wheel(c, list_center(), -1200), |_, a| {
+        let p = a.active_pane;
+        let list = a.layout.panes[p].list;
+        expect("捲到最底", a.tab().scroll, a.max_scroll(p, list.h()))?;
+        expect("清單底部", a.hit_test(&a.layout, list.l + 60.0, list.b - 4.0), crate::view::Hit::ListEmpty(p))?;
+        // 每一列左右兩側也是空白（項目填滿清單時隨時有地方可以點）
+        let row = a.item_rect(p, a.tab().view.len() - 1).ok_or("沒有最後一列")?;
+        let y = (row.t + row.b) / 2.0;
+        expect("列的中間", a.hit_test(&a.layout, row.l + 60.0, y), crate::view::Hit::Row(p, a.tab().view.len() - 1))?;
+        expect("列的左側", a.hit_test(&a.layout, list.l + 3.0, y), crate::view::Hit::ListEmpty(p))?;
+        expect("列的右側", a.hit_test(&a.layout, row.r + 10.0, y), crate::view::Hit::ListEmpty(p))
     }));
     v.push(step("滑鼠：側鍵上一頁", |c| send(c.hwnd, WM_XBUTTONUP, 1 << 16, 0), {
         let d = d.clone();
@@ -2352,6 +2364,10 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("清單打勾", m.levels[0].items.iter().any(|i| i.label == "清單" && i.checked), true)
     }));
     v.push(step("截圖：命令列與選單", |_| {}, |c, _| screenshot(c, "18-命令列選單")));
+    v.push(step("選單：視窗被停用（切到別的視窗）時關閉", |c| send(c.hwnd, WM_ACTIVATE, 0, 0), |_, a| expect("選單", a.menu.is_none(), true)));
+    v.push(step("命令列：再點「檢視▾」開啟選單", |c| click(c, "", bar_button_pos(zing_core::cmdbar::MENU_VIEW)), |_, a| {
+        expect("選單", a.menu.is_some(), true)
+    }));
     v.push(step("命令列：選「中縮圖」", |c| click(c, "", menu_item_pos(0, "中縮圖")), |_, a| {
         expect("選單關閉", a.menu.is_none(), true)?;
         expect("縮圖", (a.tab().mode, a.tab().thumb), (zing_core::folderview::ViewMode::Thumbnails, 128))
@@ -3718,6 +3734,13 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             expect("焦點", a.tab().focus, want)
         },
     ));
+    v.push(step("縮圖：格子之間是空白處", |_| {}, |_, a| {
+        let p = a.active_pane;
+        let (first, second) = (a.item_rect(p, 0).ok_or("沒有第一格")?, a.item_rect(p, 1).ok_or("沒有第二格")?);
+        let y = (first.t + first.b) / 2.0;
+        expect("格子上", a.hit_test(&a.layout, (first.l + first.r) / 2.0, y), crate::view::Hit::Row(p, 0))?;
+        expect("兩格之間", a.hit_test(&a.layout, (first.r + second.l) / 2.0, y), crate::view::Hit::ListEmpty(p))
+    }));
     v.push(step("縮圖：Ctrl+滾輪縮小一級", |c| ctrl_wheel(c, list_center(), -120), |_, a| {
         expect("縮圖大小（Ctrl+WheelDown 是 view.thumbsize --delta=-16）", a.tab().thumb, 128 - 16)
     }));

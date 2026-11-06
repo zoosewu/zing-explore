@@ -1088,6 +1088,10 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         }
         // 主視窗啟用時會蓋到預覽處理常式的視窗（另一條執行緒的頂層視窗）：放回上層（非同步）
         WM_ACTIVATE => {
+            // 停用（切到別的視窗、點了預覽窗格）：自繪的下拉選單、右鍵選單跟著關閉（與 Windows 的選單相同）
+            if wparam.0 & 0xFFFF == 0 {
+                with_app(|a| a.close_menu());
+            }
             if wparam.0 & 0xFFFF != 0 {
                 with_app(|a| a.preview.host.raise());
                 // DefWindowProc 會把焦點設給主視窗，開著的輸入框就失去焦點而關閉（zing 不是前景時開啟輸入框，
