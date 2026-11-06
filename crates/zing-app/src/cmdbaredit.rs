@@ -118,14 +118,14 @@ impl App {
     pub fn bar_search_rect(&self, r: Rect) -> Rect {
         let rh = self.row_h();
         let inner = r.inset(12.0, 10.0);
-        let t = inner.t + rh * 2.0 + 4.0;
+        let t = inner.t + rh + 6.0;
         Rect::new(inner.l, t, inner.r, t + (rh + 6.0).max(26.0))
     }
 
     pub fn cmdbar_edit_layout(&self, r: Rect) -> (Rect, Rect, [Rect; 2]) {
         let rh = self.row_h();
         let inner = r.inset(12.0, 10.0);
-        let title = Rect::new(inner.l, inner.t, inner.r, inner.t + rh * 2.0);
+        let title = Rect::new(inner.l, inner.t, inner.r, inner.t + rh);
         let buttons = crate::sidepanel::footer_buttons(inner, rh);
         let list = Rect::new(inner.l, self.bar_search_rect(r).b + 6.0, inner.r, buttons[0].t - 8.0);
         (title, list, buttons)
@@ -398,9 +398,7 @@ impl App {
         let radius = self.theme.metrics.radius;
         g.fill(r, c.surface);
         let (title, list, buttons) = self.cmdbar_edit_layout(r);
-        let half = title.h() / 2.0;
-        g.text(tr!("自訂命令列"), Font::Bold, Rect::new(title.l, title.t, title.r, title.t + half), c.text);
-        g.text(tr!("拖曳 ⋮⋮ 調整順序；點一個按鈕可改名稱與圖示"), Font::Small, Rect::new(title.l, title.t + half, title.r, title.b), c.text_secondary);
+        g.text(tr!("自訂命令列"), Font::Bold, title, c.text);
         let s = self.bar_search_rect(r);
         g.fill_round(s, radius, c.background);
         g.stroke_round(s, radius, if matches!(self.hover, Hit::BarEditSearch(false)) { c.accent } else { c.border }, 1.0);
@@ -487,7 +485,7 @@ impl App {
                         g.fill_round(rr, radius, c.hover);
                     }
                     let label = if *row == Row::Custom { tr!("＋ 自訂命令（進階）…") } else { tr!("＋ 分隔線") };
-                    g.text(label, Font::Text, Rect::new(rr.l + 8.0, rr.t, rr.r, rr.b), c.accent);
+                    g.text(label, Font::Text, Rect::new(rr.l + 8.0, rr.t, rr.r, rr.b), c.text);
                 }
                 Row::Avail(cmd, title) => {
                     let added = self.config.cmdbar.iter().any(|i| i.cmd == *cmd);

@@ -691,6 +691,12 @@ fn update_indicator_pos() -> Option<(f32, f32)> {
     .flatten()
 }
 
+/// 開啟中的選單第一層第 `i` 個項目的中心
+fn menu_index_pos(i: usize) -> Option<(f32, f32)> {
+    let label = with_app(|a| a.menu.as_ref()?.levels.first()?.items.get(i).map(|it| it.label.clone())).flatten()?;
+    menu_item_pos(0, &label)
+}
+
 /// 開啟中的選單第 `level` 層、名稱為 `label` 的項目中心
 fn menu_item_pos(level: usize, label: &str) -> Option<(f32, f32)> {
     with_app(|a| {
@@ -923,17 +929,10 @@ fn theme_row_pos(label: &str, value: bool) -> Option<(f32, f32)> {
     })
 }
 
-/// 設定頁中某個設定的列（`option` 為 Some 時是展開的第幾個選項）；`value` 為 true 時是數值處
-fn settings_row_pos(key: &str, option: Option<usize>, value: bool) -> Option<(f32, f32)> {
-    use crate::prefspage::Row;
+/// 設定頁中某個設定的列；`value` 為 true 時是數值處
+fn settings_row_pos(key: &str, value: bool) -> Option<(f32, f32)> {
     let i = zing_core::prefs::PREFS.iter().position(|p| p.key == key)?;
-    settings_pos(
-        match option {
-            Some(o) => Row::Option(i, o),
-            None => Row::Field(i),
-        },
-        value,
-    )
+    settings_pos(crate::prefspage::Row::Field(i), value)
 }
 
 /// 設定頁的分類清單中的一個分類
@@ -965,10 +964,6 @@ fn settings_pos(want: crate::prefspage::Row, value: bool) -> Option<(f32, f32)> 
     .flatten()
 }
 
-/// 展開的選單中第 o 個選項
-fn theme_option_pos(t: crate::themepanel::Target, o: usize) -> Option<(f32, f32)> {
-    theme_pos(crate::themepanel::Row::Option(t, o), |r| (r.value.l + 20.0, (r.row.t + r.row.b) / 2.0))
-}
 
 fn theme_button_pos(k: usize) -> Option<(f32, f32)> {
     with_app(|a| {
@@ -1784,7 +1779,9 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                 return Err(format!("缺少「{want}」：{labels:?}"));
             }
         }
-        Ok(())
+        // 分頁的命令都是同一個圖示，不能用來區分，拿掉；只有「分割窗格」留著
+        let icons: Vec<&str> = m.levels[0].items.iter().filter(|i| i.icon.is_some()).map(|i| i.label.as_str()).collect();
+        expect("有圖示的項目", icons, vec!["分割窗格"])
     }));
     v.push(step("截圖：分頁的右鍵選單", |_| {}, |c, _| screenshot(c, "31-分頁的右鍵選單")));
     let want = ids.clone();
@@ -2388,6 +2385,73 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         right_click(c, bar_button_pos("sel.invert"));
         click(c, "", menu_item_pos(0, "從命令列移除"));
     }, |_, a| expect("已移除", a.config.cmdbar.iter().any(|i| i.cmd == "sel.invert"), false)));
+    let bar_index = |a: &App, cmd: &str| a.config.cmdbar.iter().position(|i| i.cmd == cmd);
+    v.push(step("命令列：把「複製」拖到「貼上」右邊", |c| {
+        let to = with_app(|a| {
+            a.layout = a.compute_layout();
+            let bl = a.layout.cmdbar.as_ref()?;
+            let (_, r, _) = bl.buttons.iter().find(|(i, _, _)| a.config.cmdbar[*i].cmd == "file.paste")?;
+            Some((r.r - 2.0, (r.t + r.b) / 2.0))
+        })
+        .flatten();
+        drag(c, bar_button_pos("file.copy"), to);
+    }, move |_, a| {
+        expect("沒有執行複製（拖曳不是點擊）", a.menu.is_none(), true)?;
+        expect("拖曳結束", a.press.is_none(), true)?;
+        expect("（貼上, 複製）的位置", bar_index(a, "file.copy").zip(bar_index(a, "file.paste")).map(|(c, p)| c == p + 1), Some(true))
+    }));
+    v.push(step("命令列：拖回「貼上」左邊", |c| {
+        let to = with_app(|a| {
+            a.layout = a.compute_layout();
+            let bl = a.layout.cmdbar.as_ref()?;
+            let (_, r, _) = bl.buttons.iter().find(|(i, _, _)| a.config.cmdbar[*i].cmd == "file.paste")?;
+            Some((r.l + 2.0, (r.t + r.b) / 2.0))
+        })
+        .flatten();
+        drag(c, bar_button_pos("file.copy"), to);
+    }, move |_, a| {
+        expect("預設的順序", a.config.cmdbar.iter().map(|i| i.cmd.clone()).collect::<Vec<_>>(), zing_core::cmdbar::defaults().iter().map(|i| i.cmd.clone()).collect::<Vec<_>>())
+    }));
+    v.push(step("欄位標題：右鍵是排序選單", |c| {
+        let at = with_app(|a| {
+            a.layout = a.compute_layout();
+            let h = a.layout.panes.first()?.header;
+            Some((h.l + 40.0, (h.t + h.b) / 2.0))
+        })
+        .flatten();
+        right_click(c, at);
+    }, |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒開")?;
+        let cmds: Vec<&str> = m.levels[0].items.iter().filter_map(|i| i.cmd.as_deref()).collect();
+        expect("依名稱排序", cmds.contains(&"view.sort --by=name"), true)?;
+        expect("目前的排序打勾", m.levels[0].items.iter().any(|i| i.checked), true)
+    }));
+    v.push(step("網址列：右鍵選單對目前的資料夾", |c| {
+        with_app(|a| a.close_menu());
+        let at = with_app(|a| {
+            a.layout = a.compute_layout();
+            let r = a.layout.address;
+            Some((r.r - 40.0, (r.t + r.b) / 2.0))
+        })
+        .flatten();
+        right_click(c, at);
+    }, {
+        move |_, a| {
+            let m = a.menu.as_ref().ok_or("選單沒開")?;
+            let labels: Vec<&str> = m.levels[0].items.iter().filter(|i| !i.separator).map(|i| i.label.as_str()).collect();
+            for want in ["在新分頁開啟", "複製路徑", "內容", "編輯網址列"] {
+                if !labels.contains(&want) {
+                    return Err(format!("缺少「{want}」：{labels:?}"));
+                }
+            }
+            let target = m.levels[0].items.iter().find_map(|i| match &i.action {
+                crate::menu::Action::Extra(_, t) => Some(t.clone()),
+                _ => None,
+            });
+            expect("對象", target.as_deref(), Some(a.tab().path.as_str()))
+        }
+    }));
+    v.push(step("網址列：關閉選單", |_| { with_app(|a| a.close_menu()); }, |_, a| expect("選單", a.menu.is_none(), true)));
     // 真的游標不在視窗上，系統隨後會送 WM_MOUSELEAVE 收起提示：在動作中記下當時的提示
     v.push(step("提示：停在複製按鈕上顯示名稱與快速鍵，移到貼上立即切換", |c| {
         let shown = || with_app(|a| a.tip.as_ref().filter(|t| t.shown).map(|t| t.text.joined())).flatten().unwrap_or_default();
@@ -2743,19 +2807,21 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         let theme = zing_core::prefs::PREFS.iter().position(|p| p.key == "theme");
         expect("只有這個分類的項目", a.settings_page().is_some_and(|p| theme.is_some_and(|t| p.rows().contains(&Row::Field(t)))), false)
     }));
-    v.push(step("設定：點開關顯示隱藏檔案", |c| click(c, "", settings_row_pos("show_hidden", None, true)), |_, a| {
+    v.push(step("設定：點開關顯示隱藏檔案", |c| click(c, "", settings_row_pos("show_hidden", true)), |_, a| {
         expect("顯示隱藏檔案", a.show_hidden, true)?;
         expect("設定", a.config.show_hidden, true)
     }));
     let pref_index = |key: &str| zing_core::prefs::PREFS.iter().position(|p| p.key == key);
-    v.push(step("設定：展開「啟動時開啟」", |c| click(c, "", settings_row_pos("startup", None, true)), move |_, a| {
-        expect("展開", a.settings_page().and_then(|p| p.expanded), pref_index("startup"))
+    v.push(step("設定：開啟「啟動時開啟」的下拉選單", |c| click(c, "", settings_row_pos("startup", true)), move |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒開")?;
+        let i = pref_index("startup").ok_or("沒有 startup")?;
+        expect("選項數", m.levels[0].items.len(), a.settings_page().map_or(0, |p| p.options(i).len()))
     }));
-    v.push(step("設定：選「指定的分頁」", |c| click(c, "", settings_row_pos("startup", Some(2), true)), |_, a| {
+    v.push(step("設定：選「指定的分頁」", |c| click(c, "", menu_index_pos(2)), |_, a| {
         expect("startup", a.config.startup, zing_core::config::Startup::Tabs)?;
-        expect("收起", a.settings_page().and_then(|p| p.expanded), None)
+        expect("選單關閉", a.menu.is_none(), true)
     }));
-    v.push(step("設定：點「指定的分頁」改成目前開著的分頁", |c| click(c, "", settings_row_pos("start_tabs", None, true)), |_, a| {
+    v.push(step("設定：點「指定的分頁」改成目前開著的分頁", |c| click(c, "", settings_row_pos("start_tabs", true)), |_, a| {
         let tabs: Vec<String> =
             a.panes.iter().flat_map(|p| p.tabs.iter().map(|t| zing_core::startup::tab_value(&t.path))).collect();
         expect("start_tabs", &a.config.start_tabs, &tabs)
@@ -2775,14 +2841,14 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("設定：點「外觀」", |c| click(c, "", settings_category_pos("外觀")), move |_, a| {
         expect("分類", category(a), group_index("外觀"))
     }));
-    v.push(step("設定：展開樹狀列位置", |c| click(c, "", settings_row_pos("layout.tree", None, false)), |_, a| {
-        let i = zing_core::prefs::PREFS.iter().position(|p| p.key == "layout.tree");
-        expect("展開", a.settings_page().and_then(|p| p.expanded), i)
+    v.push(step("設定：點樹狀列位置開啟下拉選單", |c| click(c, "", settings_row_pos("layout.tree", false)), |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒開")?;
+        expect("目前的值打勾", m.levels[0].items.iter().position(|i| i.checked), Some(0))
     }));
     v.push(step("截圖：設定頁", |_| {}, |c, _| screenshot(c, "16-設定頁")));
-    v.push(step("設定：選右側", |c| click(c, "", settings_row_pos("layout.tree", Some(1), true)), |_, a| {
+    v.push(step("設定：選右側", |c| click(c, "", menu_index_pos(1)), |_, a| {
         expect("樹狀列", a.tree_side, zing_core::config::TreeSide::Right)?;
-        expect("收起", a.settings_page().and_then(|p| p.expanded), None)?;
+        expect("選單關閉", a.menu.is_none(), true)?;
         expect("版面", a.layout.tree.zip(a.layout.panes.first()).is_some_and(|(t, p)| t.l > p.list.l), true)
     }));
     v.push(step("設定：Esc 回到分類清單", |c| key(c, "", VK_ESCAPE), move |_, a| {
@@ -2824,7 +2890,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         move |_, a| expect("allow_slow", allowed(a), true),
     ));
     v.push(step("截圖：右鍵選單的設定", |_| {}, |c, _| screenshot(c, "23-右鍵選單設定")));
-    v.push(step("設定：關閉「隱藏緩慢的擴充功能項目」", |c| click(c, "", settings_row_pos("context_menu.hide_slow", None, true)), |_, a| {
+    v.push(step("設定：關閉「隱藏緩慢的擴充功能項目」", |c| click(c, "", settings_row_pos("context_menu.hide_slow", true)), |_, a| {
         expect("hide_slow", a.config.context_menu.hide_slow, false)
     }));
     v.push(step(
@@ -2951,19 +3017,11 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     }));
     v.push(step("右側面板：每一行的鍵盤目標與滑鼠命中一致", |_| {}, |_, a| {
         use crate::view::Hit;
-        // 設定頁：分類清單、每個分類（展開第一個選項欄位）
+        // 設定頁：分類清單、每個分類
         a.exec("settings.open");
         check_side_targets(a).map_err(|e| format!("設定分類：{e}"))?;
         for g in 0..zing_core::prefs::groups().len() {
             a.settings_category(Some(g));
-            let rows = a.settings_page().map(|p| p.rows()).unwrap_or_default();
-            let choice = rows.iter().find_map(|r| match *r {
-                Row::Field(i) if matches!(zing_core::prefs::PREFS[i].kind, zing_core::prefs::Kind::Choice(_) | zing_core::prefs::Kind::Theme) => Some(i),
-                _ => None,
-            });
-            if let Some(page) = a.settings_page_mut() {
-                page.expanded = choice;
-            }
             check_side_targets(a).map_err(|e| format!("設定分類 {g}：{e}"))?;
         }
         a.close_side_panels();
@@ -3536,6 +3594,30 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             expect("順序", &names[names.len() - 2..], &["資料夾A".to_string(), "資料夾B".to_string()][..])
         },
     ));
+    let fav_row_pos = |path: &str| -> Option<(f32, f32)> {
+        with_app(|a| {
+            a.layout = a.compute_layout();
+            let k = a.tree.nodes.iter().position(|n| n.kind == crate::model::NodeKind::Favorite && n.path == path)?;
+            a.ensure_tree_visible(k);
+            a.layout = a.compute_layout();
+            let tr = a.layout.tree?;
+            let rh = a.row_h();
+            Some((tr.l + 80.0, tr.t + 4.0 + k as f32 * rh - a.tree.scroll + rh / 2.0))
+        })
+        .flatten()
+    };
+    v.push(step(
+        "我的最愛：在樹狀列把資料夾B拖到資料夾A上",
+        {
+            let (dir_a, dir_b) = (dir_a.clone(), dir_b.clone());
+            move |c| drag(c, fav_row_pos(&dir_b), fav_row_pos(&dir_a))
+        },
+        move |_, a| {
+            let names = fav_order(a);
+            expect("拖曳結束", a.press.is_none(), true)?;
+            expect("順序", &names[names.len() - 2..], &["資料夾B".to_string(), "資料夾A".to_string()][..])
+        },
+    ));
     v.push(step(
         "我的最愛：移除測試項目",
         {
@@ -4046,16 +4128,18 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("主題：滾輪調整列高（即時套用）", |c| wheel(c, theme_row_pos("列高", false), 120), |_, a| {
         expect("列高", a.theme.metrics.row_height, 23.0)
     }));
-    v.push(step("主題：展開網址列的選單", |c| click(c, "", theme_row_pos("網址列", true)), |_, a| {
-        let t = crate::themepanel::Target::Field(theme_field("網址列"));
-        expect("展開", a.theme_editor().and_then(|e| e.expanded), Some(t))
+    v.push(step("主題：開啟網址列的下拉選單", |c| click(c, "", theme_row_pos("網址列", true)), |_, a| {
+        let m = a.menu.as_ref().ok_or("選單沒開")?;
+        let labels: Vec<&str> = m.levels[0].items.iter().map(|i| i.label.as_str()).collect();
+        expect("選項", labels, vec!["完整路徑", "麵包屑"])?;
+        expect("目前的值打勾", m.levels[0].items[0].checked, true)
     }));
     v.push(step(
         "主題：選麵包屑",
-        |c| click(c, "", theme_option_pos(crate::themepanel::Target::Field(theme_field("網址列")), 1)),
+        |c| click(c, "", menu_index_pos(1)),
         |_, a| {
             expect("網址列", a.theme.chrome.address, zing_core::theme::AddressStyle::Breadcrumb)?;
-            expect("收起", a.theme_editor().and_then(|e| e.expanded), None)?;
+            expect("選單關閉", a.menu.is_none(), true)?;
             // 麵包屑的每一層（含目前的資料夾）後面都有「›」
             let lay = a.compute_layout();
             expect("「›」", lay.crumb_menus.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(), lay.crumbs.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>())
@@ -4100,7 +4184,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |c| {
             let _ = with_app(|a| a.theme_escape());
             click(c, "", theme_pos(crate::themepanel::Row::AddRule, |r| (r.row.l + 20.0, (r.row.t + r.row.b) / 2.0)));
-            click(c, "", theme_option_pos(crate::themepanel::Target::AddRule, 0));
+            click(c, "", menu_index_pos(0));
         },
         |_, a| {
             let rules = &a.theme.color.file_rule;
@@ -4111,7 +4195,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     ));
     v.push(step("主題：換成淺色（保留尺寸、網址列與檔案顏色）", |c| {
         click(c, "", theme_pos(crate::themepanel::Row::Mode, |r| (r.value.l + 20.0, (r.row.t + r.row.b) / 2.0)));
-        click(c, "", theme_option_pos(crate::themepanel::Target::Mode, 1));
+        click(c, "", menu_index_pos(1));
     }, |_, a| {
         expect("深淺色", a.theme.mode, zing_core::theme::Mode::Light)?;
         expect("背景", a.theme.color.background, zing_core::theme::Theme::light().color.background)?;
@@ -4121,7 +4205,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     }));
     v.push(step("主題：換回深色", |c| {
         click(c, "", theme_pos(crate::themepanel::Row::Mode, |r| (r.value.l + 20.0, (r.row.t + r.row.b) / 2.0)));
-        click(c, "", theme_option_pos(crate::themepanel::Target::Mode, 0));
+        click(c, "", menu_index_pos(0));
     }, |_, a| expect("深淺色", a.theme.mode, zing_core::theme::Mode::Dark)));
     v.push(step(
         "主題：輸入強調色",

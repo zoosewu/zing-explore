@@ -29,6 +29,8 @@ pub enum Action {
     Pref(usize, String),
     /// 目前的窗格切換到這個資料夾（網址列「›」的子資料夾）
     Go(String),
+    /// 主題編輯面板的選項（風格、深淺色、字型…）選了這個值
+    ThemePick(crate::themepanel::Target, String),
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +63,19 @@ pub struct Level {
     pub hover: Option<usize>,
     /// 項目比視窗高時捲動的距離（滾輪、鍵盤移動時捲到看得見）
     pub scroll: f32,
+}
+
+impl Level {
+    fn new(mut items: Vec<MenuItem>, rect: Rect) -> Self {
+        // 同一層裡重複的圖示不能用來區分項目，拿掉（例如分頁選單每一項都是分頁的圖示）
+        let icons: Vec<_> = items.iter().filter_map(|i| i.icon).collect();
+        for it in &mut items {
+            if it.icon.is_some_and(|ic| icons.iter().filter(|&&x| x == ic).count() > 1) {
+                it.icon = None;
+            }
+        }
+        Level { items, rect, hover: None, scroll: 0.0 }
+    }
 }
 
 pub struct Menu {
@@ -99,7 +114,7 @@ impl App {
     /// 在 `anchor` 下方（放不下就上方）開啟選單
     pub fn open_menu(&mut self, items: Vec<MenuItem>, anchor: Rect) {
         let rect = self.place_menu(&items, anchor.l, anchor.b + 2.0, Some(anchor.t - 2.0));
-        self.menu = Some(Menu { levels: vec![Level { items, rect, hover: None, scroll: 0.0 }] });
+        self.menu = Some(Menu { levels: vec![Level::new(items, rect)] });
         self.hide_tip();
         self.invalidate();
     }
@@ -107,7 +122,7 @@ impl App {
     /// 在 (x, y) 開啟選單（右鍵選單）
     pub fn open_menu_at(&mut self, items: Vec<MenuItem>, x: f32, y: f32) {
         let rect = self.place_menu(&items, x, y, None);
-        self.menu = Some(Menu { levels: vec![Level { items, rect, hover: None, scroll: 0.0 }] });
+        self.menu = Some(Menu { levels: vec![Level::new(items, rect)] });
         self.hide_tip();
         self.invalidate();
     }
@@ -177,7 +192,7 @@ impl App {
         let t = (r.t - PAD).min(wh - h - 4.0).max(4.0);
         let rect = Rect::new(l, t, l + w, t + h);
         if let Some(m) = self.menu.as_mut() {
-            m.levels.push(Level { items, rect, hover: None, scroll: 0.0 });
+            m.levels.push(Level::new(items, rect));
         }
     }
 
@@ -231,6 +246,7 @@ impl App {
             Action::ShellExt(ext, id) => self.invoke_menu_ext(ext, id),
             Action::Update(c) => self.update_choice(c),
             Action::Pref(i, value) => self.set_pref(i, value),
+            Action::ThemePick(t, value) => self.pick_option(t, value),
             Action::Go(path) => self.navigate(self.active_pane, path, true),
         }
     }

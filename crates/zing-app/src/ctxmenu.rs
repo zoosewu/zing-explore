@@ -1,7 +1,8 @@
 //! 清單與樹狀列的右鍵選單。預設是兩層（同 Windows 11）：先顯示程式自己的常用項目（`menu.rs` 自繪，立即出現、跟著主題），
 //! 最後一項「顯示更多選項」才開啟完整的 Windows 選單（`ShellHost`，游標停住時已預先準備，也是立即出現）。
 //! Shift+右鍵、設定 `context_menu.style = "full"`、「此電腦」直接顯示完整的 Windows 選單。
-//! 樹狀列的項目只對那個節點動作（不是清單的選取），所以不用命令，而是 `MENU_TREE_*`。
+//! 樹狀列的項目只對那個節點動作（不是清單的選取），所以不用命令，而是 `MENU_TREE_*`；網址列的右鍵選單同樣對那一層動作。
+//! 欄位標題的右鍵選單是「排序」選單。
 //!
 //! 第一層的命令與命令列共用（`cmd_menu_item`：快速鍵、不能用的原因）；程式自己的項目（在新分頁開啟、我的最愛、
 //! 縮圖、批次重新命名）與完整選單相同（`entry_menu_extras`）。第三方擴充功能（7-Zip…）的項目由 ShellHost 在游標停住時
@@ -206,6 +207,26 @@ impl App {
         let menu = self.finish_compact_menu(out, &items, &folder, item(MENU_TREE_PROPERTIES, tr!("內容")));
         self.pending_shell_menu = Some(PendingShellMenu { items, folder, pt, extras, target: path });
         self.open_menu_at(menu, x, y);
+    }
+
+    /// 網址列的右鍵選單：對那一層（`path`，空字串是「此電腦」）的資料夾動作
+    pub fn open_address_menu(&mut self, path: String, x: f32, y: f32) {
+        let mut out = Vec::new();
+        if !path.is_empty() {
+            let item = |id: u32, label: &str| MenuItem::new(label, Action::Extra(id, path.clone()));
+            out.extend(self.folder_extras(&path).iter().map(|(id, label)| item(*id, label)));
+            out.push(item(MENU_TREE_COPYPATH, tr!("複製路徑")));
+            out.push(item(MENU_TREE_PROPERTIES, tr!("內容")));
+            out.push(MenuItem::separator());
+        }
+        out.push(self.cmd_menu_item("address.edit"));
+        self.open_menu_at(out, x, y);
+    }
+
+    /// 欄位標題的右鍵選單：排序
+    pub fn open_header_menu(&mut self, x: f32, y: f32) {
+        let items = self.menu_entries(core::menu(core::MENU_SORT));
+        self.open_menu_at(items, x, y);
     }
 
     /// 精簡選單中第三方擴充功能的項目：交給 ShellHost 以同一個物件執行

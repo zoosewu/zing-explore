@@ -18,6 +18,7 @@ use zing_core::theme::{
 use crate::app::{App, EditKind, Modal, Press};
 use crate::gfx::{Font, Rect};
 use crate::services::Msg;
+use crate::menu::{Action, MenuItem};
 use crate::sidepanel::{Line, footer_buttons, row_rect};
 use crate::view::Hit;
 use crate::window;
@@ -36,16 +37,18 @@ pub struct ThemeEditor {
     pub original: Theme,
     pub original_name: String,
     pub scroll: f32,
-    /// 展開中的選單或色票
+    /// 展開中的色票（顏色、檔案顏色）
     pub expanded: Option<Target>,
-    /// 系統字型（展開字型選單時才在背景讀取）：（英文名稱, 顯示名稱）
+    /// 系統字型（開啟字型選單時才在背景讀取）：（英文名稱, 顯示名稱）
     pub fonts: Option<Vec<(String, String)>>,
+    /// 等字型清單讀完才開啟選單的欄位
+    font_menu: Option<usize>,
 }
 
 /// 可以展開的項目
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
-    /// FIELDS 中的欄位：顏色展開色票，選項與字型展開選單
+    /// FIELDS 中的欄位：顏色展開色票，選項與字型開啟下拉選單
     Field(usize),
     Style,
     Mode,
@@ -64,15 +67,12 @@ pub enum Row {
     Field(usize),
     /// 色票的第幾列
     Swatches(Target, usize),
-    /// 展開的選單的第幾個選項
-    Option(Target, usize),
     Rule(usize),
     AddRule,
 }
 
 pub struct PanelLayout {
     pub title: Rect,
-    pub note: Rect,
     pub list: Rect,
     pub buttons: [Rect; 2],
     pub links: [Rect; 3],
@@ -101,10 +101,10 @@ fn is_font(i: usize) -> bool {
 
 impl ThemeEditor {
     pub fn new(original: Theme, original_name: String) -> Self {
-        ThemeEditor { original, original_name, scroll: 0.0, expanded: None, fonts: None }
+        ThemeEditor { original, original_name, scroll: 0.0, expanded: None, fonts: None, font_menu: None }
     }
 
-    /// 選單的選項：（值, 顯示名稱）
+    /// 下拉選單的選項：（值, 顯示名稱）
     pub fn options(&self, theme: &Theme, t: Target) -> Vec<(String, String)> {
         let tr = zing_core::i18n::tr;
         match t {
@@ -141,16 +141,7 @@ impl ThemeEditor {
             if self.expanded != Some(t) {
                 return;
             }
-            let color = match t {
-                Target::Rule(_) => true,
-                Target::Field(i) => FIELDS[i].kind == FieldKind::Color,
-                _ => false,
-            };
-            if color {
-                out.extend((0..(SWATCHES.len() + 2).div_ceil(SWATCH_COLS)).map(|l| Row::Swatches(t, l)));
-            } else {
-                out.extend((0..self.options(theme, t).len().max(1)).map(|k| Row::Option(t, k)));
-            }
+            out.extend((0..(SWATCHES.len() + 2).div_ceil(SWATCH_COLS)).map(|l| Row::Swatches(t, l)));
         };
         expand(&mut out, Target::Style);
         out.push(Row::Mode);
@@ -225,15 +216,14 @@ impl App {
         let rh = self.row_h();
         let inner = r.inset(12.0, 10.0);
         let title = Rect::new(inner.l, inner.t, inner.r, inner.t + rh);
-        let note = Rect::new(inner.l, title.b, inner.r, title.b + rh);
         let link_h = rh;
         let links_row = Rect::new(inner.l, inner.b - link_h, inner.r, inner.b);
         let buttons = footer_buttons(Rect::new(inner.l, inner.t, inner.r, links_row.t - 4.0), rh);
         let row = buttons[0];
         let third = inner.w() / 3.0;
         let links = [0, 1, 2].map(|k| Rect::new(inner.l + third * k as f32, links_row.t, inner.l + third * (k + 1) as f32, links_row.b));
-        let list = Rect::new(inner.l, note.b + 4.0, inner.r, row.t - 8.0);
-        PanelLayout { title, note, list, buttons, links }
+        let list = Rect::new(inner.l, title.b + 6.0, inner.r, row.t - 8.0);
+        PanelLayout { title, list, buttons, links }
     }
 
     pub fn theme_row_rects(&self, list: Rect, k: usize, scroll: f32) -> RowRects {
@@ -323,24 +313,63 @@ impl App {
         Hit::ThemePanel
     }
 
+    /// 展開／收起色票
     fn toggle_expand(&mut self, t: Target) {
-        let need_fonts = matches!(t, Target::Field(i) if is_font(i));
         if let Some(ed) = self.theme_editor_mut() {
             ed.expanded = if ed.expanded == Some(t) { None } else { Some(t) };
-            if need_fonts && ed.fonts.is_none() && ed.expanded == Some(t) {
-                ed.fonts = Some(Vec::new());
-                let n = self.notifier.clone();
-                self.pool.spawn(move || n.send(Msg::Fonts(crate::gfx::system_font_families())));
-            }
         }
         self.invalidate();
     }
 
-    pub fn on_fonts(&mut self, fonts: Vec<(String, String)>) {
-        if let Some(ed) = self.theme_editor_mut() {
-            ed.fonts = Some(fonts);
-            self.invalidate();
+    /// 選項的下拉選單，在那一列的數值處下方開啟；字型清單第一次在背景讀取，讀完才開啟
+    fn open_theme_menu(&mut self, t: Target) {
+        self.collapse();
+        if let Target::Field(i) = t
+            && is_font(i)
+            && let Some(ed) = self.theme_editor_mut()
+            && ed.fonts.is_none()
+        {
+            ed.font_menu = Some(i);
+            let n = self.notifier.clone();
+            self.pool.spawn(move || n.send(Msg::Fonts(crate::gfx::system_font_families())));
+            return;
         }
+        let Some(ed) = self.theme_editor() else { return };
+        let current = match t {
+            Target::Style => self.theme.style.name().to_string(),
+            Target::Mode => mode_code(self.theme.mode).to_string(),
+            Target::Field(i) => self.theme.field_value(&FIELDS[i]),
+            _ => String::new(),
+        };
+        let items: Vec<MenuItem> = ed
+            .options(&self.theme, t)
+            .into_iter()
+            .map(|(v, label)| MenuItem { checked: v == current, ..MenuItem::new(label, Action::ThemePick(t, v)) })
+            .collect();
+        let row = match t {
+            Target::Style => Row::Style,
+            Target::Mode => Row::Mode,
+            Target::Field(i) => Row::Field(i),
+            Target::AddRule => Row::AddRule,
+            Target::Rule(r) => Row::Rule(r),
+        };
+        let Some(k) = self.theme_rows().iter().position(|r| *r == row) else { return };
+        let Some(panel) = self.layout.side_panel else { return };
+        if self.side_reveal(k).is_none() {
+            return;
+        }
+        let rr = self.theme_row_rects(self.theme_panel_layout(panel).list, k, self.side_scroll());
+        let anchor = if t == Target::AddRule { rr.row } else { rr.value };
+        self.open_menu(items, anchor);
+    }
+
+    pub fn on_fonts(&mut self, fonts: Vec<(String, String)>) {
+        let Some(ed) = self.theme_editor_mut() else { return };
+        ed.fonts = Some(fonts);
+        if let Some(i) = ed.font_menu.take() {
+            self.open_theme_menu(Target::Field(i));
+        }
+        self.invalidate();
     }
 
     fn collapse(&mut self) {
@@ -391,7 +420,7 @@ impl App {
                 out
             }
             Row::Rule(_) => vec![(Hit::ThemeRow(k), upto(rr.text.l)), (Hit::ThemeText(k), rr.text), (Hit::ThemeDelete(k), rr.tail)],
-            Row::Style | Row::Mode | Row::Option(..) | Row::AddRule => vec![(Hit::ThemeRow(k), rr.row)],
+            Row::Style | Row::Mode | Row::AddRule => vec![(Hit::ThemeRow(k), rr.row)],
         }
     }
 
@@ -400,8 +429,8 @@ impl App {
         let row = |k: usize| rows.get(k).copied();
         match hit {
             Hit::ThemeRow(k) => match row(k) {
-                Some(Row::Style) => self.toggle_expand(Target::Style),
-                Some(Row::Mode) => self.toggle_expand(Target::Mode),
+                Some(Row::Style) => self.open_theme_menu(Target::Style),
+                Some(Row::Mode) => self.open_theme_menu(Target::Mode),
                 Some(Row::Field(i)) => match FIELDS[i].kind {
                     FieldKind::Bool => {
                         if let Some(t) = self.theme.cycle_field(&FIELDS[i]) {
@@ -409,11 +438,11 @@ impl App {
                         }
                     }
                     FieldKind::Number { .. } => self.begin_theme_field_edit(k, i),
-                    _ => self.toggle_expand(Target::Field(i)),
+                    FieldKind::Color => self.toggle_expand(Target::Field(i)),
+                    _ => self.open_theme_menu(Target::Field(i)),
                 },
                 Some(Row::Rule(r)) => self.toggle_expand(Target::Rule(r)),
-                Some(Row::AddRule) => self.toggle_expand(Target::AddRule),
-                Some(Row::Option(t, o)) => self.pick_option(t, o),
+                Some(Row::AddRule) => self.open_theme_menu(Target::AddRule),
                 _ => {}
             },
             Hit::ThemeText(k) => match row(k) {
@@ -464,10 +493,10 @@ impl App {
         }
     }
 
-    fn pick_option(&mut self, t: Target, o: usize) {
-        let Some(ed) = self.theme_editor() else { return };
-        let Some((value, _)) = ed.options(&self.theme, t).get(o).cloned() else { return };
-        self.collapse();
+    pub fn pick_option(&mut self, t: Target, value: String) {
+        if self.theme_editor().is_none() {
+            return;
+        }
         match t {
             Target::Style => {
                 if let Some((s, _)) = STYLE_CHOICES.iter().find(|(s, _)| s.name() == value) {
@@ -663,9 +692,8 @@ impl App {
         g.text(&title, Font::Bold, pl.title, c.text);
         if dirty {
             let w = g.measure(&title, Font::Bold);
-            g.text(tr!("● 尚未儲存"), Font::Small, Rect::new(pl.title.l + w + 10.0, pl.title.t, pl.title.r, pl.title.b), c.accent);
+            g.text(tr!("● 尚未儲存"), Font::Small, Rect::new(pl.title.l + w + 10.0, pl.title.t, pl.title.r, pl.title.b), c.text_secondary);
         }
-        g.text(tr!("變更會立即顯示在畫面上，按「儲存」保留"), Font::Small, pl.note, c.text_secondary);
         g.push_clip(pl.list);
         for (k, row) in ed.rows(&self.theme).iter().enumerate() {
             let rr = self.theme_row_rects(pl.list, k, ed.scroll);
@@ -675,22 +703,21 @@ impl App {
             let hovered = |h: &Hit| matches!(h, Hit::ThemeRow(x) | Hit::ThemeText(x) | Hit::ThemeReset(x) | Hit::ThemeStep(x, _) | Hit::ThemeSlider(x) | Hit::ThemeDelete(x) if *x == k);
             let hover = hovered(&self.hover);
             let label_rect = Rect::new(rr.row.l + 8.0, rr.row.t, rr.value.l - 6.0, rr.row.b);
-            let arrow = |t: Target| if ed.expanded == Some(t) { "▴" } else { "▾" };
             match *row {
                 Row::Header(h) => g.text(h, Font::Bold, Rect::new(rr.row.l, rr.row.t + 2.0, rr.row.r, rr.row.b), c.text_secondary),
                 Row::Style | Row::Mode => {
                     if hover {
                         g.fill_round(rr.row, radius, c.hover);
                     }
-                    let (label, value, t) = if *row == Row::Style {
+                    let (label, value) = if *row == Row::Style {
                         let v = STYLE_CHOICES.iter().find(|(s, _)| *s == self.theme.style).map_or("", |x| tr(x.1));
-                        (tr!("風格"), v, Target::Style)
+                        (tr!("風格"), v)
                     } else {
                         let v = MODE_CHOICES.iter().find(|(m, _)| *m == self.theme.mode).map_or("", |x| tr(x.1));
-                        (tr!("深淺色"), v, Target::Mode)
+                        (tr!("深淺色"), v)
                     };
                     g.text(label, Font::Text, label_rect, c.text);
-                    g.text(&format!("{value} {}", arrow(t)), Font::Text, rr.value, c.accent);
+                    g.text(&format!("{value} ▾"), Font::Text, rr.value, c.text);
                 }
                 Row::Field(i) => {
                     let f = &FIELDS[i];
@@ -740,7 +767,7 @@ impl App {
                             } else {
                                 choice_label(&v).to_string()
                             };
-                            g.text(&format!("{shown} {}", arrow(Target::Field(i))), Font::Text, rr.value, c.accent);
+                            g.text(&format!("{shown} ▾"), Font::Text, rr.value, c.text);
                         }
                     }
                     if !self.theme.is_default(f) {
@@ -765,25 +792,6 @@ impl App {
                         }
                     }
                 }
-                Row::Option(t, o) => {
-                    let options = ed.options(&self.theme, t);
-                    let ir = Rect::new(rr.value.l - 12.0, rr.row.t, rr.row.r, rr.row.b);
-                    g.fill_round(ir, radius, if hover { c.hover } else { c.background });
-                    let Some((v, label)) = options.get(o) else {
-                        g.text(tr!("載入中…"), Font::Text, Rect::new(ir.l + 24.0, rr.row.t, ir.r, rr.row.b), c.text_secondary);
-                        continue;
-                    };
-                    let current = match t {
-                        Target::Style => self.theme.style.name() == v,
-                        Target::Mode => mode_code(self.theme.mode) == v,
-                        Target::Field(i) => self.theme.field_value(&FIELDS[i]) == *v,
-                        _ => false,
-                    };
-                    if current {
-                        g.text("✓", Font::Text, Rect::new(ir.l + 6.0, rr.row.t, ir.l + 22.0, rr.row.b), c.accent);
-                    }
-                    g.text(label, Font::Text, Rect::new(ir.l + 24.0, rr.row.t, ir.r - 6.0, rr.row.b), if current { c.accent } else { c.text });
-                }
                 Row::Rule(r) => {
                     let Some(rule) = self.theme.color.file_rule.get(r) else { continue };
                     if hover {
@@ -802,7 +810,7 @@ impl App {
                     if hover {
                         g.fill_round(rr.row, radius, c.hover);
                     }
-                    g.text(&format!("＋ {}", tr!("新增檔案顏色")), Font::Text, Rect::new(rr.row.l + 8.0, rr.row.t, rr.row.r, rr.row.b), c.accent);
+                    g.text(&format!("＋ {}", tr!("新增檔案顏色")), Font::Text, Rect::new(rr.row.l + 8.0, rr.row.t, rr.row.r, rr.row.b), c.text);
                 }
             }
         }

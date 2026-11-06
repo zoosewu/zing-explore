@@ -2,7 +2,7 @@
 //! 列出 `zing_core::prefs::PREFS`。
 //!
 //! - 先選分類（`prefs::groups()`，每個分類下方列出它的項目），再選要設定的項目；標題列的「‹」或 Esc 回到分類清單。
-//! - 選項（語言、主題、位置）：點一下展開選項，再點選一個；開關：點一下切換；文字：點一下輸入，Enter 確定。
+//! - 選項（語言、主題、位置）：點一下開啟下拉選單；開關：點一下切換；文字：點一下輸入，Enter 確定。
 //! - 緩慢的右鍵選單擴充功能（`Kind::SlowList`）：表格逐一切換是否照樣放在第一層；「隱藏緩慢的擴充功能項目」
 //!   關閉時表格以灰階顯示、不能切換。表格的內容在進入分類時於背景讀取（`shellext::slow_list`）。
 //! - 每次修改立即套用，並在背景只改寫 config.toml 中的那一行（保留註解，見 `zing_core::prefs::write_pref`）；
@@ -15,6 +15,7 @@ use zing_core::prefs::{BUILTIN_THEMES, Kind, PREFS, choice_label, groups, toml_l
 
 use crate::app::{App, EditKind};
 use crate::gfx::{Font, Rect};
+use crate::menu::{Action, MenuItem};
 use crate::services::Msg;
 use crate::settings;
 use crate::shellext::SlowExt;
@@ -32,8 +33,6 @@ pub struct SettingsPage {
     pub scroll: f32,
     /// 目前的分類（`prefs::groups()` 的索引）；None 是分類清單
     pub category: Option<usize>,
-    /// 展開選項的欄位
-    pub expanded: Option<usize>,
     /// themes 資料夾中的使用者主題（開啟時在背景讀取）
     pub user_themes: Vec<String>,
     /// 緩慢的右鍵選單擴充功能（進入有表格的分類時在背景讀取）
@@ -49,8 +48,6 @@ pub enum Row {
     Field(usize),
     /// 欄位的說明（小字）的第 n 行
     Hint(usize, usize),
-    /// 展開的欄位的第 k 個選項
-    Option(usize, usize),
     /// 緩慢的擴充功能表格（`Kind::SlowList` 的欄位）：欄名、第 k 個擴充功能、沒有項目
     SlowHead(usize),
     Slow(usize, usize),
@@ -60,7 +57,6 @@ pub enum Row {
 pub struct PanelLayout {
     pub title: Rect,
     pub list: Rect,
-    pub note: Rect,
     pub buttons: [Rect; 2],
 }
 
@@ -97,9 +93,6 @@ impl SettingsPage {
             if !p.hint.is_empty() {
                 let lines = zing_core::i18n::tr(p.hint).lines().count().max(1);
                 out.extend((0..lines).map(|n| Row::Hint(i, n)));
-            }
-            if self.expanded == Some(i) {
-                out.extend((0..self.options(i).len()).map(|k| Row::Option(i, k)));
             }
             if p.kind == Kind::SlowList {
                 if self.slow.is_empty() {
@@ -154,7 +147,6 @@ impl App {
         let left = page.category;
         page.category = category;
         page.scroll = 0.0;
-        page.expanded = None;
         // 鍵盤焦點：進入分類時在第一項，回到分類清單時在剛才的分類
         let k = match (category, left) {
             (None, Some(g)) => page.rows().iter().position(|r| *r == Row::Category(g)).unwrap_or(0),
@@ -175,9 +167,8 @@ impl App {
         let inner = r.inset(12.0, 10.0);
         let title = Rect::new(inner.l, inner.t, inner.r, inner.t + rh);
         let buttons = footer_buttons(inner, rh);
-        let note = Rect::new(inner.l, buttons[0].t - 6.0 - rh, inner.r, buttons[0].t - 6.0);
-        let list = Rect::new(inner.l, title.b + 6.0, inner.r, note.t - 4.0);
-        PanelLayout { title, list, note, buttons }
+        let list = Rect::new(inner.l, title.b + 6.0, inner.r, buttons[0].t - 8.0);
+        PanelLayout { title, list, buttons }
     }
 
     /// 第 k 列的位置與其中數值的範圍
@@ -212,7 +203,7 @@ impl App {
             if k >= 0.0 {
                 let k = k as usize;
                 match rows.get(k) {
-                    Some(Row::Category(_) | Row::Field(_) | Row::Option(..)) => return Hit::SettingsRow(k),
+                    Some(Row::Category(_) | Row::Field(_)) => return Hit::SettingsRow(k),
                     // 分類的兩列是同一個按鈕
                     Some(Row::CategoryHint(_)) => return Hit::SettingsRow(k - 1),
                     Some(Row::Slow(..)) if self.slow_table_enabled() => return Hit::SettingsRow(k),
@@ -236,18 +227,11 @@ impl App {
                 match page.rows().get(k) {
                     // 分類與它下方的一覽是同一個按鈕
                     Some(Row::Category(_)) => vec![(Hit::SettingsRow(k), Rect::new(rr.l, rr.t, rr.r, rr.b + self.row_h()))],
-                    Some(Row::Field(_) | Row::Option(..)) => vec![(Hit::SettingsRow(k), rr)],
+                    Some(Row::Field(_)) => vec![(Hit::SettingsRow(k), rr)],
                     Some(Row::Slow(..)) if self.slow_table_enabled() => vec![(Hit::SettingsRow(k), rr)],
                     _ => Vec::new(),
                 }
             }
-        }
-    }
-
-    /// 收起展開的選項後，鍵盤焦點回到欄位本身
-    fn settings_focus_field(&mut self, i: usize) {
-        if let Some(k) = self.settings_page().and_then(|p| p.rows().iter().position(|r| *r == Row::Field(i))) {
-            self.side_cursor.line = Line::Row(k);
         }
     }
 
@@ -259,10 +243,8 @@ impl App {
                     Some(Row::Category(g)) => self.settings_category(Some(g)),
                     Some(Row::Field(i)) => match PREFS[i].kind {
                         Kind::Choice(_) | Kind::Theme => {
-                            if let Some(page) = self.settings_page_mut() {
-                                page.expanded = if page.expanded == Some(i) { None } else { Some(i) };
-                            }
-                            self.invalidate();
+                            let options = page.options(i);
+                            self.open_choice_menu(k, i, options);
                         }
                         Kind::Bool => {
                             let on = self.config.pref_value(PREFS[i].key) == "true";
@@ -281,16 +263,6 @@ impl App {
                         Kind::DefaultApp => self.toggle_default_app(),
                         Kind::SlowList => {}
                     },
-                    Some(Row::Option(i, o)) => {
-                        let value = page.options(i).get(o).map(|(v, _)| v.clone());
-                        if let Some(page) = self.settings_page_mut() {
-                            page.expanded = None;
-                        }
-                        self.settings_focus_field(i);
-                        if let Some(v) = value {
-                            self.set_pref(i, v);
-                        }
-                    }
                     Some(Row::Slow(i, e)) if self.slow_table_enabled() => {
                         let Some(clsid) = page.slow.get(e).map(|e| e.clsid.clone()) else { return };
                         let mut allow = self.config.context_menu.allow_slow.clone();
@@ -312,16 +284,24 @@ impl App {
         }
     }
 
-    /// Esc：先收起展開的選項，再回到分類清單，最後關閉設定頁
+    /// 第 k 列（`PREFS[i]`）的選項：在數值處下方開啟下拉選單，目前的值打勾
+    fn open_choice_menu(&mut self, k: usize, i: usize, options: Vec<(String, String)>) {
+        let Some(panel) = self.layout.side_panel else { return };
+        if self.side_reveal(k).is_none() {
+            return;
+        }
+        let (_, value) = self.settings_row_rects(self.settings_layout(panel).list, k, self.side_scroll());
+        let current = self.config.pref_value(PREFS[i].key);
+        let items = options
+            .into_iter()
+            .map(|(v, label)| MenuItem { checked: v.eq_ignore_ascii_case(&current), ..MenuItem::new(label, Action::Pref(i, v)) })
+            .collect();
+        self.open_menu(items, value);
+    }
+
+    /// Esc：先回到分類清單，再關閉設定頁
     pub fn settings_escape(&mut self) {
         match self.settings_page_mut() {
-            Some(page) if page.expanded.is_some() => {
-                let i = page.expanded.take();
-                if let Some(i) = i {
-                    self.settings_focus_field(i);
-                }
-                self.invalidate();
-            }
             Some(page) if page.category.is_some() => self.settings_category(None),
             Some(_) => self.close_side_panels(),
             None => {}
@@ -456,8 +436,7 @@ impl App {
                     let vr = Rect::new(value.l, rr.t, rr.r - 6.0, rr.b);
                     match p.kind {
                         Kind::Choice(_) | Kind::Theme => {
-                            let arrow = if page.expanded == Some(i) { "▴" } else { "▾" };
-                            g.text(&format!("{} {arrow}", choice_label(p, &v)), Font::Text, vr, c.accent);
+                            g.text(&format!("{} ▾", choice_label(p, &v)), Font::Text, vr, c.text);
                         }
                         Kind::Bool => {
                             let on = v == "true";
@@ -484,17 +463,6 @@ impl App {
                         Kind::Action(_) => g.text("›", Font::Text, Rect::new(rr.r - 18.0, rr.t, rr.r, rr.b), c.text_secondary),
                         Kind::SlowList => {}
                     }
-                }
-                Row::Option(i, o) => {
-                    let options = page.options(i);
-                    let Some((v, label)) = options.get(o) else { continue };
-                    let current = self.config.pref_value(PREFS[i].key).eq_ignore_ascii_case(v);
-                    let ir = Rect::new(value.l - 12.0, rr.t, rr.r, rr.b);
-                    g.fill_round(ir, radius, if hover { c.hover } else { c.background });
-                    if current {
-                        g.text("✓", Font::Text, Rect::new(ir.l + 6.0, rr.t, ir.l + 22.0, rr.b), c.accent);
-                    }
-                    g.text(label, Font::Text, Rect::new(ir.l + 24.0, rr.t, ir.r - 6.0, rr.b), if current { c.accent } else { c.text });
                 }
                 Row::SlowHead(_) => {
                     let heads = [tr!("擴充功能"), tr!("類型"), tr!("耗時"), tr!("放在第一層")];
@@ -524,7 +492,6 @@ impl App {
             }
         }
         g.pop_clip();
-        g.text(tr!("變更立即生效，並儲存到程式旁的 config.toml"), Font::Small, pl.note, c.text_secondary);
         self.paint_footer_buttons(&pl.buttons, BUTTONS, None, |k| self.hover == Hit::SettingsButton(k));
     }
 }

@@ -301,7 +301,7 @@ impl App {
             match p.kind {
                 Kind::Choice(_) | Kind::Theme => {
                     let v = self.config.pref_value(p.key);
-                    g.text(&format!("{} ▾", choice_label(p, &v)), Font::Text, *control, c.accent);
+                    g.text(&format!("{} ▾", choice_label(p, &v)), Font::Text, *control, c.text);
                 }
                 Kind::Bool | Kind::DefaultApp | Kind::Action(_) => {
                     let (on, enabled) = self.welcome_switch(k).unwrap_or_default();

@@ -90,6 +90,10 @@ pub enum Press {
     Scroll { pane: usize, grab: f32 },
     /// 分頁：按下的分頁目前在哪裡（拖曳時跟著移動）；`moved` 表示已開始拖曳
     Tab { pane: usize, tab: usize, x: f32, y: f32, moved: bool },
+    /// 命令列的按鈕（`config.cmdbar` 的索引）：放開時沒有拖曳才執行，拖曳時調整順序
+    BarButton { item: usize, x: f32, moved: bool },
+    /// 樹狀列的我的最愛：按下的是 `favorites` 的第幾個（拖曳時跟著移動）、哪個節點（放開時沒有拖曳才開啟）
+    Favorite { index: usize, node: usize, y: f32, moved: bool },
     ColResize { col: usize, start_x: f32, start_w: f32 },
     TreeSplit { start_x: f32, start_w: f32 },
     PreviewSplit { start_x: f32, start_w: f32 },

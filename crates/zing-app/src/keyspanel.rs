@@ -133,10 +133,10 @@ impl App {
     pub fn keys_layout(&self, r: Rect) -> (Rect, Rect, Rect, [Rect; 2]) {
         let rh = self.row_h();
         let inner = r.inset(12.0, 10.0);
-        let title = Rect::new(inner.l, inner.t, inner.r, inner.t + rh * 2.0);
+        let title = Rect::new(inner.l, inner.t, inner.r, inner.t + rh);
         let buttons = crate::sidepanel::footer_buttons(inner, rh);
         let note = Rect::new(inner.l, buttons[0].t - 6.0 - rh, inner.r, buttons[0].t - 6.0);
-        let list = Rect::new(inner.l, title.b + 4.0, inner.r, note.t - 4.0);
+        let list = Rect::new(inner.l, title.b + 6.0, inner.r, note.t - 4.0);
         (title, list, note, buttons)
     }
 
@@ -422,9 +422,7 @@ impl App {
         let radius = self.theme.metrics.radius;
         g.fill(r, c.surface);
         let (title, list, note, buttons) = self.keys_layout(r);
-        let half = title.h() / 2.0;
-        g.text(tr!("快速鍵"), Font::Bold, Rect::new(title.l, title.t, title.r, title.t + half), c.text);
-        g.text(tr!("點 ＋ 後按下組合鍵即可加上；游標停在按鍵上可移除"), Font::Small, Rect::new(title.l, title.t + half, title.r, title.b), c.text_secondary);
+        g.text(tr!("快速鍵"), Font::Bold, title, c.text);
         let rows = self.keys_rows();
         let search = self.keys_row_rect(list, 0, kp.scroll);
         g.push_clip(Rect::new(list.l, search.b, list.r, list.b));

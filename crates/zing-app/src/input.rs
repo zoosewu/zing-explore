@@ -7,7 +7,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_SHIFT, };
 
 use crate::app::{App, Focus, Modal, Press};
-use crate::model::MenuTarget;
+use crate::model::{MenuTarget, NodeKind};
 use crate::menu::MenuItem;
 use crate::navkeys::PopupKey;
 use crate::view::{COLUMN_KEYS, Hit, clamp_col};
@@ -65,6 +65,18 @@ impl App {
                 if moved || (x - x0).abs() > DRAG_THRESHOLD || (y - y0).abs() > DRAG_THRESHOLD {
                     let (pane, tab) = self.drag_tab(pane, tab, x, y);
                     self.press = Some(Press::Tab { pane, tab, x: x0, y: y0, moved: true });
+                }
+            }
+            Some(Press::BarButton { item, x: x0, moved }) => {
+                if moved || (x - x0).abs() > DRAG_THRESHOLD {
+                    let item = self.drag_bar_button(item, x);
+                    self.press = Some(Press::BarButton { item, x: x0, moved: true });
+                }
+            }
+            Some(Press::Favorite { index, node, y: y0, moved }) => {
+                if moved || (y - y0).abs() > DRAG_THRESHOLD {
+                    let index = self.drag_favorite(index, x, y);
+                    self.press = Some(Press::Favorite { index, node, y: y0, moved: true });
                 }
             }
             Some(Press::Scroll { pane, grab }) => {
@@ -239,8 +251,8 @@ impl App {
             Hit::Address => crate::window::begin_address_edit(self),
             Hit::FilterChip => self.set_filter(String::new()),
             Hit::CmdButton(k) => {
-                if let Some(&(i, r, _)) = self.layout.cmdbar.as_ref().and_then(|b| b.buttons.get(k)) {
-                    self.cmdbar_click(i, r);
+                if let Some(&(item, _, _)) = self.layout.cmdbar.as_ref().and_then(|b| b.buttons.get(k)) {
+                    self.press = Some(Press::BarButton { item, x, moved: false });
                 }
             }
             Hit::CmdBar | Hit::MenuItem(..) | Hit::Menu => {}
@@ -263,7 +275,15 @@ impl App {
             Hit::TreeRow(i) => {
                 self.focus = Focus::Tree;
                 self.tree.focus = i;
-                self.open_tree_node(i);
+                let n = &self.tree.nodes[i];
+                if n.kind == NodeKind::Favorite
+                    && let Some(index) = self.favorites.iter().position(|f| f.eq_ignore_ascii_case(&n.path))
+                {
+                    // 放開時沒有拖曳才開啟：開啟會捲動樹狀列，拖曳中的列就不在游標下了
+                    self.press = Some(Press::Favorite { index, node: i, y, moved: false });
+                } else {
+                    self.open_tree_node(i);
+                }
             }
             Hit::TreeEmpty => self.focus = Focus::Tree,
             Hit::Preview => {}
@@ -360,18 +380,23 @@ impl App {
     }
 
     pub fn on_lbutton_up(&mut self) {
-        if let Some(Press::Row { pane, row, deselect_on_up: true, .. }) = self.press {
-            self.panes[pane].tab_mut().select_only(row);
-        }
-        self.end_press();
-    }
-
-    pub fn end_press(&mut self) {
-        if self.press.take().is_some() {
+        let press = self.press.take();
+        if press.is_some() {
             unsafe {
                 let _ = ReleaseCapture();
             }
             self.invalidate();
+        }
+        match press {
+            Some(Press::Row { pane, row, deselect_on_up: true, .. }) => self.panes[pane].tab_mut().select_only(row),
+            Some(Press::Favorite { node, moved: false, .. }) => self.open_tree_node(node),
+            Some(Press::BarButton { item, moved: false, .. }) => {
+                self.layout = self.compute_layout();
+                if let Some(&(_, r, _)) = self.layout.cmdbar.as_ref().and_then(|b| b.buttons.iter().find(|b| b.0 == item)) {
+                    self.cmdbar_click(item, r);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -442,6 +467,15 @@ impl App {
                 self.open_context_menu(target.items, target.folder, x, y, screen);
             }
             Hit::TreeRow(i) | Hit::TreeArrow(i) => self.open_tree_menu(i, x, y, screen),
+            Hit::Crumb(path) | Hit::CrumbMenu(path) => self.open_address_menu(path, x, y),
+            Hit::Address => {
+                let path = self.tab().path.clone();
+                self.open_address_menu(path, x, y);
+            }
+            Hit::Header(p, _) | Hit::HeaderEdge(p, _) => {
+                self.activate_pane(p);
+                self.open_header_menu(x, y);
+            }
             Hit::Tab(p, t) | Hit::TabClose(p, t) => {
                 // 選單的命令都對使用中的分頁動作
                 self.active_pane = p;
@@ -468,6 +502,41 @@ impl App {
         };
         let items = cmds.iter().map(|c| if c.is_empty() { MenuItem::separator() } else { self.cmd_menu_item(c) }).collect();
         self.open_menu_at(items, x, y);
+    }
+
+    /// 拖曳命令列的按鈕：與分頁相同，以游標越過的按鈕中線決定位置。回傳按鈕的新索引
+    fn drag_bar_button(&mut self, item: usize, x: f32) -> usize {
+        self.layout = self.compute_layout();
+        let Some(bar) = self.layout.cmdbar.as_ref() else { return item };
+        let others: Vec<(usize, f32)> = bar.buttons.iter().filter(|b| b.0 != item).map(|b| (b.0, (b.1.l + b.1.r) / 2.0)).collect();
+        // 插在第一個中線在游標右邊的按鈕前面，沒有就放在最後一個看得見的按鈕後面
+        let before = match others.iter().find(|(_, mid)| *mid > x) {
+            Some(&(j, _)) => j,
+            None => others.last().map_or(item, |&(j, _)| j + 1),
+        };
+        let to = if before > item { before - 1 } else { before };
+        if to == item || to >= self.config.cmdbar.len() {
+            return item;
+        }
+        let it = self.config.cmdbar.remove(item);
+        self.config.cmdbar.insert(to, it);
+        self.cmdbar_changed();
+        to
+    }
+
+    /// 拖曳我的最愛：游標移到另一個我的最愛的那一列就換到它的位置（展開的子資料夾不算）。回傳新的位置
+    fn drag_favorite(&mut self, index: usize, x: f32, y: f32) -> usize {
+        let Hit::TreeRow(k) = self.fresh_hit(x, y) else { return index };
+        let n = &self.tree.nodes[k];
+        if n.kind != NodeKind::Favorite {
+            return index;
+        }
+        let Some(to) = self.favorites.iter().position(|f| f.eq_ignore_ascii_case(&n.path)) else { return index };
+        let Some(path) = self.favorites.get(index).cloned() else { return index };
+        if to != index && self.move_favorite(&path, to as isize - index as isize).is_ok() {
+            return to;
+        }
+        index
     }
 
     /// 拖曳分頁：游標在哪個窗格的分頁列就移到那裡（不在任何分頁列時留在原窗格），位置依游標越過了哪些分頁的中線。

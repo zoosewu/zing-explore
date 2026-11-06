@@ -392,7 +392,7 @@ impl App {
         } else if problems > 0 {
             (tr!("{problems} 個名稱有問題，修正後才能執行", problems), if b.blocked { c.error } else { c.text_secondary })
         } else {
-            (tr!("{changed} 個項目會改名　Enter 執行　Esc 取消　Tab 切換欄位", changed), c.text_secondary)
+            (tr!("{changed} 個項目會改名", changed), c.text_secondary)
         };
         g.text(&msg, Font::Small, Rect::new(lay.footer.l, lay.footer.t, lay.run.l - 8.0, lay.footer.b), col);
         let can_run = b.plan.is_ok() && problems == 0 && changed > 0;
