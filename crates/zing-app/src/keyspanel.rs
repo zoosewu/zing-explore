@@ -298,11 +298,11 @@ impl App {
                     return self.keys_click(Hit::KeysPart(k, PART_ADD));
                 }
             }
-            Hit::KeysButton(0) => {
-                self.config.keys = self.config.config_keys.clone();
-                self.keys_changed(tr!("已還原所有快速鍵").to_string(), false);
-            }
-            Hit::KeysButton(_) => self.close_side_panels(),
+            Hit::KeysButton(0) => self.confirm(tr!("確定要把所有快速鍵還原成預設嗎？"), tr_key!("還原"), |a| {
+                a.config.keys = a.config.config_keys.clone();
+                a.keys_changed(tr!("已還原所有快速鍵").to_string(), false);
+            }),
+            Hit::KeysButton(_) => self.confirm(tr!("完成快速鍵的修改嗎？"), tr_key!("完成"), |a| a.leave_side_editor()),
             _ => {}
         }
         self.invalidate();

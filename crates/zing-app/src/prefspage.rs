@@ -1,7 +1,10 @@
-//! 設定頁（命令 settings.open，預設 Ctrl+,）：停靠在窗格右側（與主題編輯面板同一個位置，兩者只開一個），
-//! 列出 `zing_core::prefs::PREFS`。
+//! 設定（命令 settings.open，預設 Ctrl+,）：視窗中央的對話框（背景變暗，對話框外點不到底下的元件、點了就關閉），
+//! 列出 `zing_core::prefs::PREFS`。沿用右側面板的機制（`SidePanel::Settings`：捲動、鍵盤、焦點框），只是位置在中央
+//! （`Layout::side_dialog`）。
 //!
-//! - 先選分類（`prefs::groups()`，每個分類下方列出它的項目），再選要設定的項目；標題列的「‹」或 Esc 回到分類清單。
+//! - 上方是分頁（`prefs::groups()`：一般、外觀、命令列、系統），分頁中依副標題（`Pref::section`）分組。
+//! - 自訂主題、自訂命令列、快速鍵等編輯器從這裡開啟時記住分頁（`App::side_return`），完成或 Esc 後回到這裡。
+//!   移除 NTFS 索引服務先確認（`App::confirm`）。
 //! - 選項（語言、主題、位置）：點一下開啟下拉選單；開關：點一下切換；文字：點一下輸入，Enter 確定。
 //! - 緩慢的右鍵選單擴充功能（`Kind::SlowList`）：表格逐一切換是否照樣放在第一層；「隱藏緩慢的擴充功能項目」
 //!   關閉時表格以灰階顯示、不能切換。表格的內容在進入分類時於背景讀取（`shellext::slow_list`）。
@@ -23,16 +26,15 @@ use crate::sidepanel::{Line, footer_buttons, row_rect};
 use crate::view::Hit;
 use crate::window;
 
-/// 面板寬度
-pub const PANEL_W: f32 = 420.0;
-/// 底部按鈕：以文字編輯器開啟設定檔、關閉
-pub const BUTTONS: [&str; 2] = [tr_key!("編輯設定檔"), tr_key!("關閉")];
+/// 對話框的大小（視窗太小時縮小）
+const DIALOG_W: f32 = 680.0;
+const DIALOG_H: f32 = 620.0;
 
 #[derive(Default)]
 pub struct SettingsPage {
     pub scroll: f32,
-    /// 目前的分類（`prefs::groups()` 的索引）；None 是分類清單
-    pub category: Option<usize>,
+    /// 目前的分頁（`prefs::groups()` 的索引）
+    pub category: usize,
     /// themes 資料夾中的使用者主題（開啟時在背景讀取）
     pub user_themes: Vec<String>,
     /// 緩慢的右鍵選單擴充功能（進入有表格的分類時在背景讀取）
@@ -42,9 +44,8 @@ pub struct SettingsPage {
 /// 面板中的一列
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Row {
-    /// 分類清單的一個分類（`prefs::groups()` 的索引）與它下方的項目一覽（小字）
-    Category(usize),
-    CategoryHint(usize),
+    /// 副標題（`Pref::section`）
+    Section(&'static str),
     Field(usize),
     /// 欄位的說明（小字）的第 n 行
     Hint(usize, usize),
@@ -56,15 +57,11 @@ pub enum Row {
 
 pub struct PanelLayout {
     pub title: Rect,
+    /// 各分頁的標籤
+    pub tabs: Vec<Rect>,
     pub list: Rect,
-    pub buttons: [Rect; 2],
-}
-
-/// 分類下方的項目一覽：各項目的名稱（去掉「…」）
-fn category_summary(group: &str) -> String {
-    let names: Vec<&str> =
-        PREFS.iter().filter(|p| p.group == group).map(|p| zing_core::i18n::tr(p.label).trim_end_matches('…')).collect();
-    names.join(tr!("、"))
+    /// 「關閉」（右下角）
+    pub close: Rect,
 }
 
 impl SettingsPage {
@@ -84,11 +81,16 @@ impl SettingsPage {
 
     pub fn rows(&self) -> Vec<Row> {
         let groups = groups();
-        let Some(group) = self.category.and_then(|g| groups.get(g)) else {
-            return (0..groups.len()).flat_map(|g| [Row::Category(g), Row::CategoryHint(g)]).collect();
-        };
+        let Some(group) = groups.get(self.category) else { return Vec::new() };
         let mut out = Vec::new();
+        let mut section = "";
         for (i, p) in PREFS.iter().enumerate().filter(|(_, p)| p.group == *group) {
+            if p.section != section {
+                section = p.section;
+                if !section.is_empty() {
+                    out.push(Row::Section(section));
+                }
+            }
             out.push(Row::Field(i));
             if !p.hint.is_empty() {
                 let lines = zing_core::i18n::tr(p.hint).lines().count().max(1);
@@ -109,13 +111,31 @@ impl SettingsPage {
 
 impl App {
     pub fn open_settings(&mut self) {
+        self.open_settings_at(0);
+    }
+
+    /// 開啟設定對話框的第 `tab` 個分頁（已開著就切換分頁）
+    pub fn open_settings_at(&mut self, tab: usize) {
         if self.settings_page().is_none() {
             self.open_side(crate::sidepanel::SidePanel::Settings(SettingsPage::default()));
             let n = self.notifier.clone();
             self.pool.spawn(move || n.send(Msg::UserThemes(settings::user_themes())));
             self.refresh_default_app(false);
         }
+        self.settings_tab(tab);
         self.invalidate();
+    }
+
+    /// 開著的是設定對話框（對話框外點不到底下的元件、按鍵不往下傳）
+    pub fn settings_dialog(&self) -> bool {
+        self.settings_page().is_some()
+    }
+
+    /// 對話框的位置：視窗中央
+    pub fn settings_dialog_rect(&self, w: f32, h: f32) -> Rect {
+        let (dw, dh) = (DIALOG_W.min(w - 48.0).max(320.0), DIALOG_H.min(h - 48.0).max(240.0));
+        let (l, t) = (((w - dw) / 2.0).round(), ((h - dh) / 2.0).max(8.0).round());
+        Rect::new(l, t, l + dw, t + dh)
     }
 
     fn end_pref_edit(&mut self) {
@@ -140,21 +160,17 @@ impl App {
         }
     }
 
-    /// 進入分類（None：回到分類清單）
-    pub fn settings_category(&mut self, category: Option<usize>) {
+    /// 切換到第 `tab` 個分頁；鍵盤焦點留在分頁列（←→ 繼續切換）
+    pub fn settings_tab(&mut self, tab: usize) {
         self.end_pref_edit();
-        let Some(page) = self.settings_page_mut() else { return };
-        let left = page.category;
-        page.category = category;
-        page.scroll = 0.0;
-        // 鍵盤焦點：進入分類時在第一項，回到分類清單時在剛才的分類
-        let k = match (category, left) {
-            (None, Some(g)) => page.rows().iter().position(|r| *r == Row::Category(g)).unwrap_or(0),
-            _ => 0,
-        };
-        self.side_cursor.line = Line::Row(k);
         let groups = groups();
-        let group = category.and_then(|g| groups.get(g).copied());
+        let tab = tab.min(groups.len().saturating_sub(1));
+        let Some(page) = self.settings_page_mut() else { return };
+        page.category = tab;
+        page.scroll = 0.0;
+        self.side_cursor.line = Line::Top(0);
+        self.side_cursor.part = tab;
+        let group = groups.get(tab).copied();
         if PREFS.iter().any(|p| Some(p.group) == group && p.kind == Kind::SlowList) {
             let (n, persist) = (self.notifier.clone(), !self.isolated);
             self.pool.spawn(move || n.send(Msg::SlowMenuExts(crate::shellext::slow_list(persist))));
@@ -164,11 +180,23 @@ impl App {
 
     pub fn settings_layout(&self, r: Rect) -> PanelLayout {
         let rh = self.row_h();
-        let inner = r.inset(12.0, 10.0);
+        let inner = r.inset(18.0, 14.0);
         let title = Rect::new(inner.l, inner.t, inner.r, inner.t + rh);
-        let buttons = footer_buttons(inner, rh);
-        let list = Rect::new(inner.l, title.b + 6.0, inner.r, buttons[0].t - 8.0);
-        PanelLayout { title, list, buttons }
+        let tab_h = (rh + 8.0).max(28.0);
+        let mut x = inner.l;
+        let tabs = groups()
+            .iter()
+            .map(|g| {
+                let w = self.gfx.measure(zing_core::i18n::tr(g), Font::Text) + 28.0;
+                let t = Rect::new(x, title.b + 8.0, x + w, title.b + 8.0 + tab_h);
+                x += w + 4.0;
+                t
+            })
+            .collect::<Vec<_>>();
+        let tabs_b = title.b + 8.0 + tab_h;
+        let close = footer_buttons(inner, rh)[1];
+        let list = Rect::new(inner.l, tabs_b + 10.0, inner.r, close.t - 10.0);
+        PanelLayout { title, tabs, list, close }
     }
 
     /// 第 k 列的位置與其中數值的範圍
@@ -191,11 +219,11 @@ impl App {
     pub fn settings_hit(&self, panel: Rect, x: f32, y: f32) -> Hit {
         let Some(page) = self.settings_page() else { return Hit::None };
         let pl = self.settings_layout(panel);
-        if let Some(k) = pl.buttons.iter().position(|r| r.contains(x, y)) {
-            return Hit::SettingsButton(k);
+        if pl.close.contains(x, y) {
+            return Hit::SettingsButton(0);
         }
-        if page.category.is_some() && pl.title.contains(x, y) {
-            return Hit::SettingsBack;
+        if let Some(g) = pl.tabs.iter().position(|r| r.contains(x, y)) {
+            return Hit::SettingsTab(g);
         }
         if pl.list.contains(x, y) {
             let rows = page.rows();
@@ -203,9 +231,7 @@ impl App {
             if k >= 0.0 {
                 let k = k as usize;
                 match rows.get(k) {
-                    Some(Row::Category(_) | Row::Field(_)) => return Hit::SettingsRow(k),
-                    // 分類的兩列是同一個按鈕
-                    Some(Row::CategoryHint(_)) => return Hit::SettingsRow(k - 1),
+                    Some(Row::Field(_)) => return Hit::SettingsRow(k),
                     Some(Row::Slow(..)) if self.slow_table_enabled() => return Hit::SettingsRow(k),
                     _ => {}
                 }
@@ -214,19 +240,16 @@ impl App {
         Hit::SettingsPanel
     }
 
-    /// 鍵盤焦點的目標（`side_targets`）：上方是標題列的「‹」（分類中），下方是底部按鈕
+    /// 鍵盤焦點的目標（`side_targets`）：上方是分頁列，下方是「關閉」
     pub fn settings_targets(&self, panel: Rect, line: Line) -> Vec<(Hit, Rect)> {
         let Some(page) = self.settings_page() else { return Vec::new() };
         let pl = self.settings_layout(panel);
         match line {
-            Line::Top(_) if page.category.is_some() => vec![(Hit::SettingsBack, pl.title)],
-            Line::Top(_) => Vec::new(),
-            Line::Bottom(_) => vec![(Hit::SettingsButton(0), pl.buttons[0]), (Hit::SettingsButton(1), pl.buttons[1])],
+            Line::Top(_) => pl.tabs.iter().enumerate().map(|(g, r)| (Hit::SettingsTab(g), *r)).collect(),
+            Line::Bottom(_) => vec![(Hit::SettingsButton(0), pl.close)],
             Line::Row(k) => {
                 let (rr, _) = self.settings_row_rects(pl.list, k, page.scroll);
                 match page.rows().get(k) {
-                    // 分類與它下方的一覽是同一個按鈕
-                    Some(Row::Category(_)) => vec![(Hit::SettingsRow(k), Rect::new(rr.l, rr.t, rr.r, rr.b + self.row_h()))],
                     Some(Row::Field(_)) => vec![(Hit::SettingsRow(k), rr)],
                     Some(Row::Slow(..)) if self.slow_table_enabled() => vec![(Hit::SettingsRow(k), rr)],
                     _ => Vec::new(),
@@ -240,7 +263,6 @@ impl App {
             Hit::SettingsRow(k) => {
                 let Some(page) = self.settings_page() else { return };
                 match page.rows().get(k).copied() {
-                    Some(Row::Category(g)) => self.settings_category(Some(g)),
                     Some(Row::Field(i)) => match PREFS[i].kind {
                         Kind::Choice(_) | Kind::Theme => {
                             let options = page.options(i);
@@ -251,7 +273,19 @@ impl App {
                             self.set_pref(i, (!on).to_string());
                         }
                         Kind::Text => self.begin_pref_edit(i),
-                        Kind::Action(cmd) => self.exec(cmd),
+                        Kind::Action("index.uninstall") => {
+                            self.confirm(tr!("確定要移除 NTFS 索引服務嗎？\n資料夾大小改回逐一掃描，全磁碟搜尋無法使用"), tr_key!("移除"), |a| {
+                                a.exec("index.uninstall")
+                            });
+                        }
+                        Kind::Action(cmd) => {
+                            // 開出編輯器（主題、命令列、快速鍵）時記住分頁，完成後回到這裡
+                            let tab = page.category;
+                            self.exec(cmd);
+                            if self.side.is_some() && !self.settings_dialog() {
+                                self.side_return = Some(tab);
+                            }
+                        }
                         Kind::Tabs => {
                             let tabs: Vec<String> = self
                                 .panes
@@ -277,9 +311,8 @@ impl App {
                     _ => {}
                 }
             }
-            Hit::SettingsBack => self.settings_category(None),
-            Hit::SettingsButton(0) => self.exec("config.edit"),
-            Hit::SettingsButton(1) => self.close_side_panels(),
+            Hit::SettingsTab(g) => self.settings_tab(g),
+            Hit::SettingsButton(_) => self.close_side_panels(),
             _ => {}
         }
     }
@@ -299,13 +332,9 @@ impl App {
         self.open_menu(items, value);
     }
 
-    /// Esc：先回到分類清單，再關閉設定頁
+    /// Esc：關閉對話框
     pub fn settings_escape(&mut self) {
-        match self.settings_page_mut() {
-            Some(page) if page.category.is_some() => self.settings_category(None),
-            Some(_) => self.close_side_panels(),
-            None => {}
-        }
+        self.close_side_panels();
     }
 
     fn begin_pref_edit(&mut self, i: usize) {
@@ -372,19 +401,23 @@ impl App {
         let c = &self.theme.color;
         let g = &self.gfx;
         let radius = self.theme.metrics.radius;
-        let rh = self.row_h();
-        g.fill(r, c.surface);
         let pl = self.settings_layout(r);
-        let groups = groups();
-        match page.category.and_then(|k| groups.get(k)) {
-            Some(group) => {
-                if self.hover == Hit::SettingsBack {
-                    g.fill_round(pl.title, radius, c.hover);
-                }
-                let title = format!("‹  {}", zing_core::i18n::tr(group));
-                g.text(&title, Font::Bold, Rect::new(pl.title.l + 4.0, pl.title.t, pl.title.r, pl.title.b), c.text);
+        g.text(tr!("設定"), Font::Bold, pl.title, c.text);
+        // 分頁：目前的分頁下方畫強調色的線
+        for (gi, (t, name)) in pl.tabs.iter().zip(groups()).enumerate() {
+            let active = gi == page.category;
+            if self.hover == Hit::SettingsTab(gi) && !active {
+                g.fill_round(*t, radius, c.hover);
             }
-            None => g.text(tr!("設定"), Font::Bold, pl.title, c.text),
+            let label = zing_core::i18n::tr(name);
+            let w = g.measure(label, Font::Text);
+            g.text(label, Font::Text, Rect::new(t.l + (t.w() - w) / 2.0, t.t, t.r, t.b), if active { c.text } else { c.text_secondary });
+            if active {
+                g.fill(Rect::new(t.l + 8.0, t.b - 2.0, t.r - 8.0, t.b), c.accent);
+            }
+        }
+        if let Some(last) = pl.tabs.last() {
+            g.fill(Rect::new(pl.tabs[0].l, last.b, pl.list.r, last.b + 1.0), c.border);
         }
         let slow_on = self.slow_table_enabled();
         let cols = Self::slow_columns(pl.list);
@@ -396,17 +429,8 @@ impl App {
             }
             let hover = self.hover == Hit::SettingsRow(k);
             match *row {
-                Row::Category(gi) => {
-                    let block = Rect::new(rr.l, rr.t, rr.r, rr.b + rh);
-                    if hover {
-                        g.fill_round(block, radius, c.hover);
-                    }
-                    g.text(zing_core::i18n::tr(groups[gi]), Font::Text, Rect::new(rr.l + 8.0, rr.t + 2.0, rr.r - 24.0, rr.b + 2.0), c.text);
-                    g.text("›", Font::Text, Rect::new(rr.r - 18.0, rr.t + rh / 2.0, rr.r, rr.b + rh / 2.0), c.text_secondary);
-                }
-                Row::CategoryHint(gi) => {
-                    let summary = category_summary(groups[gi]);
-                    g.text(&summary, Font::Small, Rect::new(rr.l + 8.0, rr.t, rr.r - 24.0, rr.b), c.text_secondary)
+                Row::Section(name) => {
+                    g.text(zing_core::i18n::tr(name), Font::Bold, Rect::new(rr.l, rr.t + 4.0, rr.r, rr.b), c.text_secondary)
                 }
                 Row::Hint(i, n) => {
                     let hint = match (&PREFS[i].kind, &self.default_app) {
@@ -492,6 +516,6 @@ impl App {
             }
         }
         g.pop_clip();
-        self.paint_footer_buttons(&pl.buttons, BUTTONS, None, |k| self.hover == Hit::SettingsButton(k));
+        self.paint_button(pl.close, tr_key!("關閉"), false, self.hover == Hit::SettingsButton(0));
     }
 }

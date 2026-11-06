@@ -131,10 +131,13 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   新增或修改原文時同步補上 `crates/zing-core/i18n/en.toml`、`ja.toml`，`cargo test -p zing-core i18n` 會檢查缺漏、多餘與參數名稱
   （`ZING_I18N_MISSING=1` 列出缺少的條目）。不翻譯：記錄檔、測試、`guard::io` 的說明、協定字串（`indexproto::UNPARSABLE`）。
   隔離模式（效能、冒煙測試）固定用繁體中文；冒煙測試另有切換成英文、日文的步驟（截圖 `14-英文介面`、`15-日文介面`）。
-- 設定頁（`prefspage.rs`，命令 `settings.open`）：先選分類（`Pref::group`，順序依 `PREFS`）再選項目。項目定義在
+- 設定（`prefspage.rs`，命令 `settings.open`）：視窗中央的對話框（`Layout::side_dialog`，沿用右側面板的機制、位置在中央；
+  對話框外點不到、點了關閉，面板沒處理的按鍵不往下傳）。上方是分頁（`Pref::group`：一般、外觀、命令列、系統），
+  分頁中依副標題（`Pref::section`）分組，順序依 `PREFS`。從這裡開出的編輯器（主題、命令列、快速鍵）記住分頁
+  （`App::side_return`），完成或 Esc 經 `App::leave_side_editor` 回到原本的分頁。項目定義在
   `zing_core::prefs::PREFS`，新增設定時同步加上 `Config::pref_value`／
   `set_pref`；改變後的副作用只寫在 `App::apply_config`（比較新舊設定，設定頁與 `config.reload` 共用）。寫回 config.toml 只改那一行（`prefs::write_pref`，保留註解），改不了（行內表、
-  多行字串）就回報錯誤、不寫入；隔離模式不寫檔。與主題編輯面板共用右側位置，兩者只開一個。
+  多行字串）就回報錯誤、不寫入；隔離模式不寫檔。與其他面板共用 `App::side`，一次只開一個。
 - 歡迎畫面（`welcome.rs`，命令 `welcome.show`）：程式旁還沒有 session.toml 時（第一次啟動，`App::first_run`）在第一幀之後
   顯示；項目是 `PREFS` 的一部分（`welcome::ITEMS`），改值一律經 `App::set_pref`（與設定頁相同），選項用 menu.rs 的下拉選單
   （`Action::Pref`，立即套用）。開關（預設的檔案總管、顯示隱藏檔案、NTFS 索引服務…）記在 `Welcome::pending`，按下按鈕才套用
@@ -222,6 +225,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 從幾個值中選一個，一律用 menu.rs 的下拉選單（控制項下方彈出、可用鍵盤），不在面板內展開成一列列選項。
 - 面板與對話方塊底部的按鈕：同一列同高、同寬；確認與取消成對時確認在左、用強調色（Windows 的慣例），
   一個面板最多一個強調色按鈕；還原、編輯設定檔等其他動作放在最左邊。
+- 再確認：還原預設（命令列、快速鍵、主題的 ↺）、移除服務、編輯器的完成／儲存、放棄未儲存的修改，一律先經
+  `App::confirm`（confirm.rs，視窗中央的卡片，確認在左、取消在右，Enter／Esc）。確認後回到上一層（`leave_side_editor`）。
 - 選單的圖示用來區分項目：同一層裡重複的圖示沒有意義（`menu.rs` 開啟時自動拿掉），只放能一眼分辨的。
 - 不寫操作說明：怎麼用要從版面看得出來（拖曳把手、「+」、游標停住的提示）。說明文字只留給畫面上看不到的後果
   （會跳出 UAC、會連網、會改登錄、需要重新啟動）。

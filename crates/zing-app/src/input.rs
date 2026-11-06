@@ -211,6 +211,11 @@ impl App {
             self.menu_click(hit);
             return;
         }
+        // 確認對話框：只有它能點，點卡片外取消
+        if self.confirm.is_some() {
+            self.confirm_click(hit);
+            return;
+        }
         // 歡迎畫面開著：只有它能點
         if self.welcome.is_some() {
             self.welcome_click(hit);
@@ -256,6 +261,8 @@ impl App {
                 }
             }
             Hit::CmdBar | Hit::MenuItem(..) | Hit::Menu => {}
+            // 設定對話框外：關閉
+            Hit::SettingsOutside => self.close_side_panels(),
             Hit::SettingsGear => {
                 if self.settings_page().is_some() {
                     self.close_side_panels();
@@ -441,7 +448,7 @@ impl App {
     }
 
     pub fn on_rbutton_up(&mut self, x: f32, y: f32, screen: POINT) {
-        if self.batch.is_some() || (self.welcome.is_some() && self.menu.is_none()) {
+        if self.batch.is_some() || self.confirm.is_some() || (self.welcome.is_some() && self.menu.is_none()) {
             return;
         }
         self.hide_tip();
@@ -552,7 +559,7 @@ impl App {
     }
 
     pub fn on_mbutton_up(&mut self, x: f32, y: f32) {
-        if self.batch.is_some() || self.welcome.is_some() {
+        if self.batch.is_some() || self.welcome.is_some() || self.confirm.is_some() || self.settings_dialog() {
             return;
         }
         match self.fresh_hit(x, y) {
@@ -586,7 +593,7 @@ impl App {
             }
             return;
         }
-        if self.welcome.is_some() {
+        if self.welcome.is_some() || self.confirm.is_some() {
             return;
         }
         if self.batch.is_some() {
@@ -599,6 +606,10 @@ impl App {
         }
         if let Some(sp) = self.layout.side_panel.filter(|r| r.contains(x, y)) {
             self.side_wheel(sp, x, y, delta);
+            return;
+        }
+        // 設定對話框外：底下的元件不捲動
+        if self.settings_dialog() {
             return;
         }
         // 滾輪的快速鍵（Ctrl+WheelUp 放大縮圖…）：游標所在的清單（先成為作用中的窗格）、樹狀列或全域
@@ -655,6 +666,12 @@ impl App {
         // 「開始篩選」之後按了字元以外的鍵：取消
         if self.filter_armed && !chord.is_printable() {
             self.filter_armed = false;
+        }
+        // 確認對話框：Enter／Esc／←→，其他按鍵不做事
+        if self.confirm.is_some() {
+            self.suppress_char = true;
+            self.confirm_key(vk);
+            return true;
         }
         // 快速鍵編輯面板正在錄製或依按鍵搜尋：按鍵交給面板（任何按鍵都要錄得到）
         if self.keys_capturing() {
@@ -735,6 +752,14 @@ impl App {
             return true;
         }
 
+        // 設定對話框：面板沒有處理的按鍵不往下傳（快速鍵不作用在背後的清單），Esc 關閉
+        if self.settings_dialog() {
+            if plain && vk == VK_ESCAPE.0 {
+                self.side_escape();
+            }
+            self.suppress_char = true;
+            return true;
+        }
         let scope = self.key_scope();
         // 篩選中：沒有 Ctrl、Alt 的字元鍵是篩選文字（WM_CHAR）；filter 情境自己綁定的按鍵除外
         if scope == Scope::Filter && chord.is_printable() && self.config.command_for(chord.in_scope(Scope::Filter)).is_none() {

@@ -62,8 +62,9 @@ pub struct Layout {
     pub buttons: Vec<Rect>,
     pub tree: Option<Rect>,
     pub tree_splitter: Option<Rect>,
-    /// 右側面板（窗格區域最右側；設定頁、主題編輯、自訂命令列、快速鍵）
+    /// 右側面板（窗格區域最右側；主題編輯、自訂命令列、快速鍵）；設定是視窗中央的對話框（`side_dialog`）
     pub side_panel: Option<Rect>,
+    pub side_dialog: bool,
     /// 命令列（工具列下方）
     pub cmdbar: Option<crate::cmdbar::BarLayout>,
     /// 預覽窗格（窗格區域右側）
@@ -116,9 +117,14 @@ pub enum Hit {
     ThemeButton(usize),
     ThemeLink(usize),
     ThemePanel,
-    /// 設定頁：列（`SettingsPage::rows` 的索引）、標題列（回到分類清單）、底部按鈕、面板其他位置
+    /// 設定對話框：列（`SettingsPage::rows` 的索引）、分頁、「關閉」、對話框其他位置；對話框外（點了關閉）
     SettingsRow(usize),
-    SettingsBack,
+    SettingsTab(usize),
+    SettingsOutside,
+    /// 確認對話框（confirm.rs）：按鈕（0 確認、1 取消）、卡片其他位置、卡片外（點了取消）
+    ConfirmButton(usize),
+    ConfirmPanel,
+    ConfirmOutside,
     /// 工具列的設定按鈕
     SettingsGear,
     /// 命令列：第幾個顯示中的按鈕（`BarLayout::buttons` 的索引）、命令列的空白處
@@ -275,6 +281,9 @@ impl App {
             let l = panes_area.r - w;
             lay.side_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
             panes_area.r = l - 1.0;
+        } else if self.settings_dialog() {
+            lay.side_panel = Some(self.settings_dialog_rect(w, h));
+            lay.side_dialog = true;
         }
         if self.preview.visible {
             let pv = self.preview.width.clamp(200.0, (panes_area.w() * 0.6).max(200.0));
@@ -406,8 +415,15 @@ impl App {
         if self.menu.is_some() {
             return self.menu_hit(x, y).unwrap_or(Hit::None);
         }
+        if let Some(h) = self.confirm_hit(x, y) {
+            return h;
+        }
         if let Some(h) = self.welcome_hit(x, y) {
             return h;
+        }
+        // 設定對話框：對話框外的元件點不到
+        if let Some(sp) = lay.side_panel.filter(|_| lay.side_dialog) {
+            return if sp.contains(x, y) { self.side_hit(sp, x, y) } else { Hit::SettingsOutside };
         }
         if let Some(h) = self.batch_hit(x, y) {
             return h;
@@ -566,7 +582,7 @@ impl App {
             let x = if self.tree_side == TreeSide::Right { tr.l - 1.0 } else { tr.r };
             self.gfx.vline(x, tr.t, tr.b, c.border);
         }
-        if let Some(sp) = lay.side_panel {
+        if let Some(sp) = lay.side_panel.filter(|_| !lay.side_dialog) {
             self.paint_side(sp);
         }
         if let Some(pr) = lay.preview {
@@ -585,7 +601,12 @@ impl App {
         self.paint_palette();
         self.paint_batch();
         self.paint_ask();
+        if let Some(sp) = lay.side_panel.filter(|_| lay.side_dialog) {
+            self.paint_dialog_frame(sp);
+            self.paint_side(sp);
+        }
         self.paint_welcome();
+        self.paint_confirm();
         self.paint_menu();
         self.paint_tip();
         self.gfx.end();

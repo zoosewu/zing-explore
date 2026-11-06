@@ -241,6 +241,10 @@ pub struct App {
     pub shell_windows: Option<crate::shellwin::Host>,
     /// 歡迎畫面（welcome.rs）
     pub welcome: Option<crate::welcome::Welcome>,
+    /// 確認對話框（confirm.rs）
+    pub confirm: Option<crate::confirm::Confirm>,
+    /// 從設定對話框開出的編輯器（主題、命令列、快速鍵）：完成後回到設定的這個分頁
+    pub side_return: Option<usize>,
     /// 網址列「›」：等待子資料夾清單的那一層（結果回來時仍是它才開啟選單）
     crumb_menu: Option<String>,
     /// 最近關閉的分頁（`tab.reopen`，最新的在最後）
@@ -365,6 +369,8 @@ impl App {
             default_app: None,
             shell_windows: None,
             welcome: None,
+            confirm: None,
+            side_return: None,
             crumb_menu: None,
             closed_tabs: Vec::new(),
             first_run,

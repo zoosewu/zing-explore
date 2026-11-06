@@ -41,6 +41,8 @@ pub struct ThemeEditor {
     pub expanded: Option<Target>,
     /// 系統字型（開啟字型選單時才在背景讀取）：（英文名稱, 顯示名稱）
     pub fonts: Option<Vec<(String, String)>>,
+    /// 按了「儲存」：存好後離開編輯器（回到設定對話框）
+    pub leave_after_save: bool,
     /// 等字型清單讀完才開啟選單的欄位
     font_menu: Option<usize>,
 }
@@ -101,7 +103,7 @@ fn is_font(i: usize) -> bool {
 
 impl ThemeEditor {
     pub fn new(original: Theme, original_name: String) -> Self {
-        ThemeEditor { original, original_name, scroll: 0.0, expanded: None, fonts: None, font_menu: None }
+        ThemeEditor { original, original_name, scroll: 0.0, expanded: None, fonts: None, font_menu: None, leave_after_save: false }
     }
 
     /// 下拉選單的選項：（值, 顯示名稱）
@@ -187,10 +189,10 @@ impl App {
         self.invalidate();
     }
 
-    /// 關閉面板；`revert` 為 true 時還原開啟前的主題
+    /// 關閉面板（從設定對話框開出來的就回到它）；`revert` 為 true 時還原開啟前的主題
     pub fn close_theme_editor(&mut self, revert: bool) {
         let original = self.theme_editor().map(|ed| (ed.original.clone(), ed.original_name.clone()));
-        self.close_side_panels();
+        self.leave_side_editor();
         if let Some((theme, name)) = original
             && revert
             && self.theme != theme
@@ -461,10 +463,13 @@ impl App {
                 }
             }
             Hit::ThemeReset(k) => {
-                if let Some(Row::Field(i)) = row(k)
-                    && let Some(t) = self.theme.reset_field(&FIELDS[i])
-                {
-                    self.apply_theme(t);
+                if let Some(Row::Field(i)) = row(k) {
+                    let name = zing_core::i18n::tr(FIELDS[i].label);
+                    self.confirm(tr!("確定要把「{name}」還原成預設值嗎？", name), tr_key!("還原"), move |a| {
+                        if let Some(t) = a.theme.reset_field(&FIELDS[i]) {
+                            a.apply_theme(t);
+                        }
+                    });
                 }
             }
             Hit::ThemeStep(k, plus) => self.nudge_row(k, if plus { 1 } else { -1 }),
@@ -484,8 +489,22 @@ impl App {
                     self.apply_theme(t);
                 }
             }
-            Hit::ThemeButton(0) => self.save_theme(),
-            Hit::ThemeButton(1) => self.close_theme_editor(true),
+            Hit::ThemeButton(0) => {
+                let name = self.theme_display_name();
+                self.confirm(tr!("儲存主題「{name}」嗎？", name), tr_key!("儲存"), |a| {
+                    if let Some(ed) = a.theme_editor_mut() {
+                        ed.leave_after_save = true;
+                    }
+                    a.save_theme();
+                });
+            }
+            Hit::ThemeButton(1) => {
+                if self.theme_editor().is_some_and(|ed| ed.original != self.theme) {
+                    self.confirm(tr!("放棄未儲存的修改嗎？"), tr_key!("放棄"), |a| a.close_theme_editor(true));
+                } else {
+                    self.close_theme_editor(true);
+                }
+            }
             Hit::ThemeLink(0) => self.begin_theme_save_as(),
             Hit::ThemeLink(1) => self.export_theme(),
             Hit::ThemeLink(2) => self.open_theme_file(),

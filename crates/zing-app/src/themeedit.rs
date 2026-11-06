@@ -75,6 +75,9 @@ impl App {
             Ok(()) => {
                 self.set_status(tr!("已儲存主題「{name}」", name), false);
                 self.load_theme_by_name(name);
+                if self.theme_editor().is_some_and(|ed| ed.leave_after_save) {
+                    self.leave_side_editor();
+                }
             }
             Err(e) => self.set_status(e, true),
         }

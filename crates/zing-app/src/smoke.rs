@@ -935,20 +935,19 @@ fn settings_row_pos(key: &str, value: bool) -> Option<(f32, f32)> {
     settings_pos(crate::prefspage::Row::Field(i), value)
 }
 
-/// 設定頁的分類清單中的一個分類
-fn settings_category_pos(group: &str) -> Option<(f32, f32)> {
+/// 設定對話框的分頁標籤
+fn settings_tab_pos(group: &str) -> Option<(f32, f32)> {
     let g = zing_core::prefs::groups().iter().position(|g| *g == group)?;
-    settings_pos(crate::prefspage::Row::Category(g), false)
-}
-
-/// 設定頁的標題列（在分類中時是「‹ 分類」，點了回到分類清單）
-fn settings_title_pos() -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
-        let t = a.settings_layout(a.layout.side_panel?).title;
-        Some((t.l + 30.0, (t.t + t.b) / 2.0))
+        a.settings_layout(a.layout.side_panel?).tabs.get(g).copied().map(mid)
     })
     .flatten()
+}
+
+/// 確認對話框的按鈕（0 確認、1 取消）
+fn confirm_button_pos(k: usize) -> Option<(f32, f32)> {
+    with_app(|a| a.confirm_layout().map(|l| mid(l.buttons[k]))).flatten()
 }
 
 fn settings_pos(want: crate::prefspage::Row, value: bool) -> Option<(f32, f32)> {
@@ -2337,10 +2336,18 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         }).collect();
         expect("結果", cmds, vec!["sel.all".to_string()])
     }));
-    v.push(step("快速鍵：全部還原後 Esc 關閉", |c| {
-        click(c, "", keys_button_pos(0));
-        key(c, "", VK_ESCAPE);
-    }, |_, a| {
+    v.push(step("快速鍵：「全部還原」先確認，還沒還原", |c| click(c, "", keys_button_pos(0)), |_, a| {
+        expect("確認對話框", a.confirm.is_some(), true)?;
+        expect("還沒還原", a.config.keys.len() != a.config.config_keys.len() || a.config.keys != a.config.config_keys, true)
+    }));
+    v.push(step("快速鍵：確認後還原，「完成」也先確認，確認後關閉", |c| {
+        click(c, "", confirm_button_pos(0));
+        click(c, "", keys_button_pos(1));
+        let asked = with_app(|a| a.confirm.is_some()).unwrap_or(false);
+        c.notes.push(("keys_done_confirm", asked.to_string()));
+        key(c, "", VK_RETURN);
+    }, |c, a| {
+        expect("「完成」先確認", c.note("keys_done_confirm"), Some("true"))?;
         expect("面板關閉", a.keys_panel().is_none(), true)?;
         let sorted = |v: &[(zing_core::keymap::KeyChord, String)]| {
             let mut v: Vec<(String, String)> = v.iter().map(|(k, c)| (k.to_string(), c.clone())).collect();
@@ -2807,21 +2814,22 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
     ));
 
-    // ------------------------------------------------ 設定頁（隔離模式只改記憶體中的設定，不寫 config.toml）
+    // ------------------------------------------------ 設定對話框（隔離模式只改記憶體中的設定，不寫 config.toml）
     use crate::prefspage::Row;
-    let category = |a: &App| a.settings_page().and_then(|p| p.category);
+    let category = |a: &App| a.settings_page().map(|p| p.category);
     let group_index = |g: &str| zing_core::prefs::groups().iter().position(|x| *x == g);
-    v.push(step("設定：Ctrl+, 開啟設定頁（分類清單）", |c| key(c, "c", VIRTUAL_KEY(0xBC)), move |_, a| {
-        expect("設定頁", a.settings_page().is_some(), true)?;
-        expect("面板位置", a.layout.side_panel.is_some(), true)?;
-        expect("分類清單", category(a), None)?;
-        expect("第一列", a.settings_page().and_then(|p| p.rows().first().copied()), Some(Row::Category(0)))
+    v.push(step("設定：Ctrl+, 開啟設定對話框（第一個分頁「一般」）", |c| key(c, "c", VIRTUAL_KEY(0xBC)), move |_, a| {
+        expect("設定", a.settings_page().is_some(), true)?;
+        expect("在視窗中央的對話框", a.layout.side_dialog, true)?;
+        expect("分頁", category(a), group_index("一般"))?;
+        expect("第一列是副標題", a.settings_page().and_then(|p| p.rows().first().copied()), Some(Row::Section("語言與啟動")))
     }));
-    v.push(step("截圖：設定的分類", |_| {}, |c, _| screenshot(c, "22-設定分類")));
-    v.push(step("設定：點「一般」", |c| click(c, "", settings_category_pos("一般")), move |_, a| {
-        expect("分類", category(a), group_index("一般"))?;
-        let theme = zing_core::prefs::PREFS.iter().position(|p| p.key == "theme");
-        expect("只有這個分類的項目", a.settings_page().is_some_and(|p| theme.is_some_and(|t| p.rows().contains(&Row::Field(t)))), false)
+    v.push(step("截圖：設定對話框", |_| {}, |c, _| screenshot(c, "22-設定對話框")));
+    v.push(step("設定：對話框外的元件點不到", |_| {}, |_, a| {
+        let list = a.layout.panes[a.active_pane].list;
+        let card = a.layout.side_panel.ok_or("沒有對話框")?;
+        let x = if card.l - list.l > 20.0 { list.l + 10.0 } else { list.r - 10.0 };
+        expect("清單上", a.hit_test(&a.layout, x, list.t + 10.0), crate::view::Hit::SettingsOutside)
     }));
     v.push(step("設定：點開關顯示隱藏檔案", |c| click(c, "", settings_row_pos("show_hidden", true)), |_, a| {
         expect("顯示隱藏檔案", a.show_hidden, true)?;
@@ -2842,6 +2850,11 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             a.panes.iter().flat_map(|p| p.tabs.iter().map(|t| zing_core::startup::tab_value(&t.path))).collect();
         expect("start_tabs", &a.config.start_tabs, &tabs)
     }));
+    v.push(step("設定：點「系統」分頁", |c| click(c, "", settings_tab_pos("系統")), move |_, a| {
+        expect("分頁", category(a), group_index("系統"))?;
+        let hidden = pref_index("show_hidden");
+        expect("只有這個分頁的項目", a.settings_page().is_some_and(|p| hidden.is_some_and(|t| p.rows().contains(&Row::Field(t)))), false)
+    }));
     let default_app_pos = || {
         let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == zing_core::prefs::Kind::DefaultApp)?;
         settings_pos(Row::Field(i), true)
@@ -2849,13 +2862,24 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("設定：設為預設的檔案總管（冒煙測試只改記憶體、不寫登錄）", move |c| click(c, "", default_app_pos()), |_, a| {
         expect("狀態", a.default_app.clone(), Some(crate::defaultapp::Status::On))
     }));
-    v.push(step("截圖：一般設定", |_| {}, |c, _| screenshot(c, "27-一般設定")));
+    v.push(step("截圖：系統設定", |_| {}, |c, _| screenshot(c, "27-系統設定")));
     v.push(step("設定：再點一次還原為 Windows 檔案總管", move |c| click(c, "", default_app_pos()), |_, a| {
         expect("狀態", a.default_app.clone(), Some(crate::defaultapp::Status::Off))
     }));
-    v.push(step("設定：點標題回到分類清單", |c| click(c, "", settings_title_pos()), move |_, a| expect("分類清單", category(a), None)));
-    v.push(step("設定：點「外觀」", |c| click(c, "", settings_category_pos("外觀")), move |_, a| {
-        expect("分類", category(a), group_index("外觀"))
+    let uninstall_pos = || {
+        let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == zing_core::prefs::Kind::Action("index.uninstall"))?;
+        settings_pos(Row::Field(i), false)
+    };
+    v.push(step("設定：「移除 NTFS 索引服務」先確認", move |c| click(c, "", uninstall_pos()), |_, a| {
+        expect("確認對話框", a.confirm.is_some(), true)
+    }));
+    v.push(step("截圖：確認對話框", |_| {}, |c, _| screenshot(c, "32-確認對話框")));
+    v.push(step("設定：確認對話框按「取消」不執行", |c| click(c, "", confirm_button_pos(1)), |_, a| {
+        expect("確認對話框", a.confirm.is_none(), true)?;
+        expect("設定仍開著", a.settings_page().is_some(), true)
+    }));
+    v.push(step("設定：點「外觀」分頁", |c| click(c, "", settings_tab_pos("外觀")), move |_, a| {
+        expect("分頁", category(a), group_index("外觀"))
     }));
     v.push(step("設定：點樹狀列位置開啟下拉選單", |c| click(c, "", settings_row_pos("layout.tree", false)), |_, a| {
         let m = a.menu.as_ref().ok_or("選單沒開")?;
@@ -2867,9 +2891,16 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("選單關閉", a.menu.is_none(), true)?;
         expect("版面", a.layout.tree.zip(a.layout.panes.first()).is_some_and(|(t, p)| t.l > p.list.l), true)
     }));
-    v.push(step("設定：Esc 回到分類清單", |c| key(c, "", VK_ESCAPE), move |_, a| {
-        expect("設定頁", a.settings_page().is_some(), true)?;
-        expect("分類清單", category(a), None)
+    v.push(step("設定：「自訂主題…」開啟主題編輯器", |c| {
+        let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == zing_core::prefs::Kind::Action("theme.edit"));
+        click(c, "", i.and_then(|i| settings_pos(Row::Field(i), false)));
+    }, |_, a| {
+        expect("主題編輯器", a.theme_editor().is_some(), true)?;
+        expect("記住設定的分頁", a.side_return, zing_core::prefs::groups().iter().position(|g| *g == "外觀"))
+    }));
+    v.push(step("設定：主題編輯器按「取消」（沒有修改）回到設定的「外觀」分頁", |c| click(c, "", theme_button_pos(1)), move |_, a| {
+        expect("設定", a.settings_page().is_some(), true)?;
+        expect("分頁", category(a), group_index("外觀"))
     }));
     // 緩慢的擴充功能表格：隔離模式的記錄只在記憶體中，放一個假的
     const SLOW_CLSID: &str = "{5a1e7e57-0000-4000-8000-00000000c0de}";
@@ -2883,10 +2914,10 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         |c| {
             crate::shellext::test_mark_slow(SLOW_CLSID, "SlowTest", "file", 120);
             crate::shellext::test_mark_slow(SLOW_CLSID, "SlowTest", "background", 80);
-            click(c, "", settings_category_pos("右鍵選單"));
+            click(c, "", settings_tab_pos("一般"));
         },
         move |_, a| {
-            expect("分類", category(a), group_index("右鍵選單"))?;
+            expect("分頁", category(a), group_index("一般"))?;
             let page = a.settings_page().ok_or("設定頁")?;
             let e = page.slow.iter().find(|e| e.clsid == SLOW_CLSID).ok_or("表格中沒有 SlowTest")?;
             expect("類型", e.kinds.as_slice(), ["檔案", "空白處"].as_slice())?;
@@ -2919,7 +2950,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     ));
     v.push(step("截圖：緩慢項目的表格（灰階）", |_| {}, |c, _| screenshot(c, "24-緩慢項目灰階")));
     v.push(step(
-        "設定：還原後 Esc 兩次關閉",
+        "設定：還原後 Esc 關閉",
         |c| {
             with_app(|a| {
                 for (key, value) in [
@@ -2934,7 +2965,6 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                     a.set_pref(i, value.into());
                 }
             });
-            key(c, "", VK_ESCAPE);
             key(c, "", VK_ESCAPE);
         },
         |_, a| {
@@ -2969,20 +2999,24 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     };
     let general = group_index("一般").unwrap_or(0);
     let hidden = zing_core::prefs::PREFS.iter().position(|p| p.key == "show_hidden").unwrap_or(0);
-    v.push(step("設定（鍵盤）：Ctrl+, 開啟、↓ 顯示焦點框", |c| {
+    v.push(step("設定（鍵盤）：Ctrl+, 開啟、↓ 顯示焦點框（在分頁列）", |c| {
         key(c, "c", VIRTUAL_KEY(0xBC));
         key(c, "", VK_DOWN);
     }, move |_, a| {
         expect("焦點", a.focus, Focus::Side)?;
         expect("焦點框", a.side_cursor.visible, true)?;
-        expect("第一個分類", cursor(a), Line::Row(0))
+        expect("分頁列", (cursor(a), a.side_cursor.part), (Line::Top(0), general))
     }));
-    v.push(step("設定（鍵盤）：↓ 到「一般」，Enter 進入", move |c| {
-        down_to(c, Row::Category(general));
+    v.push(step("設定（鍵盤）：→ Enter 切到「外觀」，← Enter 回到「一般」", move |c| {
+        key(c, "", VK_RIGHT);
         key(c, "", VK_RETURN);
-    }, move |_, a| {
-        expect("分類", category(a), Some(general))?;
-        expect("焦點在第一項", cursor(a), Line::Row(0))
+        let mid_tab = with_app(|a| a.settings_page().map(|p| p.category)).flatten();
+        c.notes.push(("settings_key_tab", format!("{mid_tab:?}")));
+        key(c, "", VK_LEFT);
+        key(c, "", VK_RETURN);
+    }, move |c, a| {
+        expect("切到外觀", c.note("settings_key_tab"), Some(format!("{:?}", group_index("外觀"))).as_deref())?;
+        expect("回到一般", category(a), Some(general))
     }));
     v.push(step("設定（鍵盤）：↓ 到顯示隱藏檔案，空白鍵切換", move |c| {
         down_to(c, Row::Field(hidden));
@@ -2992,38 +3026,24 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("沒有變成篩選", a.tab().filter.as_str(), "")
     }));
     v.push(step("截圖：設定頁的鍵盤焦點框", |_| {}, |c, _| screenshot(c, "25-設定鍵盤焦點")));
-    v.push(step("設定（鍵盤）：Esc 回到分類清單，焦點在「一般」", |c| key(c, "", VK_ESCAPE), move |_, a| {
-        expect("分類清單", category(a), None)?;
-        let k = a.settings_page().and_then(|p| p.rows().iter().position(|r| *r == Row::Category(general)));
-        expect("焦點", Some(cursor(a)), k.map(Line::Row))
-    }));
-    v.push(step("設定（鍵盤）：↑ 到頂端後再 ↑ 不動、End 到底部按鈕", |c| {
+    v.push(step("設定（鍵盤）：Home 到分頁列、↑ 不動、End 到「關閉」", |c| {
         key(c, "", VK_HOME);
         key(c, "", VK_UP);
         key(c, "", VK_END);
     }, move |_, a| {
         expect("底部按鈕", cursor(a), Line::Bottom(0))?;
-        expect("「關閉」在右邊", a.side_targets(Line::Bottom(0)).get(1).map(|t| t.0.clone()), Some(crate::view::Hit::SettingsButton(1)))
+        expect("只有「關閉」", a.side_targets(Line::Bottom(0)).iter().map(|t| t.0.clone()).collect::<Vec<_>>(), vec![crate::view::Hit::SettingsButton(0)])
     }));
-    v.push(step("設定（鍵盤）：Tab 回到清單，↓ 移動清單", |c| {
+    v.push(step("設定（鍵盤）：Tab 與快速鍵不會作用在對話框後面的清單", |c| {
         key(c, "", VK_TAB);
-        key(c, "", VK_HOME);
-        key(c, "", VK_DOWN);
+        key(c, "c", letter('t'));
     }, |_, a| {
-        expect("焦點", a.focus, Focus::List)?;
-        expect("設定頁仍開著", a.settings_page().is_some(), true)?;
-        expect("清單焦點", a.tab().focus, 1)
+        expect("焦點", a.focus, Focus::Side)?;
+        expect("設定仍開著", a.settings_page().is_some(), true)?;
+        expect("沒有開新分頁", a.panes[a.active_pane].tabs.len(), 1)
     }));
-    v.push(step("設定（鍵盤）：→ Enter 按「關閉」", |c| {
-        with_app(|a| a.exec("pane.focusnext"));
-        for _ in 0..4 {
-            if with_app(|a| a.focus == Focus::Side).unwrap_or(true) {
-                break;
-            }
-            with_app(|a| a.exec("pane.focusnext"));
-        }
+    v.push(step("設定（鍵盤）：Enter 按「關閉」", |c| {
         key(c, "", VK_END);
-        key(c, "", VK_RIGHT);
         key(c, "", VK_RETURN);
     }, move |_, a| {
         expect("設定頁", a.settings_page().is_none(), true)?;
@@ -3033,12 +3053,11 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     }));
     v.push(step("右側面板：每一行的鍵盤目標與滑鼠命中一致", |_| {}, |_, a| {
         use crate::view::Hit;
-        // 設定頁：分類清單、每個分類
+        // 設定：每個分頁
         a.exec("settings.open");
-        check_side_targets(a).map_err(|e| format!("設定分類：{e}"))?;
         for g in 0..zing_core::prefs::groups().len() {
-            a.settings_category(Some(g));
-            check_side_targets(a).map_err(|e| format!("設定分類 {g}：{e}"))?;
+            a.settings_tab(g);
+            check_side_targets(a).map_err(|e| format!("設定分頁 {g}：{e}"))?;
         }
         a.close_side_panels();
         // 主題：展開第一個顏色欄位（色票）
@@ -4196,7 +4215,12 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         let end = theme_pos(row, |r| (r.track.r + 30.0, (r.row.t + r.row.b) / 2.0));
         drag(c, at, end);
     }, |_, a| expect("圓角", a.theme.metrics.radius, 16.0)));
-    v.push(step("主題：↺ 還原圓角", |c| click(c, "", theme_pos(crate::themepanel::Row::Field(theme_field("圓角")), |r| mid(r.tail))), |_, a| {
+    v.push(step("主題：↺ 先確認，還沒還原", |c| click(c, "", theme_pos(crate::themepanel::Row::Field(theme_field("圓角")), |r| mid(r.tail))), |_, a| {
+        expect("確認對話框", a.confirm.is_some(), true)?;
+        expect("圓角", a.theme.metrics.radius, 16.0)
+    }));
+    v.push(step("主題：確認後還原圓角", |c| click(c, "", confirm_button_pos(0)), |_, a| {
+        expect("確認對話框", a.confirm.is_none(), true)?;
         expect("圓角", a.theme.metrics.radius, 0.0)
     }));
     v.push(step(
@@ -4263,9 +4287,10 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("截圖：主題編輯器", |_| {}, |c, _| screenshot(c, "10-主題編輯器")));
     v.push(
         step(
-            "主題：另存新主題（只存差異）",
+            "主題：儲存（確認後另存新主題，只存差異），存好後離開編輯器",
             |c| {
                 click(c, "", theme_button_pos(0));
+                click(c, "", confirm_button_pos(0));
                 if let Some(e) = edit_hwnd() {
                     set_text(e, "smoke-theme");
                     key_to(e, "", VK_RETURN);
@@ -4273,6 +4298,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             },
             |_, a| {
                 expect("主題名稱", a.theme_name.as_str(), "smoke-theme")?;
+                expect("離開編輯器", a.theme_editor().is_none(), true)?;
                 let text = std::fs::read_to_string(theme_path("smoke-theme")).map_err(|e| e.to_string())?;
                 if !text.contains("#ff0000") || !text.contains("row_height") || text.contains("background") {
                     return Err(format!("主題檔內容：{text}"));
@@ -4283,12 +4309,17 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         .slow(),
     );
     v.push(step(
-        "主題：取消時還原到上次儲存",
+        "主題：有修改時「取消」先確認，放棄後還原到上次儲存",
         |c| {
+            exec("theme.edit");
             wheel(c, theme_row_pos("列高", false), 120);
             click(c, "", theme_button_pos(1));
+            let asked = with_app(|a| a.confirm.is_some()).unwrap_or(false);
+            c.notes.push(("theme_cancel_confirm", asked.to_string()));
+            click(c, "", confirm_button_pos(0));
         },
-        |_, a| {
+        |c, a| {
+            expect("先確認", c.note("theme_cancel_confirm"), Some("true"))?;
             expect("面板關閉", a.theme_editor().is_none(), true)?;
             expect("列高", a.theme.metrics.row_height, 23.0)
         },

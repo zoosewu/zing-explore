@@ -5,6 +5,7 @@ mod app;
 mod batch;
 mod cmdbar;
 mod cmdbaredit;
+mod confirm;
 mod ctxmenu;
 mod defaultapp;
 mod edit;

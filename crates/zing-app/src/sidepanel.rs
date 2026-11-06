@@ -94,7 +94,7 @@ impl Hit {
                 | Hit::ThemeLink(_)
                 | Hit::ThemePanel
                 | Hit::SettingsRow(_)
-                | Hit::SettingsBack
+                | Hit::SettingsTab(_)
                 | Hit::SettingsButton(_)
                 | Hit::SettingsPanel
                 | Hit::BarEditRow(_)
@@ -217,6 +217,7 @@ impl App {
     /// 開啟一個面板（取代開著的那個）；鍵盤焦點移到面板
     pub fn open_side(&mut self, panel: SidePanel) {
         self.close_side_panels();
+        self.side_return = None;
         self.side = Some(panel);
         self.focus = Focus::Side;
         self.side_cursor = SideCursor::default();
@@ -239,11 +240,21 @@ impl App {
         self.invalidate();
     }
 
+    /// 編輯器（主題、命令列、快速鍵）完成或 Esc：關閉；從設定對話框開出來的就回到它原本的分頁
+    pub fn leave_side_editor(&mut self) {
+        let back = self.side_return.take();
+        self.close_side_panels();
+        if let Some(tab) = back {
+            self.open_settings_at(tab);
+        }
+    }
+
     /// 面板的寬度（窗格區域寬度 `avail` 中）
     pub fn side_width(&self, avail: f32) -> Option<f32> {
         Some(match self.side_kind()? {
             SideKind::Theme => crate::themepanel::PANEL_W.min(avail * 0.5),
-            SideKind::Settings => crate::prefspage::PANEL_W.min(avail * 0.6),
+            // 設定是視窗中央的對話框，不佔窗格的寬度（`compute_layout` 另外放）
+            SideKind::Settings => return None,
             SideKind::BarEdit => crate::cmdbaredit::PANEL_W.min(avail * 0.6),
             SideKind::Keys => crate::keyspanel::PANEL_W.min(avail * 0.6),
         })
@@ -488,11 +499,23 @@ impl App {
             }
             Some(SideKind::Theme) => self.theme_escape(),
             Some(SideKind::BarEdit | SideKind::Keys) => {
-                self.close_side_panels();
+                self.leave_side_editor();
                 true
             }
             None => false,
         }
+    }
+
+    /// 對話框（設定）：背景變暗、陰影與圓角的卡片，內容由 `paint_side` 畫在上面
+    pub fn paint_dialog_frame(&self, r: Rect) {
+        let c = &self.theme.color;
+        let g = &self.gfx;
+        let radius = self.theme.metrics.radius + 2.0;
+        let (w, h) = g.size();
+        g.fill(Rect::new(0.0, 0.0, w, h), zing_core::theme::Color { r: 0, g: 0, b: 0, a: 128 });
+        g.fill_round(Rect::new(r.l - 2.0, r.t, r.r + 2.0, r.b + 4.0), radius + 2.0, zing_core::theme::Color { r: 0, g: 0, b: 0, a: 48 });
+        g.fill_round(r, radius, c.surface);
+        g.stroke_round(r, radius, c.border, 1.0);
     }
 
     pub fn paint_side(&self, r: Rect) {
@@ -504,29 +527,35 @@ impl App {
             None => return,
         }
         self.paint_side_focus();
-        self.gfx.vline(r.l - 1.0, r.t, r.b, self.theme.color.border);
+        if !self.settings_dialog() {
+            self.gfx.vline(r.l - 1.0, r.t, r.b, self.theme.color.border);
+        }
     }
 
     /// 底部兩個按鈕：`primary` 是強調色的那個，`hot(k)` 是游標是否在第 k 個上
     pub fn paint_footer_buttons(&self, buttons: &[Rect; 2], labels: [&'static str; 2], primary: Option<usize>, hot: impl Fn(usize) -> bool) {
+        for (k, b) in buttons.iter().enumerate() {
+            self.paint_button(*b, labels[k], primary == Some(k), hot(k));
+        }
+    }
+
+    /// 一個按鈕（`label` 是原文）：`main` 是強調色的主要按鈕
+    pub fn paint_button(&self, b: Rect, label: &'static str, main: bool, hot: bool) {
         let c = &self.theme.color;
         let g = &self.gfx;
         let radius = self.theme.metrics.radius;
-        for (k, b) in buttons.iter().enumerate() {
-            let main = primary == Some(k);
-            let fill = match (main, hot(k)) {
-                (true, true) => c.accent.with_alpha(220),
-                (true, false) => c.accent,
-                (false, true) => c.hover,
-                (false, false) => c.background,
-            };
-            g.fill_round(*b, radius, fill);
-            g.stroke_round(*b, radius, if main { c.accent } else { c.border }, 1.0);
-            let label = zing_core::i18n::tr(labels[k]);
-            let w = g.measure(label, Font::Text);
-            let col = if main { crate::themepanel::contrast(c.accent) } else { c.text };
-            g.text(label, Font::Text, Rect::new(b.l + ((b.w() - w) / 2.0).max(4.0), b.t, b.r - 4.0, b.b), col);
-        }
+        let fill = match (main, hot) {
+            (true, true) => c.accent.with_alpha(220),
+            (true, false) => c.accent,
+            (false, true) => c.hover,
+            (false, false) => c.background,
+        };
+        g.fill_round(b, radius, fill);
+        g.stroke_round(b, radius, if main { c.accent } else { c.border }, 1.0);
+        let label = zing_core::i18n::tr(label);
+        let w = g.measure(label, Font::Text);
+        let col = if main { crate::themepanel::contrast(c.accent) } else { c.text };
+        g.text(label, Font::Text, Rect::new(b.l + ((b.w() - w) / 2.0).max(4.0), b.t, b.r - 4.0, b.b), col);
     }
 }
 

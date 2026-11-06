@@ -273,14 +273,14 @@ impl App {
                 }
                 _ => {}
             },
-            Hit::BarEditButton(0) => {
-                self.config.cmdbar = core::defaults();
-                if let Some(ed) = self.cmdbar_editor_mut() {
+            Hit::BarEditButton(0) => self.confirm(tr!("確定要把命令列還原成預設的按鈕嗎？"), tr_key!("還原"), |a| {
+                a.config.cmdbar = core::defaults();
+                if let Some(ed) = a.cmdbar_editor_mut() {
                     ed.expanded = None;
                 }
-                self.cmdbar_changed();
-            }
-            Hit::BarEditButton(_) => self.close_side_panels(),
+                a.cmdbar_changed();
+            }),
+            Hit::BarEditButton(_) => self.confirm(tr!("完成自訂命令列嗎？"), tr_key!("完成"), |a| a.leave_side_editor()),
             Hit::BarEditSearch(true) => self.bar_query(String::new()),
             Hit::BarEditSearch(false) => self.begin_bar_search(),
             _ => {}
