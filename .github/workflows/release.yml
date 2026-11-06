@@ -120,7 +120,8 @@ jobs:
         run: |
           $dist = Join-Path $env:RUNNER_TEMP 'dist'
           New-Item -ItemType Directory -Force $dist | Out-Null
-          $extra = if ('${{ inputs.allow_regression }}' -eq 'true') { @('-AllowRegression') } else { @() }
+          # 外層的 @() 不可省：if 運算式回傳單一元素時會變成字串，@extra 展開字串會拆成字元（"-" 被當成 -Runs 的值）
+          $extra = @(if ('${{ inputs.allow_regression }}' -eq 'true') { '-AllowRegression' })
           # 每次分到的機器不同，相對容差比本機（5%）寬
           $log = Join-Path $env:RUNNER_TEMP 'perf.log'
           pwsh -NoProfile tools/perf.ps1 -BaselineFile $env:PERF_BASELINE -RelTolerance 0.15 -Out (Join-Path $dist 'perf.json') @extra 2>&1 |
