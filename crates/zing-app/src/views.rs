@@ -101,6 +101,7 @@ impl App {
 
     pub fn after_view_change(&mut self, p: usize, t: usize) {
         self.remember_view(p, t);
+        self.sync_cover_watch(p, t);
         self.layout = self.compute_layout();
         let max = self.max_scroll(p, self.layout.panes.get(p).map_or(400.0, |pl| pl.list.h()));
         let tab = &mut self.panes[p].tabs[t];
@@ -140,6 +141,7 @@ impl App {
                     tab.mode = want.mode;
                     tab.thumb = want.thumb;
                     self.resort(p, t);
+                    self.sync_cover_watch(p, t);
                 }
             }
         }

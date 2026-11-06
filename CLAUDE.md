@@ -67,7 +67,10 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   繪製時不掃過整個清單：選取數由 `Tab` 在選取、清單、篩選改變時更新（`selected` 只經 `Tab` 的方法修改，
   debug build 讀取時會以掃描結果核對）。
 - 縮圖同樣只取看得到的格子（`thumbs.rs`）：繪製時登記，繪製結束時取消已不可見、還沒開始的請求；
-  本機兩條、網路磁碟與光碟一條執行緒（背景模式）。清單與縮圖的幾何一律經 `App::grid`／`App::item_rect`，
+  本機兩條、網路磁碟與光碟一條執行緒（背景模式）。記憶體中的結果以項目的修改時間與大小（`thumbs::stamp`）判斷過時；
+  資料夾的封面例外：從上層列舉到的子資料夾修改時間不會因為裡面的變更而更新（NTFS 的目錄項目），所以縮圖檢視的分頁改用
+  ReadDirectoryChangesW 監看子樹的前兩層（`services::watch` 的 `covers`，`App::sync_cover_watch` 跟著檢視模式切換），
+  子資料夾裡有變更就 `Thumbs::forget` 它的封面（`Msg::CoversChanged`，合併 250 ms）。清單與縮圖的幾何一律經 `App::grid`／`App::item_rect`，
   不要再自行以 `row_h` 換算位置。
 - 單行輸入框（`App::edit`，一次一個）的每種行為都在 `edit.rs` 的 `EditKind`：按鍵與失去焦點（`subclass_data`）、
   內容改變（`edit_changed`）、結束（`finish_edit`）、是否屬於右側面板；那裡的 match 不用 `_`。window.rs 只建立輸入框、轉送訊息。

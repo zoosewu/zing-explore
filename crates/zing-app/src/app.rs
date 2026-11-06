@@ -510,7 +510,17 @@ impl App {
         services::load_dir(&self.pool, &notifier, tab.id, tab.generation, tab.path.clone(), tab.spec, tab.cancel.clone());
         if !tab.refreshing {
             tab.nav_generation += 1;
-            tab.watcher = if paused { None } else { services::watch(&tab.path, &notifier, tab.id, tab.nav_generation) };
+            tab.watcher = if paused { None } else { start_watch(tab, &notifier) };
+        }
+    }
+
+    /// 檢視模式改變後：縮圖檢視才監看子資料夾的內容（封面），監看的種類不符就重新開始
+    pub fn sync_cover_watch(&mut self, p: usize, t: usize) {
+        let notifier = self.notifier.clone();
+        let tab = &mut self.panes[p].tabs[t];
+        if tab.watcher.is_some() && tab.watch_covers != (tab.mode == zing_core::folderview::ViewMode::Thumbnails) {
+            tab.nav_generation += 1;
+            tab.watcher = start_watch(tab, &notifier);
         }
     }
 
@@ -552,7 +562,7 @@ impl App {
                 let tab = &mut self.panes[p].tabs[t];
                 if tab.watcher.is_none() && !tab.path.is_empty() && !paused {
                     tab.nav_generation += 1;
-                    tab.watcher = services::watch(&tab.path, &notifier, tab.id, tab.nav_generation);
+                    tab.watcher = start_watch(tab, &notifier);
                 }
             }
         }
@@ -1014,6 +1024,20 @@ impl App {
                         tab.refresh_due = true;
                         // 合併短時間內的大量變更
                         unsafe { SetTimer(Some(self.hwnd), TIMER_REFRESH, 250, None) };
+                    }
+                }
+            }
+            Msg::CoversChanged { tab, generation, folders } => {
+                if let Some((p, t)) = self.find_tab(tab) {
+                    let tab = &self.panes[p].tabs[t];
+                    if generation == tab.nav_generation {
+                        let folders = folders.unwrap_or_else(|| {
+                            (0..tab.listing.len()).filter(|&e| tab.listing.entries[e].is_dir()).map(|e| tab.listing.name_string(e)).collect()
+                        });
+                        for f in folders {
+                            self.thumbs.forget(&path::join(&tab.path, &f));
+                        }
+                        self.invalidate();
                     }
                 }
             }
@@ -1951,6 +1975,12 @@ impl App {
             window::begin_rename(self, id, full);
         }
     }
+}
+
+/// 分頁的資料夾監看：縮圖檢視時連子資料夾的內容一起看（封面）
+fn start_watch(tab: &mut Tab, n: &Notifier) -> Option<services::Watcher> {
+    tab.watch_covers = tab.mode == zing_core::folderview::ViewMode::Thumbnails;
+    services::watch(&tab.path, n, tab.id, tab.nav_generation, tab.watch_covers)
 }
 
 pub fn apply_window_theme(hwnd: HWND, theme: &Theme) {

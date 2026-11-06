@@ -3,7 +3,9 @@
 //!
 //! - 只要求畫面上看得到的格子：繪製時登記，繪製結束時把已不可見、還沒開始的請求從佇列移除。
 //! - 本機檔案由兩條背景執行緒處理；網路磁碟、光碟另有一條，一次只取一張，不拖慢本機。
-//! - 結果放在記憶體（上限 64 MB，最久沒用的先丟）；外部命令產生的 PNG 另存在磁碟快取，
+//! - 結果放在記憶體（上限 64 MB，最久沒用的先丟），以清單中的修改時間與大小（`stamp`）判斷檔案是否改寫過。
+//!   資料夾的封面不能這樣判斷（上層列舉到的子資料夾修改時間不會因為裡面的變更而更新）：縮圖檢視的分頁監看子資料夾的
+//!   內容（`services::watch` 的 `covers`），變更時 `forget`。外部命令產生的 PNG 另存在磁碟快取，
 //!   以「路徑、修改時間、大小、邊長、命令」判斷是否需要重做（啟動程序太慢，不能每次重跑）。
 //! - 手動指定的縮圖（右鍵「設定縮圖…」）優先於其他來源：圖片複製到 `custom_dir()`，檔名是項目的
 //!   「磁碟區序號-NTFS 檔案 ID」，改名或在同一磁碟區內移動後仍有效。沒有任何手動縮圖時不必開檔取得 ID。
@@ -118,7 +120,8 @@ struct Shared {
 struct Inner {
     /// (路徑小寫, 像素邊長) → id
     ids: HashMap<(String, u32), u32>,
-    slots: HashMap<u32, (Slot, (String, u32))>,
+    /// id → (結果, 鍵, 取得時項目的 stamp)
+    slots: HashMap<u32, (Slot, (String, u32), u64)>,
     bytes: usize,
     tick: u64,
     /// 這一幀要求過的 id
@@ -160,25 +163,29 @@ impl Thumbs {
         inner.bytes = 0;
     }
 
-    /// 繪製時呼叫：已就緒回傳 id；否則送出請求（只送一次）並回傳 None
-    pub fn get(&self, path: &str, is_dir: bool, px: u32) -> Option<u32> {
+    /// 繪製時呼叫：已就緒回傳 id；否則送出請求（只送一次）並回傳 None。
+    /// `stamp` 是項目在清單中的修改時間與大小（`stamp()`），與取得時不同就丟掉重新取得
+    pub fn get(&self, path: &str, is_dir: bool, px: u32, stamp: u64) -> Option<u32> {
         let mut inner = self.inner.borrow_mut();
         inner.tick += 1;
         let tick = inner.tick;
         let key = (path.to_lowercase(), px);
         if let Some(&id) = inner.ids.get(&key) {
-            inner.wanted.insert(id);
-            return match &mut inner.slots.get_mut(&id)?.0 {
-                Slot::Ready { used, .. } => {
-                    *used = tick;
-                    Some(id)
-                }
-                _ => None,
-            };
+            if inner.slots.get(&id).is_some_and(|s| s.2 == stamp) {
+                inner.wanted.insert(id);
+                return match &mut inner.slots.get_mut(&id)?.0 {
+                    Slot::Ready { used, .. } => {
+                        *used = tick;
+                        Some(id)
+                    }
+                    _ => None,
+                };
+            }
+            drop_id(&mut inner, id);
         }
         let id = crate::icons::next_id();
         inner.ids.insert(key.clone(), id);
-        inner.slots.insert(id, (Slot::Pending, key));
+        inner.slots.insert(id, (Slot::Pending, key, stamp));
         inner.wanted.insert(id);
         drop(inner);
         self.start();
@@ -211,7 +218,7 @@ impl Thumbs {
             });
         }
         for id in dropped {
-            if let Some((_, key)) = inner.slots.remove(&id) {
+            if let Some((_, key, _)) = inner.slots.remove(&id) {
                 inner.ids.remove(&key);
             }
         }
@@ -220,7 +227,7 @@ impl Thumbs {
     pub fn store(&self, id: u32, pixels: Option<IconPixels>, source: Source) {
         let mut inner = self.inner.borrow_mut();
         let tick = inner.tick;
-        let Some((slot, _)) = inner.slots.get_mut(&id) else { return };
+        let Some((slot, _, _)) = inner.slots.get_mut(&id) else { return };
         let size = pixels.as_ref().map_or(0, |p| p.bgra.len());
         *slot = match pixels {
             Some(pixels) => Slot::Ready { pixels, source, used: tick },
@@ -264,13 +271,7 @@ impl Thumbs {
         let lower = path.to_lowercase();
         let ids: Vec<u32> = inner.ids.iter().filter(|((p, _), _)| *p == lower).map(|(_, &id)| id).collect();
         for id in ids {
-            if let Some((slot, key)) = inner.slots.remove(&id) {
-                inner.ids.remove(&key);
-                if let Slot::Ready { pixels, .. } = slot {
-                    inner.bytes -= pixels.bgra.len();
-                }
-                inner.evicted.push(id);
-            }
+            drop_id(&mut inner, id);
         }
     }
 
@@ -279,7 +280,7 @@ impl Thumbs {
         let inner = self.inner.borrow();
         let lower = path.to_lowercase();
         inner.ids.iter().any(|((p, _), id)| {
-            *p == lower && matches!(inner.slots.get(id), Some((Slot::Ready { source: Source::Custom, .. }, _)))
+            *p == lower && matches!(inner.slots.get(id), Some((Slot::Ready { source: Source::Custom, .. }, _, _)))
         })
     }
 
@@ -290,7 +291,23 @@ impl Thumbs {
     /// 已就緒的數量（冒煙測試用）
     #[cfg(feature = "smoke")]
     pub fn ready_count(&self) -> usize {
-        self.inner.borrow().slots.values().filter(|(s, _)| matches!(s, Slot::Ready { .. })).count()
+        self.inner.borrow().slots.values().filter(|(s, _, _)| matches!(s, Slot::Ready { .. })).count()
+    }
+}
+
+/// 項目的 stamp：修改時間與大小（資料夾的大小是 0，修改時間在裡面新增、刪除、改名項目時改變）
+pub fn stamp(e: &zing_core::listing::Entry) -> u64 {
+    e.modified ^ e.size.rotate_left(32)
+}
+
+/// 丟掉一個結果（還在佇列中的工作完成時找不到 id，結果直接丟棄）
+fn drop_id(inner: &mut Inner, id: u32) {
+    if let Some((slot, key, _)) = inner.slots.remove(&id) {
+        inner.ids.remove(&key);
+        if let Slot::Ready { pixels, .. } = slot {
+            inner.bytes -= pixels.bgra.len();
+        }
+        inner.evicted.push(id);
     }
 }
 
@@ -299,7 +316,7 @@ fn evict(inner: &mut Inner) {
     let mut ready: Vec<(u64, u32, usize)> = inner
         .slots
         .iter()
-        .filter_map(|(&id, (s, _))| match s {
+        .filter_map(|(&id, (s, _, _))| match s {
             Slot::Ready { pixels, used, .. } => Some((*used, id, pixels.bgra.len())),
             _ => None,
         })
@@ -309,7 +326,7 @@ fn evict(inner: &mut Inner) {
         if inner.bytes <= MEMORY_LIMIT / 4 * 3 {
             break;
         }
-        if let Some((_, key)) = inner.slots.remove(&id) {
+        if let Some((_, key, _)) = inner.slots.remove(&id) {
             inner.ids.remove(&key);
         }
         inner.bytes -= size;
@@ -636,6 +653,52 @@ mod tests {
         assert_eq!(bucket(97.0), 128);
         assert_eq!(bucket(320.0), 384);
         assert_eq!(bucket(4000.0), 512);
+    }
+
+    /// 64×64 的單色 24 位元 BMP
+    fn bmp(rgb: [u8; 3]) -> Vec<u8> {
+        let (w, h) = (64u32, 64u32);
+        let data = w * h * 3;
+        let mut v = Vec::new();
+        v.extend_from_slice(b"BM");
+        v.extend_from_slice(&(54 + data).to_le_bytes());
+        v.extend_from_slice(&[0; 4]);
+        v.extend_from_slice(&54u32.to_le_bytes());
+        v.extend_from_slice(&40u32.to_le_bytes());
+        v.extend_from_slice(&w.to_le_bytes());
+        v.extend_from_slice(&h.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&24u16.to_le_bytes());
+        v.extend_from_slice(&[0; 4]);
+        v.extend_from_slice(&data.to_le_bytes());
+        v.extend_from_slice(&[0; 16]);
+        for _ in 0..w * h {
+            v.extend_from_slice(&[rgb[2], rgb[1], rgb[0]]);
+        }
+        v
+    }
+
+    /// Windows 的資料夾縮圖在裡面加入圖片、就地改寫圖片後是否跟著更新（thumbcache 不會給舊的）：
+    /// `cargo test -p zing-app shell_folder_thumb_updates -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn shell_folder_thumb_updates() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let dir = zing_core::testdir::dir().join(format!("zing-folder-thumb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        let empty = shell_image(&d, 256).unwrap().bgra;
+        std::fs::write(dir.join("a.bmp"), bmp([255, 0, 0])).unwrap();
+        let added = shell_image(&d, 256).unwrap().bgra;
+        println!("加入圖片後改變：{}", added != empty);
+        std::fs::write(dir.join("a.bmp"), bmp([0, 0, 255])).unwrap();
+        let rewritten = shell_image(&d, 256).unwrap().bgra;
+        println!("就地改寫後改變：{}", rewritten != added);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_ne!(added, empty, "加入圖片後 Windows 仍給沒有圖片的資料夾縮圖");
     }
 
     #[test]

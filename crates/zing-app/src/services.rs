@@ -47,6 +47,8 @@ pub enum Msg {
     /// 全磁碟搜尋的結果（search.rs）
     SearchResults { generation: u64, result: Result<zing_core::indexproto::Response, zing_core::indexproto::QueryError> },
     DirChanged { tab: TabId, generation: u64 },
+    /// 縮圖檢視：這些子資料夾（名稱；None 是全部，變更太多時）裡的項目改變了，它們的封面要重新取得
+    CoversChanged { tab: TabId, generation: u64, folders: Option<Vec<String>> },
     /// `renamed`：成功改名的項目（舊的完整路徑, 新的完整路徑）；`vacated`：送出時暫停監看的項目（`FileOp::vacated`）
     FileOpDone { dirs: Vec<String>, error: Option<String>, select: Option<Select>, renamed: Option<(String, String)>, vacated: Vec<String> },
     Status { text: String, error: bool },
@@ -365,13 +367,133 @@ impl Drop for Watcher {
     }
 }
 
-pub fn watch(path: &str, n: &Notifier, tab: TabId, generation: u64) -> Option<Watcher> {
+/// 分頁的資料夾監看。`covers`（縮圖檢視）時連子資料夾的直接內容一起看：資料夾的封面來自裡面的圖片，而上層列舉到的
+/// 子資料夾修改時間不會因為裡面的變更而更新（NTFS 的目錄項目），上層的監看也就收不到通知
+pub fn watch(path: &str, n: &Notifier, tab: TabId, generation: u64, covers: bool) -> Option<Watcher> {
     if path.is_empty() {
         return None;
     }
     let filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE;
     let n = n.clone();
+    if covers {
+        return watch_with_covers(path, filter, n, tab, generation);
+    }
     watch_dir(path, filter, move || move || n.send(Msg::DirChanged { tab, generation }))
+}
+
+/// 以 ReadDirectoryChangesW 監看整個子樹，只取兩層：資料夾本身的變更送 `Msg::DirChanged`（立即），
+/// 子資料夾裡的變更合併 250 ms 後送 `Msg::CoversChanged`（複製大量檔案時不會一直重取封面）；更深的忽略
+fn watch_with_covers(path: &str, filter: FILE_NOTIFY_CHANGE, n: Notifier, tab: TabId, generation: u64) -> Option<Watcher> {
+    use windows::Win32::Foundation::WAIT_TIMEOUT;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY, FILE_NOTIFY_INFORMATION, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadDirectoryChangesW,
+    };
+    use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+    const COALESCE_MS: u32 = 250;
+
+    let stop = unsafe { CreateEventW(None, true, false, None).ok()? };
+    let stop_raw = stop.0 as isize;
+    let path_w = wide_z(path);
+    let spawned = std::thread::Builder::new().name("zing-watch-covers".into()).spawn(move || {
+        let stop = HANDLE(stop_raw as _);
+        let opened = unsafe {
+            CreateFileW(
+                PCWSTR(path_w.as_ptr()),
+                FILE_LIST_DIRECTORY.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+                None,
+            )
+        };
+        let done = unsafe { CreateEventW(None, false, false, None) };
+        if let (Ok(dir), Ok(done)) = (opened, done) {
+            // FILE_NOTIFY_INFORMATION 以 DWORD 對齊
+            let mut buf = vec![0u32; 16 * 1024];
+            let mut ov = OVERLAPPED { hEvent: done, ..Default::default() };
+            let read = |buf: &mut Vec<u32>, ov: &mut OVERLAPPED| unsafe {
+                ReadDirectoryChangesW(dir, buf.as_mut_ptr() as _, (buf.len() * 4) as u32, true, filter, None, Some(ov), None).is_ok()
+            };
+            // 等待合併的子資料夾；None 是全部
+            let mut pending: Option<std::collections::BTreeSet<String>> = Some(Default::default());
+            let mut dirty = false;
+            let mut reading = read(&mut buf, &mut ov);
+            while reading {
+                let r = unsafe { WaitForMultipleObjects(&[stop, done], false, if dirty { COALESCE_MS } else { INFINITE }) };
+                if r == WAIT_TIMEOUT {
+                    let folders = pending.replace(Default::default()).map(|s| s.into_iter().collect());
+                    n.send(Msg::CoversChanged { tab, generation, folders });
+                    dirty = false;
+                    continue;
+                }
+                if r.0 != WAIT_OBJECT_0.0 + 1 {
+                    unsafe {
+                        let _ = CancelIoEx(dir, Some(&ov));
+                    }
+                    break;
+                }
+                let mut bytes = 0u32;
+                if unsafe { GetOverlappedResult(dir, &ov, &mut bytes, false) }.is_err() {
+                    break;
+                }
+                let mut top = false;
+                if bytes == 0 {
+                    // 變更太多、緩衝區放不下：全部重新整理
+                    top = true;
+                    pending = None;
+                    dirty = true;
+                } else {
+                    let base = buf.as_ptr() as *const u8;
+                    let mut off = 0usize;
+                    loop {
+                        let info = unsafe { &*(base.add(off) as *const FILE_NOTIFY_INFORMATION) };
+                        let name = unsafe {
+                            std::slice::from_raw_parts(info.FileName.as_ptr(), info.FileNameLength as usize / 2)
+                        };
+                        let mut parts = name.split(|&c| c == b'\\' as u16);
+                        let first = parts.next().unwrap_or_default();
+                        match (parts.next(), parts.next()) {
+                            (None, _) => top = true,
+                            (Some(_), None) => {
+                                if let Some(set) = pending.as_mut() {
+                                    set.insert(String::from_utf16_lossy(first));
+                                }
+                                dirty = true;
+                            }
+                            _ => {}
+                        }
+                        if info.NextEntryOffset == 0 {
+                            break;
+                        }
+                        off += info.NextEntryOffset as usize;
+                    }
+                }
+                if top {
+                    n.send(Msg::DirChanged { tab, generation });
+                }
+                reading = read(&mut buf, &mut ov);
+            }
+            unsafe {
+                // 取消的讀取完成之前不能釋放緩衝區
+                let mut bytes = 0u32;
+                let _ = GetOverlappedResult(dir, &ov, &mut bytes, true);
+                let _ = CloseHandle(dir);
+                let _ = CloseHandle(done);
+            }
+        }
+        unsafe {
+            let _ = CloseHandle(stop);
+        }
+    });
+    if spawned.is_err() {
+        unsafe {
+            let _ = CloseHandle(stop);
+        }
+        return None;
+    }
+    Some(Watcher { stop: stop_raw })
 }
 
 /// 監看資料夾（不含子資料夾）。`start` 在監看執行緒上、開啟監看之前執行（網路路徑可能很慢，不能卡住 UI），

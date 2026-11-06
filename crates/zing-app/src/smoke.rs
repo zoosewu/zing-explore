@@ -3723,13 +3723,32 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     }));
     v.push(
         step(
-            "縮圖：資料夾裡有 cover.png 時用它當縮圖",
+            "縮圖：沒有封面的資料夾用 Windows 的縮圖",
             {
                 let d = d.clone();
                 move |_| {
-                    let dir = path::join(&d, "封面測試");
-                    let _ = harness_io(|| std::fs::create_dir_all(&dir));
-                    let _ = harness_io(|| std::fs::write(path::join(&dir, "cover.png"), TINY_PNG));
+                    let _ = harness_io(|| std::fs::create_dir_all(path::join(&d, "封面測試")));
+                }
+            },
+            {
+                let d = d.clone();
+                move |_, a| {
+                    let px = crate::thumbs::bucket(a.tab().thumb as f32 * a.gfx.scale());
+                    let p = path::join(&d, "封面測試");
+                    expect("來源", a.thumbs.source(&p, px), Some(crate::thumbs::Source::Shell))
+                }
+            },
+        )
+        .slow(),
+    );
+    // 已取得縮圖之後才放進封面：資料夾的修改時間改變，清單更新後重新取得
+    v.push(
+        step(
+            "縮圖：之後放進 cover.png，資料夾的縮圖跟著換成封面",
+            {
+                let d = d.clone();
+                move |_| {
+                    let _ = harness_io(|| std::fs::write(path::join(&path::join(&d, "封面測試"), "cover.png"), TINY_PNG));
                 }
             },
             {

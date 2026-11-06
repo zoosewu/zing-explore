@@ -59,6 +59,8 @@ pub struct Tab {
     /// 資料夾大小計算的取消旗標：只在換資料夾時更換（自動重新整理不取消）
     pub size_cancel: Arc<AtomicBool>,
     pub watcher: Option<Watcher>,
+    /// 監看是否包含子資料夾的內容（縮圖檢視的封面，`services::watch` 的 `covers`）
+    pub watch_covers: bool,
     /// 載入完成後要選取的項目（名稱、是否進入重新命名）
     pub pending_select: Option<(String, bool)>,
     pub refresh_due: bool,
@@ -94,6 +96,7 @@ impl Tab {
             cancel: Arc::new(AtomicBool::new(false)),
             size_cancel: Arc::new(AtomicBool::new(false)),
             watcher: None,
+            watch_covers: false,
             pending_select: None,
             refresh_due: false,
             shown: false,

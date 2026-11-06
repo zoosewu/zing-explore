@@ -943,7 +943,8 @@ impl App {
             let dir = entry.is_dir();
             let opacity = if entry.is_hidden() { 0.5 } else { 1.0 };
             let full = if tab.path.is_empty() { tab.listing.name_string(e) } else { tab.full_path(e) };
-            let drawn = self.thumbs.get(&full, dir, px).is_some_and(|id| g.thumb(id, &self.thumbs, boxr, opacity));
+            let stamp = crate::thumbs::stamp(entry);
+            let drawn = self.thumbs.get(&full, dir, px, stamp).is_some_and(|id| g.thumb(id, &self.thumbs, boxr, opacity));
             if !drawn {
                 let key = IconKey::for_entry(&tab.path, &tab.listing, e);
                 if !self.icons.get(key).is_some_and(|id| g.icon(id, &self.icons, boxr, opacity)) {
