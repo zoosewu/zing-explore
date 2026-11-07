@@ -103,18 +103,33 @@ jobs:
           pwsh -NoProfile tools/ci-annotate.ps1 -Log $log -Kind smoke -ExitCode $code
           exit $code
 
-      - name: 上一個 Release 的效能結果（CI 的基準）
+      # 每次分到的機器快慢差很多（同一版的主題切換 14～23 ms），拿上一版在別台機器量的結果比較會誤判退步：
+      # 下載上一個 Release 的 zing.exe，在這台機器先量一次當基準
+      - name: 上一個 Release 的效能（在這台機器量，當作基準）
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'baseline'
           New-Item -ItemType Directory -Force $dir | Out-Null
-          # 沒有 Release 或舊的 Release 沒有附結果時只檢查門檻
+          $baseline = Join-Path $dir 'perf.json'
+          # 沒有 Release 時只檢查門檻
           $latest = gh release view --repo $env:GITHUB_REPOSITORY --json tagName -q .tagName 2>$null
           if ($LASTEXITCODE -eq 0 -and $latest) {
-            gh release download $latest --repo $env:GITHUB_REPOSITORY --pattern perf.json --dir $dir 2>$null
-            Write-Host "基準：$latest"
+            gh release download $latest --repo $env:GITHUB_REPOSITORY --pattern $env:ASSET --dir $dir 2>$null
+            $zip = Join-Path $dir $env:ASSET
+            if (Test-Path $zip) {
+              $old = Join-Path $dir 'old'
+              Expand-Archive $zip $old -Force
+              # 只要數字：不和任何基準比較（給不存在的檔案），超標也不算失敗
+              pwsh -NoProfile tools/perf.ps1 -Exe (Join-Path $old 'zing.exe') -BaselineFile (Join-Path $dir 'none.json') -Out $baseline
+              Write-Host "基準：$latest（在這台機器量）"
+            }
+            # 量不到時退回 Release 附的結果（其他機器量的）
+            if (-not (Test-Path $baseline)) {
+              gh release download $latest --repo $env:GITHUB_REPOSITORY --pattern perf.json --dir $dir 2>$null
+              Write-Host "基準：$latest 附的 perf.json"
+            }
           }
           $global:LASTEXITCODE = 0
-          "PERF_BASELINE=$(Join-Path $dir 'perf.json')" >> $env:GITHUB_ENV
+          "PERF_BASELINE=$baseline" >> $env:GITHUB_ENV
 
       - name: 效能檢查
         run: |

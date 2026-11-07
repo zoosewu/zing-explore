@@ -5,7 +5,8 @@
 .EXAMPLE
     pwsh tools/perf.ps1                 # 建置 release 並量測
     pwsh tools/perf.ps1 -UpdateBaseline # 量測後把結果存成新基準（確認改善後才更新）
-    # CI：和上一個 Release 附的結果比較，機器每次不同所以容差較寬
+    # CI：先在同一台機器量上一個 Release 的 zing.exe 當基準，再量這一版
+    pwsh tools/perf.ps1 -Exe 上一版\zing.exe -BaselineFile 不存在.json -Out 上一版\perf.json
     pwsh tools/perf.ps1 -BaselineFile 上一版\perf.json -RelTolerance 0.15 -Out perf.json
 #>
 param(
@@ -20,12 +21,15 @@ param(
     # 退步只顯示、不算失敗（刻意接受的取捨；門檻超標仍然失敗）
     [switch]$AllowRegression,
     # 另外把結果寫到這個檔案（perf\results\latest.json 照樣寫）
-    [string]$Out
+    [string]$Out,
+    # 量這個 zing.exe（不建置；CI 用來在同一台機器量上一個 Release 當基準）
+    [string]$Exe
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $root 'target\release\zing.exe'
+# 參數 -Exe 與這裡的變數不能同名（PowerShell 的變數名稱不分大小寫）
+$zingExe = if ($Exe) { (Resolve-Path $Exe).Path } else { Join-Path $root 'target\release\zing.exe' }
 $baselinePath = if ($BaselineFile) { $BaselineFile } else { Join-Path $root 'perf\baseline.json' }
 $resultsDir = Join-Path $root 'perf\results'
 New-Item -ItemType Directory -Force $resultsDir | Out-Null
@@ -51,7 +55,7 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 }
 
-if (-not $SkipBuild) {
+if (-not $SkipBuild -and -not $Exe) {
     Push-Location $root
     cargo build --release -p zing-app
     if ($LASTEXITCODE -ne 0) { throw 'cargo build 失敗' }
@@ -64,7 +68,7 @@ New-Item -ItemType Directory -Force $testRoot | Out-Null
 
 function Invoke-Zing([string[]]$zingArgs, [int]$timeoutMs = 60000) {
     $out = Join-Path $testRoot ("zing-perf-{0}.json" -f [guid]::NewGuid())
-    $p = Start-Process -FilePath $exe -ArgumentList (@("--perf-out=$out") + $zingArgs) -PassThru
+    $p = Start-Process -FilePath $zingExe -ArgumentList (@("--perf-out=$out") + $zingArgs) -PassThru
     if (-not $p.WaitForExit($timeoutMs)) { $p.Kill(); throw "zing 逾時：$zingArgs" }
     if (-not (Test-Path $out)) { throw "zing 沒有輸出結果：$zingArgs" }
     $r = Get-Content $out -Raw | ConvertFrom-Json
@@ -90,7 +94,7 @@ if (-not (Test-Path (Join-Path $benchDir '.complete'))) {
 }
 
 $results = [ordered]@{}
-$results.exe_mb = [math]::Round((Get-Item $exe).Length / 1MB, 3)
+$results.exe_mb = [math]::Round((Get-Item $zingExe).Length / 1MB, 3)
 
 Write-Host "量測冷啟動（$Runs 次）..."
 $startups = 1..$Runs | ForEach-Object { (Invoke-Zing @()).startup_ms }

@@ -43,8 +43,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   （`tools/set-version.ps1`）跑 clippy、單元測試、release 的冒煙測試、效能檢查，全部通過才建立 GitHub Release
   （`zing-explore-windows-x64.zip`、`.sha256`、`perf.json`；檔名不含版本，`releases/latest/download/` 永遠是最新版；
   說明由 git-cliff 依上一個標籤以來的 commit 產生），最後把版本號以 `chore(release): v<版本>` commit 回 master
-  （之後本機要先 `git pull`）。CI 的效能基準是上一個 Release 附的 `perf.json`（不是
-  `perf/baseline.json`，機器不同），相對容差 15%；刻意接受的退步以手動執行（選標籤、勾選 allow_regression）發佈。
+  （之後本機要先 `git pull`）。CI 的效能基準是在同一次執行、同一台機器上量上一個 Release 的 zing.exe（`perf.ps1 -Exe`；
+  每次分到的機器快慢差很多，拿別台量的結果比較會誤判），量不到時才用 Release 附的 `perf.json`；不用 `perf/baseline.json`。
+  相對容差 15%；刻意接受的退步以手動執行（選標籤、勾選 allow_regression）發佈。
   工具鏈固定在 `rust-toolchain.toml`。測試、冒煙測試、效能失敗時 `tools/ci-annotate.ps1` 把原因輸出成錯誤摘要
   （不登入也能從 API 讀：`/repos/<owner>/<repo>/check-runs/<job id>/annotations`；日誌要登入才能下載）。
 - 測試資料（單元測試、冒煙測試、效能測試的 10 萬檔資料夾、隔離模式的快取）放在環境變數 `ZING_TEST_DIR` 指定的資料夾，
