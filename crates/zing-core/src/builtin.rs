@@ -94,6 +94,8 @@ builtins! {
     FileNewfolder, FILE, Some("new-folder") => spec("file.newfolder", &[], tr_key!("在目前資料夾建立新資料夾"), "file.newfolder()");
     FileProperties, FILE, Some("properties") => spec("file.properties", &[], tr_key!("顯示選取項目的內容對話框"), "file.properties()");
     MenuContext, FILE, None => spec("menu.context", &[], tr_key!("顯示焦點項目的右鍵選單"), "menu.context()");
+    FileUndo, FILE, Some("undo") => spec("file.undo", &[], tr_key!("復原上一個檔案作業（重新命名、移動、複製、新增、刪除到資源回收筒）"), "file.undo()");
+    FileRedo, FILE, Some("redo") => spec("file.redo", &[], tr_key!("重做復原的檔案作業"), "file.redo()");
     FileCopypath, FILE, Some("link") => spec("file.copypath", &[], tr_key!("複製選取項目的完整路徑"), "file.copypath()");
     Copy, FILE, Some("copy") => spec(
         "copy",
@@ -254,6 +256,8 @@ pub const PRESETS: &[Preset] = &[
     titled_short("file.newfile", tr_key!("新增文字文件"), tr_key!("文字文件")),
     titled("file.properties", tr_key!("內容")),
     titled("file.copypath", tr_key!("複製路徑")),
+    titled("file.undo", tr_key!("復原")),
+    titled("file.redo", tr_key!("重做")),
     titled("copy --to={dest}", tr_key!("複製到另一個窗格")),
     titled("copy --move --to={dest}", tr_key!("移動到另一個窗格")),
     titled("menu.context", tr_key!("顯示右鍵選單")),

@@ -639,6 +639,22 @@ file.properties()
 menu.context()
 ```
 
+### `file.undo()`
+
+復原上一個檔案作業（重新命名、移動、複製、新增、刪除到資源回收筒）
+
+```lua
+file.undo()
+```
+
+### `file.redo()`
+
+重做復原的檔案作業
+
+```lua
+file.redo()
+```
+
 ### `file.copypath()`
 
 複製選取項目的完整路徑

@@ -166,6 +166,7 @@ fn describe(op: &FileOp) -> (String, &'static str) {
         FileOp::Delete { paths, permanent: false } => (tr!("刪除{what}", what = what(paths)), "\u{E74D}"),
         FileOp::Delete { paths, permanent: true } => (tr!("永久刪除{what}", what = what(paths)), "\u{E74D}"),
         FileOp::BatchRename { pairs, .. } => (tr!("重新命名 {n} 個項目", n = pairs.len()), "\u{E8AC}"),
+        FileOp::Restore { items } => (tr!("從資源回收筒還原 {n} 個項目", n = items.len()), "\u{E7A7}"),
         _ => (String::new(), glyph::FILE),
     }
 }
@@ -182,9 +183,14 @@ fn format_duration(d: Duration) -> String {
 impl App {
     /// 送出檔案作業；耗時的作業加入佇列介面
     pub fn submit_op(&mut self, op: FileOp) {
+        self.submit_op_from(op, crate::shell::Origin::Normal);
+    }
+
+    /// 送出作業；`origin` 決定完成時是否記進復原的堆疊（undo.rs）
+    pub fn submit_op_from(&mut self, op: FileOp, origin: crate::shell::Origin) {
         self.pause_watches(op.vacated());
         let (title, glyph) = describe(&op);
-        if let Some((id, ctl)) = self.fileops.submit(op) {
+        if let Some((id, ctl)) = self.fileops.submit(op, origin) {
             self.jobs.list.push(Job {
                 id,
                 title,

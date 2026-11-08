@@ -639,6 +639,22 @@ Show the context menu of the focused item
 menu.context()
 ```
 
+### `file.undo()`
+
+Undo the last file operation (rename, move, copy, new, delete to the Recycle Bin)
+
+```lua
+file.undo()
+```
+
+### `file.redo()`
+
+Redo the undone file operation
+
+```lua
+file.redo()
+```
+
 ### `file.copypath()`
 
 Copy the full paths of the selected items

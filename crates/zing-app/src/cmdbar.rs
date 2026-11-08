@@ -112,6 +112,8 @@ impl App {
             "tab.closeright" | "tab.moveright" if pane.active + 1 >= pane.tabs.len() => Some(tr!("右側沒有分頁")),
             "tab.moveleft" if pane.active == 0 => Some(tr!("左側沒有分頁")),
             "tab.reopen" if !self.has_closed_tabs() => Some(tr!("沒有關閉的分頁")),
+            "file.undo" if !self.can_undo() => Some(tr!("沒有可以復原的檔案作業")),
+            "file.redo" if !self.can_redo() => Some(tr!("沒有可以重做的檔案作業")),
             "nav.back" if tab.back.is_empty() => Some(tr!("沒有上一頁")),
             "nav.forward" if tab.forward.is_empty() => Some(tr!("沒有下一頁")),
             "nav.up" if in_pc => Some(tr!("已在最上層")),
@@ -158,6 +160,17 @@ impl App {
     }
 
     pub fn cmd_menu_item(&self, cmd: &str) -> MenuItem {
+        // 復原：連同要復原的作業（與檔案總管相同）
+        if cmd == "file.undo"
+            && let Some(what) = self.undo_label()
+        {
+            let label = tr!("復原：{what}", what = what.to_string());
+            return MenuItem { label, ..self.cmd_menu_item_plain(cmd) };
+        }
+        self.cmd_menu_item_plain(cmd)
+    }
+
+    fn cmd_menu_item_plain(&self, cmd: &str) -> MenuItem {
         MenuItem {
             key: self.key_text(cmd),
             enabled: self.cmd_disabled(cmd).is_none(),

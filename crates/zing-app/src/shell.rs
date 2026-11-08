@@ -6,7 +6,7 @@
 //! 呼叫端要在不持有 App 借用的狀態下呼叫，讓重入的視窗訊息能正常處理。
 
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
@@ -32,7 +32,7 @@ use windows::Win32::UI::Shell::{
     CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, DragQueryFileW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
     FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION, FOF_SILENT, FOF_WANTNUKEWARNING, FOFX_RECYCLEONDELETE, FileOperation, GCS_VERBW, HDROP, IContextMenu,
     IContextMenu2, IContextMenu3, IDropTargetHelper, IFileOperation, IFileOperationProgressSink,
-    IFileOperationProgressSink_Impl, IShellFolder, SIGDN_NORMALDISPLAY,
+    IFileOperationProgressSink_Impl, IShellFolder, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY,
     IShellItem, IShellItemArray, ILFindLastID, ILFree, SHBindToObject, SHBindToParent,
     SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDoDragDrop, SHMultiFileProperties,
     SHOP_FILEPATH, SHObjectProperties, SHParseDisplayName,
@@ -91,8 +91,19 @@ pub fn data_object(paths: &[String]) -> Result<IDataObject> {
 
 // ---------------------------------------------------------------- 檔案作業
 
+/// 作業從哪裡來：完成時一般作業與重做記進復原的堆疊（undo.rs），復原的作業不記
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    Normal,
+    Undo,
+    Redo,
+}
+
+#[derive(Clone, Debug)]
 pub enum FileOp {
     Transfer { sources: Vec<String>, dest: String, mov: bool },
+    /// 從資源回收筒還原（復原刪除）：（資源回收筒裡的項目的解析名稱, 原本的資料夾, 原本的名稱）
+    Restore { items: Vec<(String, String, String)> },
     Delete { paths: Vec<String>, permanent: bool },
     Rename { path: String, new_name: String },
     NewFolder { dir: String },
@@ -111,16 +122,20 @@ impl FileOp {
             FileOp::Rename { path, .. } => vec![path.clone()],
             FileOp::Delete { paths, .. } => paths.clone(),
             FileOp::Transfer { sources, mov: true, .. } => sources.clone(),
-            FileOp::Transfer { .. } | FileOp::NewFolder { .. } | FileOp::NewFile { .. } | FileOp::BatchRename { .. } => Vec::new(),
+            FileOp::Transfer { .. }
+            | FileOp::Restore { .. }
+            | FileOp::NewFolder { .. }
+            | FileOp::NewFile { .. }
+            | FileOp::BatchRename { .. } => Vec::new(),
         }
     }
 
     pub fn is_long(&self) -> bool {
-        matches!(self, FileOp::Transfer { .. } | FileOp::Delete { .. } | FileOp::BatchRename { .. })
+        matches!(self, FileOp::Transfer { .. } | FileOp::Delete { .. } | FileOp::BatchRename { .. } | FileOp::Restore { .. })
     }
 }
 
-type Queued = (FileOp, Option<(JobId, Arc<JobCtl>)>);
+type Queued = (FileOp, Origin, Option<(JobId, Arc<JobCtl>)>);
 
 pub struct FileOps {
     /// 複製、移動、刪除：依序執行
@@ -140,15 +155,15 @@ impl FileOps {
     }
 
     /// 送出作業。耗時的作業回傳工作編號與控制旗標，交給作業佇列介面顯示
-    pub fn submit(&mut self, op: FileOp) -> Option<(JobId, Arc<JobCtl>)> {
+    pub fn submit(&mut self, op: FileOp, origin: Origin) -> Option<(JobId, Arc<JobCtl>)> {
         if !op.is_long() {
-            let _ = self.quick.send((op, None));
+            let _ = self.quick.send((op, origin, None));
             return None;
         }
         let id = self.next_id;
         self.next_id += 1;
         let ctl = Arc::new(JobCtl::default());
-        let _ = self.queue.send((op, Some((id, ctl.clone()))));
+        let _ = self.queue.send((op, origin, Some((id, ctl.clone()))));
         Some((id, ctl))
     }
 }
@@ -161,15 +176,26 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
             unsafe {
                 let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
             }
-            for (op, job) in rx {
+            for (op, origin, job) in rx {
                 if let Some((id, ctl)) = &job
                     && ctl.cancel.load(Ordering::Relaxed)
                 {
                     // 排隊中就取消了
                     n.send(Msg::Job { id: *id, event: JobEvent::Finished { error: None, cancelled: true } });
-                    n.send(Msg::FileOpDone { dirs: Vec::new(), error: None, select: None, renamed: None, vacated: op.vacated() });
+                    n.send(Msg::FileOpDone {
+                        dirs: Vec::new(),
+                        error: None,
+                        select: None,
+                        renamed: None,
+                        vacated: op.vacated(),
+                        origin,
+                        undo: None,
+                    });
                     continue;
                 }
+                // 進度回呼記下的（原本的路徑, 新的項目），完成後用來產生復原（undo.rs）
+                let log: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+                let original = op.clone();
                 let (dirs, select) = affected(&op);
                 let vacated = op.vacated();
                 let rename = match &op {
@@ -177,7 +203,7 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
                     _ => None,
                 };
                 let sink: Option<IFileOperationProgressSink> =
-                    job.as_ref().map(|(id, ctl)| Progress::new(*id, ctl.clone(), n.clone()).into());
+                    job.as_ref().map(|(id, ctl)| Progress::new(*id, ctl.clone(), n.clone(), log.clone()).into());
                 if let Some((id, ctl)) = &job {
                     n.send(Msg::Job { id: *id, event: JobEvent::Running });
                     // 複製（及跨磁碟區的移動）另外計算總大小，介面才能換算速度；同一磁碟區的移動只是改名
@@ -192,6 +218,10 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
                 // 使用者取消時 Shell 回傳的錯誤碼不一定（ERROR_CANCELLED、E_ABORT、COPYENGINE_E_USER_CANCELLED）
                 let user_cancelled = job.as_ref().is_some_and(|(_, ctl)| ctl.cancel.load(Ordering::Relaxed));
                 let cancelled = matches!(&result, Err(e) if user_cancelled || is_cancel_code(e.code()));
+                let undo = match &result {
+                    Ok(created) => crate::undo::undo_of(&original, created.as_deref(), &log.lock().unwrap()),
+                    Err(_) => None,
+                };
                 let (error, select) = match result {
                     Ok(Some(name)) => (None, select.map(|s| Select { name, ..s })),
                     Ok(None) => (None, select),
@@ -204,7 +234,7 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
                 let renamed = rename.filter(|_| error.is_none() && !cancelled);
                 // 作業佇列介面會顯示錯誤，狀態列不再重複
                 let error = if job.is_some() { None } else { error };
-                n.send(Msg::FileOpDone { dirs, error, select, renamed, vacated });
+                n.send(Msg::FileOpDone { dirs, error, select, renamed, vacated, origin, undo: undo.map(Box::new) });
             }
         })
         .expect("無法建立檔案作業執行緒");
@@ -267,6 +297,8 @@ struct Progress {
     ctl: Arc<JobCtl>,
     n: Notifier,
     state: RefCell<ProgressState>,
+    /// 完成的項目：（原本的路徑, 新的完整路徑；刪除到資源回收筒時是回收筒裡的項目的解析名稱）
+    log: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 struct ProgressState {
@@ -284,9 +316,20 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 pub static TEST_PROGRESS_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Progress {
-    fn new(id: JobId, ctl: Arc<JobCtl>, n: Notifier) -> Self {
+    fn new(id: JobId, ctl: Arc<JobCtl>, n: Notifier, log: Arc<Mutex<Vec<(String, String)>>>) -> Self {
         let state = ProgressState { last_sent: Instant::now() - PROGRESS_INTERVAL, fraction: 0.0, current: String::new(), done: 0 };
-        Self { id, ctl, n, state: RefCell::new(state) }
+        Self { id, ctl, n, state: RefCell::new(state), log }
+    }
+
+    /// 記下完成的項目（成功且有新的項目時）
+    fn record(&self, item: Ref<IShellItem>, hr: HRESULT, new: Ref<IShellItem>, sigdn: SIGDN) {
+        if hr.is_err() {
+            return;
+        }
+        let (Some(old), Some(new)) = (item.as_ref().and_then(|i| item_name(i, SIGDN_FILESYSPATH)), new.as_ref().and_then(|i| item_name(i, sigdn))) else {
+            return;
+        };
+        self.log.lock().unwrap().push((old, new));
     }
 
     fn send(&self, event: JobEvent) {
@@ -333,8 +376,12 @@ impl Progress {
 }
 
 fn display_name(item: &IShellItem) -> Option<String> {
+    item_name(item, SIGDN_NORMALDISPLAY)
+}
+
+fn item_name(item: &IShellItem, sigdn: SIGDN) -> Option<String> {
     unsafe {
-        let p = item.GetDisplayName(SIGDN_NORMALDISPLAY).ok()?;
+        let p = item.GetDisplayName(sigdn).ok()?;
         let s = p.to_string().ok();
         CoTaskMemFree(Some(p.0 as *const _));
         s
@@ -359,19 +406,23 @@ impl IFileOperationProgressSink_Impl for Progress_Impl {
     fn PreMoveItem(&self, _f: u32, item: Ref<IShellItem>, _dest: Ref<IShellItem>, _name: &PCWSTR) -> Result<()> {
         self.begin_item(item)
     }
-    fn PostMoveItem(&self, _f: u32, _item: Ref<IShellItem>, _dest: Ref<IShellItem>, _name: &PCWSTR, _hr: HRESULT, _new: Ref<IShellItem>) -> Result<()> {
+    fn PostMoveItem(&self, _f: u32, item: Ref<IShellItem>, _dest: Ref<IShellItem>, _name: &PCWSTR, hr: HRESULT, new: Ref<IShellItem>) -> Result<()> {
+        self.record(item, hr, new, SIGDN_FILESYSPATH);
         self.end_item()
     }
     fn PreCopyItem(&self, _f: u32, item: Ref<IShellItem>, _dest: Ref<IShellItem>, _name: &PCWSTR) -> Result<()> {
         self.begin_item(item)
     }
-    fn PostCopyItem(&self, _f: u32, _item: Ref<IShellItem>, _dest: Ref<IShellItem>, _name: &PCWSTR, _hr: HRESULT, _new: Ref<IShellItem>) -> Result<()> {
+    fn PostCopyItem(&self, _f: u32, item: Ref<IShellItem>, _dest: Ref<IShellItem>, _name: &PCWSTR, hr: HRESULT, new: Ref<IShellItem>) -> Result<()> {
+        self.record(item, hr, new, SIGDN_FILESYSPATH);
         self.end_item()
     }
     fn PreDeleteItem(&self, _f: u32, item: Ref<IShellItem>) -> Result<()> {
         self.begin_item(item)
     }
-    fn PostDeleteItem(&self, _f: u32, _item: Ref<IShellItem>, _hr: HRESULT, _new: Ref<IShellItem>) -> Result<()> {
+    fn PostDeleteItem(&self, _f: u32, item: Ref<IShellItem>, hr: HRESULT, new: Ref<IShellItem>) -> Result<()> {
+        // 移到資源回收筒時 `new` 是回收筒裡的項目（永久刪除時沒有）：記下解析名稱，復原時從這裡移回去
+        self.record(item, hr, new, SIGDN_DESKTOPABSOLUTEPARSING);
         self.end_item()
     }
     fn PreNewItem(&self, _f: u32, _dest: Ref<IShellItem>, _name: &PCWSTR) -> Result<()> {
@@ -411,6 +462,7 @@ fn affected(op: &FileOp) -> (Vec<String>, Option<Select>) {
             (dirs, None)
         }
         FileOp::Delete { paths, .. } => (paths.iter().map(parent).collect(), None),
+        FileOp::Restore { items } => (items.iter().map(|(_, dir, _)| dir.clone()).collect(), None),
         FileOp::Rename { path, new_name } => {
             let dir = parent(path);
             (vec![dir.clone()], Some(Select { dir, name: new_name.clone(), rename: false }))
@@ -497,6 +549,15 @@ fn perform(hwnd: isize, op: FileOp, sink: Option<&IFileOperationProgressSink>) -
                     } else {
                         fo.CopyItem(&item, &dest, PCWSTR::null(), none_sink)?;
                     }
+                }
+            }
+            FileOp::Restore { items } => {
+                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | silent)?;
+                for (recycled, dir, name) in &items {
+                    // 資源回收筒裡的項目以解析名稱找回（不是檔案系統路徑：移出命名空間時 Shell 才會清掉回收筒的記錄）
+                    let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(wide_z(recycled).as_ptr()), None)?;
+                    let name = wide_z(name);
+                    fo.MoveItem(&item, &shell_item(dir)?, PCWSTR(name.as_ptr()), none_sink)?;
                 }
             }
             FileOp::Delete { paths, permanent } => {

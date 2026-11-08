@@ -98,6 +98,9 @@ cmd = "address.edit"
 [[key]]
 key = "Alt+D"
 cmd = "address.edit"
+[[key]]
+key = "F4"
+cmd = "address.edit"
 
 # ---- ファイル ----
 [[key]]
@@ -127,6 +130,12 @@ cmd = "file.properties"
 [[key]]
 key = "Ctrl+Shift+C"
 cmd = "file.copypath"
+[[key]]
+key = "Ctrl+Z"
+cmd = "file.undo"
+[[key]]
+key = "Ctrl+Y"
+cmd = "file.redo"
 [[key]]
 key = "F6"
 cmd = "copy --move --to={dest}"
@@ -228,6 +237,12 @@ cmd = "palette.open"
 # 全ドライブ検索（NTFS インデックス サービスが必要）
 [[key]]
 key = "Ctrl+F"
+cmd = "search.open"
+[[key]]
+key = "Ctrl+E"
+cmd = "search.open"
+[[key]]
+key = "F3"
 cmd = "search.open"
 
 [[key]]

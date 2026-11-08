@@ -155,6 +155,9 @@ pub const MORE_MENU: &[Entry] = &[
     Sub(
         tr_key!("檔案"),
         &[
+            Cmd("file.undo"),
+            Cmd("file.redo"),
+            Sep,
             Cmd("file.batchrename"),
             Cmd("file.delete --permanent"),
             Cmd("file.copypath"),
@@ -297,6 +300,8 @@ pub const GLYPHS: &[(&str, &str)] = &[
     ("tab", "\u{EC6C}"),
     ("lightning", "\u{E945}"),
     ("script", "\u{E9D5}"),
+    ("undo", "\u{E7A7}"),
+    ("redo", "\u{E7A6}"),
 ];
 
 pub fn glyph(name: &str) -> Option<&'static str> {

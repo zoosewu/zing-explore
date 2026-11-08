@@ -639,6 +639,22 @@ file.properties()
 menu.context()
 ```
 
+### `file.undo()`
+
+最後のファイル操作を元に戻す（名前の変更、移動、コピー、新規作成、ごみ箱への削除）
+
+```lua
+file.undo()
+```
+
+### `file.redo()`
+
+元に戻したファイル操作をやり直す
+
+```lua
+file.redo()
+```
+
 ### `file.copypath()`
 
 選択中の項目のフルパスをコピー

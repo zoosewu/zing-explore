@@ -40,6 +40,7 @@ mod themeedit;
 mod themepanel;
 mod thumbs;
 mod tooltip;
+mod undo;
 mod update;
 #[cfg(feature = "smoke")]
 mod smoke;

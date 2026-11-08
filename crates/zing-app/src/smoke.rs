@@ -1580,6 +1580,36 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             }
         },
     ));
+    v.push(step("復原：選單顯示要復原的作業", |_| {}, |_, a| {
+        let item = a.cmd_menu_item("file.undo");
+        expect("名稱", item.label.as_str(), "復原：重新命名「a.txt」")?;
+        expect("可以按", item.enabled, true)?;
+        expect("還不能重做", a.cmd_disabled("file.redo").is_some(), true)
+    }));
+    v.push(
+        step("復原：Ctrl+Z 把 a2.txt 改回 a.txt", |c| key(c, "c", letter('z')), {
+            let (old, new) = (ctx.sub("a.txt"), ctx.sub("a2.txt"));
+            move |_, a| {
+                if !exists(&old) || exists(&new) {
+                    return Err("磁碟上的名稱沒有改回來".into());
+                }
+                expect("可以重做", a.cmd_disabled("file.redo").is_none(), true)
+            }
+        })
+        .slow(),
+    );
+    v.push(
+        step("重做：Ctrl+Y 再改成 a2.txt", |c| key(c, "c", letter('y')), {
+            let (old, new) = (ctx.sub("a.txt"), ctx.sub("a2.txt"));
+            move |_, a| {
+                if !exists(&new) || exists(&old) {
+                    return Err("磁碟上的名稱沒有再改成 a2.txt".into());
+                }
+                expect("重做之後又可以復原", a.undo_label().map(String::from), Some("重新命名「a.txt」".to_string()))
+            }
+        })
+        .slow(),
+    );
 
     // ------------------------------------------------ 網址列
     v.push(step("網址列：Ctrl+L 開啟編輯", |c| key(c, "c", letter('l')), |_, a| match &a.edit {

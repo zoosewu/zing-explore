@@ -243,6 +243,9 @@ pub struct App {
     pub welcome: Option<crate::welcome::Welcome>,
     /// 確認對話框（confirm.rs）
     pub confirm: Option<crate::confirm::Confirm>,
+    /// 檔案作業的復原、重做（undo.rs）：重做的是（說明, 原本的作業）
+    pub undo_stack: Vec<crate::undo::Undo>,
+    pub redo_stack: Vec<(String, crate::shell::FileOp)>,
     /// 從設定對話框開出的編輯器（主題、命令列、快速鍵）：完成後回到設定的這個分頁
     pub side_return: Option<usize>,
     /// 網址列「›」：等待子資料夾清單的那一層（結果回來時仍是它才開啟選單）
@@ -370,6 +373,8 @@ impl App {
             shell_windows: None,
             welcome: None,
             confirm: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             side_return: None,
             crumb_menu: None,
             closed_tabs: Vec::new(),
@@ -1047,10 +1052,11 @@ impl App {
                     }
                 }
             }
-            Msg::FileOpDone { dirs, error, select, renamed, vacated } => {
+            Msg::FileOpDone { dirs, error, select, renamed, vacated, origin, undo } => {
                 if let Some(e) = error {
                     self.set_status(e, true);
                 }
+                self.record_undo(origin, undo.map(|u| *u));
                 self.resume_watches(&vacated);
                 if let Some((old, new)) = renamed {
                     self.on_renamed(&old, &new);
@@ -1404,6 +1410,8 @@ impl App {
                 let pt = self.client_to_screen(x, y);
                 self.open_context_menu(items, folder, x, y, pt);
             }
+            Cmd::FileUndo => self.undo(),
+            Cmd::FileRedo => self.redo(),
             Cmd::FileCopypath => {
                 let paths = self.tab().target_paths();
                 let text = if paths.is_empty() { self.tab().path.clone() } else { paths.join("\r\n") };

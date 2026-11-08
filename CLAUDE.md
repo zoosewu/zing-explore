@@ -64,6 +64,10 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 檔案作業一律經 `App::submit_op`：複製／移動／刪除進作業佇列（依序執行、顯示進度，可暫停／取消），
   重新命名與新增資料夾走另一條執行緒，不會被大量複製擋住。UI 只透過 `JobCtl` 的 atomic 旗標控制工作，不等待鎖；
   暫停／取消在 Shell 的進度回呼（`shell.rs` 的 `Progress`）中生效。冒煙測試用 `shell::TEST_PROGRESS_DELAY_MS` 放慢複製。
+- 復原／重做（`undo.rs`，`file.undo`／`file.redo`，Ctrl+Z／Ctrl+Y）：作業完成時檔案作業的執行緒依實際結果產生 `Undo`
+  （`undo_of`；複製、移動、刪除的結果來自 `Progress` 的 Post*Item 記錄，刪除到資源回收筒記回收筒裡項目的解析名稱，
+  復原時以 `FileOp::Restore` 移回原處）。復原與重做的作業同樣經 `App::submit_op_from`，`Origin` 決定完成時是否記錄；
+  新增會產生結果的作業種類時同步更新 `undo_of`。真的 Shell：`cargo test -p zing-app undo_with_shell -- --ignored`（會用到資源回收筒）。
 - 清單一律虛擬化：只處理可見的列；昂貴的欄位（圖示、縮圖、屬性）延遲到捲到才計算。
   繪製時不掃過整個清單：選取數由 `Tab` 在選取、清單、篩選改變時更新（`selected` 只經 `Tab` 的方法修改，
   debug build 讀取時會以掃描結果核對）。

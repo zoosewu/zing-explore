@@ -50,7 +50,15 @@ pub enum Msg {
     /// 縮圖檢視：這些子資料夾（名稱；None 是全部，變更太多時）裡的項目改變了，它們的封面要重新取得
     CoversChanged { tab: TabId, generation: u64, folders: Option<Vec<String>> },
     /// `renamed`：成功改名的項目（舊的完整路徑, 新的完整路徑）；`vacated`：送出時暫停監看的項目（`FileOp::vacated`）
-    FileOpDone { dirs: Vec<String>, error: Option<String>, select: Option<Select>, renamed: Option<(String, String)>, vacated: Vec<String> },
+    FileOpDone {
+        dirs: Vec<String>,
+        error: Option<String>,
+        select: Option<Select>,
+        renamed: Option<(String, String)>,
+        vacated: Vec<String>,
+        origin: crate::shell::Origin,
+        undo: Option<Box<crate::undo::Undo>>,
+    },
     Status { text: String, error: bool },
     Icon { id: u32, pixels: Option<crate::icons::IconPixels> },
     /// 縮圖（None：沒有縮圖，畫圖示）
