@@ -47,6 +47,16 @@ pub const GLOBALS: &[Spec] = &[
         tr_key!("讀取或寫入剪貼簿的文字（換行一律是 \\n，寫入時轉成 Windows 的 \\r\\n）"),
         "clipboard(table.concat(sel() | map(path.name) | list, \"\\n\"))\nlocal text = clipboard()",
     ),
+    spec(
+        "setting",
+        &[
+            tr_key!("key string 設定的名稱"),
+            tr_key!("value? string|number|boolean 要存的值；省略時讀取，傳 nil 刪除"),
+            tr_key!("return string|number|boolean|nil, string? 讀取時為存過的值（沒有時為 nil）；寫入時為是否成功與失敗的原因"),
+        ],
+        tr_key!("腳本自己的設定：存在程式旁的 script-settings.toml，依腳本檔名分開（不同腳本的同名設定互不影響），重新啟動後仍在"),
+        "local dest = setting(\"dest\") or ask(\"解壓縮到哪裡？\", cwd())\nif dest then setting(\"dest\", dest) end",
+    ),
     spec("exec", &[tr_key!("script string 命令腳本（同設定檔的 cmd，可用 {sel}、{ask:提示} 等變數）")], tr_key!("執行命令腳本"), "exec(\"copy {sel} --to={dest}\")"),
     spec("log", &["... any"], tr_key!("寫入 scripts\\zing.log（除錯用）"), tr_key!("log(\"選取\", #sel())")),
 ];

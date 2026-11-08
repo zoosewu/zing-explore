@@ -332,6 +332,16 @@ function pick_folder(title, default)
 end
 function is_dir(p) return __is_dir(p) end
 function stat(p) return __stat(tostring(p)) end
+-- 腳本自己的設定（存在程式旁的 script-settings.toml）：依呼叫的腳本檔名分開，不同腳本的同名鍵互不影響
+local function caller_script()
+  local src = debug.getinfo(3, "S").source or ""
+  return src:match("([^\\/]+)%.lua$") or "_"
+end
+function setting(key, ...)
+  local script = caller_script()
+  if select("#", ...) == 0 then return __setting_get(script, tostring(key)) end
+  return __setting_set(script, tostring(key), (...))
+end
 function clipboard(text)
   if text == nil then return __clipboard_get() end
   return __clipboard_set(tostring(text))

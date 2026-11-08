@@ -137,6 +137,19 @@ clipboard(table.concat(sel() | map(path.name) | list, "\n"))
 local text = clipboard()
 ```
 
+### `setting(key, value?)`
+
+The script's own settings: stored in script-settings.toml next to the program, separated by script file name (settings with the same name in different scripts don't affect each other), kept across restarts
+
+- `key`: string Name of the setting
+- `value?`: string|number|boolean Value to store; omit to read, pass nil to delete
+- Returns: string|number|boolean|nil, string? When reading, the stored value (nil if none); when writing, whether it succeeded and why it failed
+
+```lua
+local dest = setting("dest") or ask("解壓縮到哪裡？", cwd())
+if dest then setting("dest", dest) end
+```
+
 ### `exec(script)`
 
 Run a command script

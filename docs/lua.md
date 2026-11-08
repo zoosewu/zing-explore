@@ -137,6 +137,19 @@ clipboard(table.concat(sel() | map(path.name) | list, "\n"))
 local text = clipboard()
 ```
 
+### `setting(key, value?)`
+
+腳本自己的設定：存在程式旁的 script-settings.toml，依腳本檔名分開（不同腳本的同名設定互不影響），重新啟動後仍在
+
+- `key`：string 設定的名稱
+- `value?`：string|number|boolean 要存的值；省略時讀取，傳 nil 刪除
+- 回傳：string|number|boolean|nil, string? 讀取時為存過的值（沒有時為 nil）；寫入時為是否成功與失敗的原因
+
+```lua
+local dest = setting("dest") or ask("解壓縮到哪裡？", cwd())
+if dest then setting("dest", dest) end
+```
+
 ### `exec(script)`
 
 執行命令腳本

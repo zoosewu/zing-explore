@@ -956,3 +956,8 @@
 "設定檔" = "設定ファイル"
 "語言與啟動" = "言語と起動"
 "還原" = "元に戻す"
+"key string 設定的名稱" = "key string 設定の名前"
+"return string|number|boolean|nil, string? 讀取時為存過的值（沒有時為 nil）；寫入時為是否成功與失敗的原因" = "return string|number|boolean|nil, string? 読み取り時は保存した値（ないときは nil）、書き込み時は成功したかどうかと失敗の理由"
+"setting() 只能存字串、數字、布林" = "setting() に保存できるのは文字列、数値、真偽値だけです"
+"value? string|number|boolean 要存的值；省略時讀取，傳 nil 刪除" = "value? string|number|boolean 保存する値。省略すると読み取り、nil で削除"
+"腳本自己的設定：存在程式旁的 script-settings.toml，依腳本檔名分開（不同腳本的同名設定互不影響），重新啟動後仍在" = "スクリプト自身の設定：プログラムの横の script-settings.toml に保存し、スクリプトのファイル名ごとに分かれる（別のスクリプトの同名の設定は影響しない）。再起動しても残る"

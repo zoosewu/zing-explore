@@ -137,6 +137,19 @@ clipboard(table.concat(sel() | map(path.name) | list, "\n"))
 local text = clipboard()
 ```
 
+### `setting(key, value?)`
+
+スクリプト自身の設定：プログラムの横の script-settings.toml に保存し、スクリプトのファイル名ごとに分かれる（別のスクリプトの同名の設定は影響しない）。再起動しても残る
+
+- `key`：string 設定の名前
+- `value?`：string|number|boolean 保存する値。省略すると読み取り、nil で削除
+- 戻り値：string|number|boolean|nil, string? 読み取り時は保存した値（ないときは nil）、書き込み時は成功したかどうかと失敗の理由
+
+```lua
+local dest = setting("dest") or ask("解壓縮到哪裡？", cwd())
+if dest then setting("dest", dest) end
+```
+
 ### `exec(script)`
 
 コマンドスクリプトを実行

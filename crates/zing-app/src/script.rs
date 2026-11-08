@@ -131,6 +131,72 @@ pub fn scripts_dir() -> PathBuf {
     crate::settings::app_dir().join("scripts")
 }
 
+/// 腳本的設定（`setting()`）：程式旁的 script-settings.toml，每個腳本一節（`[腳本檔名]`）、一個鍵一個值。
+/// 第一次用到時讀取，改了就整個寫回；隔離模式（冒煙測試）只放記憶體
+static SCRIPT_SETTINGS: Mutex<Option<toml::Table>> = Mutex::new(None);
+static PERSIST_SETTINGS: AtomicBool = AtomicBool::new(false);
+
+fn script_settings_path() -> PathBuf {
+    crate::settings::app_dir().join("script-settings.toml")
+}
+
+fn with_script_settings<R>(f: impl FnOnce(&mut toml::Table) -> R) -> R {
+    let mut g = SCRIPT_SETTINGS.lock().unwrap();
+    let table = g.get_or_insert_with(|| {
+        if !PERSIST_SETTINGS.load(Ordering::Relaxed) {
+            return toml::Table::new();
+        }
+        zing_core::guard::io("讀取腳本的設定");
+        std::fs::read_to_string(script_settings_path()).ok().and_then(|s| s.parse().ok()).unwrap_or_default()
+    });
+    f(table)
+}
+
+/// `setting(key)`：`script` 這個腳本存過的值（字串、數字、布林；沒有時 nil）
+fn setting_get(l: &Lua, script: &str, key: &str) -> Value {
+    with_script_settings(|t| match t.get(script).and_then(|s| s.get(key)) {
+        Some(toml::Value::String(s)) => l.create_string(s).map(Value::String).unwrap_or(Value::Nil),
+        Some(toml::Value::Integer(i)) => Value::Integer(*i),
+        Some(toml::Value::Float(f)) => Value::Number(*f),
+        Some(toml::Value::Boolean(b)) => Value::Boolean(*b),
+        _ => Value::Nil,
+    })
+}
+
+/// `setting(key, value)`：存起來（nil 刪除）；回傳 false 與原因（值的型別不支援、無法寫入）
+fn setting_set(script: &str, key: &str, value: &Value) -> (bool, Option<String>) {
+    let v = match value {
+        Value::Nil => None,
+        Value::Boolean(b) => Some(toml::Value::Boolean(*b)),
+        Value::Integer(i) => Some(toml::Value::Integer(*i)),
+        Value::Number(n) => Some(toml::Value::Float(*n)),
+        Value::String(s) => Some(toml::Value::String(s.to_string_lossy())),
+        _ => return (false, Some(tr!("setting() 只能存字串、數字、布林").to_string())),
+    };
+    let text = with_script_settings(|t| {
+        let section = t.entry(script).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let toml::Value::Table(s) = section {
+            match v {
+                Some(v) => {
+                    s.insert(key.to_string(), v);
+                }
+                None => {
+                    s.remove(key);
+                }
+            }
+        }
+        toml::to_string(t).unwrap_or_default()
+    });
+    if !PERSIST_SETTINGS.load(Ordering::Relaxed) {
+        return (true, None);
+    }
+    zing_core::guard::io("寫入腳本的設定");
+    match std::fs::write(script_settings_path(), text) {
+        Ok(()) => (true, None),
+        Err(e) => (false, Some(e.to_string())),
+    }
+}
+
 fn is_lua(p: &Path) -> bool {
     p.extension().is_some_and(|e| e.eq_ignore_ascii_case("lua"))
 }
@@ -190,6 +256,7 @@ impl Scripts {
 
     pub fn load(&mut self, n: &Notifier, isolated: bool) {
         self.isolated = isolated;
+        PERSIST_SETTINGS.store(!isolated, Ordering::Relaxed);
         self.send(n, Job::Load(scripts_dir()));
         if self.watch.is_none() {
             self.watch = watch_scripts(n);
@@ -562,6 +629,11 @@ fn new_lua(n: &Notifier, deadline: &Deadline, q: &std::rc::Rc<Queue>) -> mlua::R
 fn add_system_fns(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
     g.raw_set("__is_dir", lua_fn(lua, |_, v: Value| Path::new(&text(&v)).is_dir())?)?;
+    g.raw_set("__setting_get", lua_fn(lua, |l, (script, key): (Value, Value)| setting_get(l, &text(&script), &text(&key)))?)?;
+    g.raw_set(
+        "__setting_set",
+        lua_fn(lua, |_, (script, key, value): (Value, Value, Value)| setting_set(&text(&script), &text(&key), &value))?,
+    )?;
     g.raw_set("__stat", lua_fn(lua, |l, v: Value| stat(l, &text(&v)))?)?;
     g.raw_set("__clipboard_get", lua_fn(lua, |_, ()| crate::window::clipboard_text().map(|s| s.replace("\r\n", "\n")))?)?;
     // prelude.lua、debugger.lua 的訊息翻譯（zing_core::i18n）
@@ -1060,6 +1132,23 @@ mod tests {
         assert_eq!(run(&l, "return partial(path.join, \"D:\\\\\")(\"x\")"), "D:\\x");
         assert_eq!(run(&l, "return { 1, 2, 3 } | reduce(function(a, x) return a + x end, 0)"), "6");
         assert_eq!(run(&l, "return seq({1,5,2,7}) | take_while(function(x) return x < 6 end) | skip(1) | list"), "{ 5, 2 }");
+    }
+
+    /// setting()：依呼叫的腳本檔名分開；字串、數字、布林；nil 刪除；表格不支援（測試不寫檔，只放記憶體）
+    #[test]
+    fn script_settings_per_script() {
+        let l = lua();
+        let in_script = |name: &str, code: &str| -> String {
+            l.load(code).set_name(format!("@C:\\scripts\\{name}.lua")).eval::<String>().unwrap()
+        };
+        assert_eq!(in_script("setting_a", r#"setting("dest", "D:\\out"); setting("n", 3); setting("on", true); return "ok""#), "ok");
+        assert_eq!(in_script("setting_b", r#"return tostring(setting("dest"))"#), "nil");
+        assert_eq!(
+            in_script("setting_a", r#"return setting("dest") .. "|" .. setting("n") .. "|" .. tostring(setting("on"))"#),
+            r"D:\out|3|true"
+        );
+        assert_eq!(in_script("setting_a", r#"setting("dest", nil); return tostring(setting("dest"))"#), "nil");
+        assert_eq!(in_script("setting_a", r#"local ok, err = setting("t", {}); return tostring(ok) .. "|" .. tostring(err ~= nil)"#), "false|true");
     }
 
     #[test]

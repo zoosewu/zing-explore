@@ -197,6 +197,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
     zing.log 不算）。「⋯」選單與自訂命令列的「腳本」分組最上方是 `script.reload`（`cmdbar::SCRIPT_RELOAD`）。
   - 腳本命令的標題是 `---` 註解的第一行，命令列按鈕的名稱是 `---@label`（沒有時同標題）：載入後以
     `cmdbar::set_script_labels` 登記，`cmdbar::label_for` 查得到，所以按鈕的 `label` 留空就跟著腳本改。
+  - 腳本自己的設定：`setting(key[, value])`，存在程式旁的 `script-settings.toml`（每個腳本一節，節名是呼叫的腳本檔名，
+    prelude 以 `debug.getinfo` 取得）；在腳本執行緒讀寫，隔離模式只放記憶體。
   - release 是 `panic = "abort"`，Lua 的錯誤不可穿過 Rust 的堆疊框架：Rust 提供給 Lua 的函式一律經 `script::lua_fn`
     （參數只收 `Value`、不回傳錯誤）；不用 mlua 的 `set_hook`（時間上限在 prelude 用 `debug.sethook`）；Rust 端讀寫表格只用
     `raw_get`／`raw_set`。`clippy.toml` 的 `disallowed-methods` 會擋下違規；冒煙測試的 debug build 用 `debug-abort` profile
@@ -264,7 +266,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   - 使用者的設定與習慣放在 `zing.exe` 所在的資料夾（可攜式，重灌系統不受影響）：`config.toml`（設定）、
     `themes\*.toml`（主題）、`session.toml`（視窗、分頁、我的最愛與其順序、命令面板最近使用）、
     `keys.toml`（快速鍵編輯器寫的按鍵，只含與預設＋config.toml 不同的，見 `zing_core::keyedit`）、
-    `toolbar.toml`（命令列的按鈕，「自訂命令列」寫的，見 `zing_core::cmdbar`）。路徑一律經 `settings::app_dir()`。
+    `toolbar.toml`（命令列的按鈕，「自訂命令列」寫的，見 `zing_core::cmdbar`）、`script-settings.toml`（腳本的 `setting()`）。
+    路徑一律經 `settings::app_dir()`。
   - 系統產生、可重建的資料（資料夾大小快取、縮圖快取…）放在 `%LOCALAPPDATA%\zing-explore\`（只屬於這台電腦、不漫遊，
     刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（沒有索引時的資料夾大小，見 `sizes.rs`）、
     `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`）、

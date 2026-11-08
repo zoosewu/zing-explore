@@ -956,3 +956,8 @@
 "設定檔" = "Settings file"
 "語言與啟動" = "Language and startup"
 "還原" = "Reset"
+"key string 設定的名稱" = "key string Name of the setting"
+"return string|number|boolean|nil, string? 讀取時為存過的值（沒有時為 nil）；寫入時為是否成功與失敗的原因" = "return string|number|boolean|nil, string? When reading, the stored value (nil if none); when writing, whether it succeeded and why it failed"
+"setting() 只能存字串、數字、布林" = "setting() can only store strings, numbers and booleans"
+"value? string|number|boolean 要存的值；省略時讀取，傳 nil 刪除" = "value? string|number|boolean Value to store; omit to read, pass nil to delete"
+"腳本自己的設定：存在程式旁的 script-settings.toml，依腳本檔名分開（不同腳本的同名設定互不影響），重新啟動後仍在" = "The script's own settings: stored in script-settings.toml next to the program, separated by script file name (settings with the same name in different scripts don't affect each other), kept across restarts"
