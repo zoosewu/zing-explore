@@ -26,6 +26,8 @@ use crate::sidepanel::{Line, footer_buttons, row_rect};
 use crate::view::Hit;
 use crate::window;
 
+/// 「指定的分頁」的按鈕
+const USE_CURRENT_TABS: &str = tr_key!("使用目前的分頁");
 /// 對話框的大小（視窗太小時縮小）
 const DIALOG_W: f32 = 680.0;
 const DIALOG_H: f32 = 620.0;
@@ -206,6 +208,12 @@ impl App {
         (row, Rect::new(value_l, row.t, list.r, row.b))
     }
 
+    /// 「指定的分頁」那一列的按鈕（按了改成目前開著的分頁）：數值區的右端
+    pub fn tabs_button(&self, row: Rect) -> Rect {
+        let w = self.gfx.measure(zing_core::i18n::tr(USE_CURRENT_TABS), Font::Text) + 24.0;
+        Rect::new(row.r - 4.0 - w, row.t + 2.0, row.r - 4.0, row.b - 2.0)
+    }
+
     /// 緩慢的擴充功能表格的欄：名稱、類型、耗時、開關的左緣
     fn slow_columns(list: Rect) -> [f32; 4] {
         [list.l + 8.0, list.l + list.w() * 0.42, list.l + list.w() * 0.64, list.l + list.w() * 0.78]
@@ -231,6 +239,13 @@ impl App {
             if k >= 0.0 {
                 let k = k as usize;
                 match rows.get(k) {
+                    // 指定的分頁：只有按鈕可以按
+                    Some(Row::Field(i)) if PREFS[*i].kind == Kind::Tabs => {
+                        let (rr, _) = self.settings_row_rects(pl.list, k, page.scroll);
+                        if self.tabs_button(rr).contains(x, y) {
+                            return Hit::SettingsRow(k);
+                        }
+                    }
                     Some(Row::Field(_)) => return Hit::SettingsRow(k),
                     Some(Row::Slow(..)) if self.slow_table_enabled() => return Hit::SettingsRow(k),
                     _ => {}
@@ -250,6 +265,7 @@ impl App {
             Line::Row(k) => {
                 let (rr, _) = self.settings_row_rects(pl.list, k, page.scroll);
                 match page.rows().get(k) {
+                    Some(Row::Field(i)) if PREFS[*i].kind == Kind::Tabs => vec![(Hit::SettingsRow(k), self.tabs_button(rr))],
                     Some(Row::Field(_)) => vec![(Hit::SettingsRow(k), rr)],
                     Some(Row::Slow(..)) if self.slow_table_enabled() => vec![(Hit::SettingsRow(k), rr)],
                     _ => Vec::new(),
@@ -450,7 +466,7 @@ impl App {
                         g.text(zing_core::i18n::tr(p.label), Font::Bold, Rect::new(rr.l + 8.0, rr.t + 2.0, rr.r, rr.b), color);
                         continue;
                     }
-                    if hover {
+                    if hover && p.kind != Kind::Tabs {
                         g.fill_round(rr, radius, c.hover);
                     }
                     let action = matches!(p.kind, Kind::Action(_));
@@ -468,15 +484,22 @@ impl App {
                             let label = if on { tr!("開") } else { tr!("關") };
                             g.text(label, Font::Text, Rect::new(right + 8.0, rr.t, vr.r, rr.b), c.text_secondary);
                         }
-                        Kind::Text | Kind::Tabs if v.is_empty() => g.text(tr!("（未設定）"), Font::Text, vr, c.text_secondary),
+                        Kind::Text if v.is_empty() => g.text(tr!("（未設定）"), Font::Text, vr, c.text_secondary),
                         Kind::Text => g.text(&v, Font::Text, vr, c.text_secondary),
                         Kind::Tabs => {
-                            let names: Vec<String> = v
-                                .split('|')
-                                .map(zing_core::startup::tab_path)
-                                .map(|p| if p.is_empty() { tr!("此電腦").to_string() } else { p })
-                                .collect();
-                            g.text(&names.join(tr!("、")), Font::Text, vr, c.text_secondary)
+                            let button = self.tabs_button(rr);
+                            let text = if v.is_empty() {
+                                tr!("（未設定）").to_string()
+                            } else {
+                                let names: Vec<String> = v
+                                    .split('|')
+                                    .map(zing_core::startup::tab_path)
+                                    .map(|p| if p.is_empty() { tr!("此電腦").to_string() } else { p })
+                                    .collect();
+                                names.join(tr!("、"))
+                            };
+                            g.text(&text, Font::Text, Rect::new(vr.l, rr.t, button.l - 8.0, rr.b), c.text_secondary);
+                            self.paint_button(button, USE_CURRENT_TABS, false, hover);
                         }
                         Kind::DefaultApp => {
                             let on = self.default_app == Some(crate::defaultapp::Status::On);

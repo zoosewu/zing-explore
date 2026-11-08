@@ -85,7 +85,7 @@ pub const PREFS: &[Pref] = &[
         group: GENERAL,
         section: tr_key!("語言與啟動"),
         label: tr_key!("指定的分頁"),
-        hint: tr_key!("點一下改成目前開著的分頁；「啟動時開啟」選「指定的分頁」時使用"),
+        hint: tr_key!("「啟動時開啟」選「指定的分頁」時使用"),
         kind: Kind::Tabs,
     },
     Pref {

@@ -2845,7 +2845,28 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("startup", a.config.startup, zing_core::config::Startup::Tabs)?;
         expect("選單關閉", a.menu.is_none(), true)
     }));
-    v.push(step("設定：點「指定的分頁」改成目前開著的分頁", |c| click(c, "", settings_row_pos("start_tabs", true)), |_, a| {
+    let tabs_button_pos = || {
+        with_app(|a| {
+            let i = zing_core::prefs::PREFS.iter().position(|p| p.key == "start_tabs")?;
+            let k = a.settings_page()?.rows().iter().position(|r| *r == Row::Field(i))?;
+            a.side_reveal(k)?;
+            let list = a.settings_layout(a.layout.side_panel?).list;
+            let (row, _) = a.settings_row_rects(list, k, a.side_scroll());
+            Some(mid(a.tabs_button(row)))
+        })
+        .flatten()
+    };
+    v.push(step("設定：「指定的分頁」只有按鈕可以按", |_| {}, move |_, a| {
+        let i = zing_core::prefs::PREFS.iter().position(|p| p.key == "start_tabs").ok_or("沒有 start_tabs")?;
+        let k = a.settings_page().and_then(|p| p.rows().iter().position(|r| *r == Row::Field(i))).ok_or("沒有這一列")?;
+        let list = a.settings_layout(a.layout.side_panel.ok_or("沒有對話框")?).list;
+        let (row, value) = a.settings_row_rects(list, k, a.side_scroll());
+        let y = (row.t + row.b) / 2.0;
+        expect("數值處", a.hit_test(&a.layout, value.l + 10.0, y), crate::view::Hit::SettingsPanel)?;
+        let b = a.tabs_button(row);
+        expect("按鈕", a.hit_test(&a.layout, (b.l + b.r) / 2.0, y), crate::view::Hit::SettingsRow(k))
+    }));
+    v.push(step("設定：按「使用目前的分頁」", move |c| click(c, "", tabs_button_pos()), |_, a| {
         let tabs: Vec<String> =
             a.panes.iter().flat_map(|p| p.tabs.iter().map(|t| zing_core::startup::tab_value(&t.path))).collect();
         expect("start_tabs", &a.config.start_tabs, &tabs)

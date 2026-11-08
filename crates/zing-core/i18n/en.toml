@@ -798,7 +798,8 @@
 "設為預設的檔案總管" = "Default file manager"
 "資料夾、磁碟機與 Win+E 改用 zing 開啟；關閉即還原" = "Open folders, drives and Win+E in zing; turn off to restore"
 "還原上次的分頁" = "Restore the last tabs"
-"點一下改成目前開著的分頁；「啟動時開啟」選「指定的分頁」時使用" = "Click to use the tabs that are open now; used when \"On startup, open\" is \"Specific tabs\""
+"「啟動時開啟」選「指定的分頁」時使用" = "Used when \"On startup, open\" is \"Specific tabs\""
+"使用目前的分頁" = "Use current tabs"
 
 # 歡迎畫面（welcome.rs）
 "先調整幾個常用的設定，按「開始使用」套用；之後都能在設定頁（Ctrl+,）修改" = "Adjust a few common settings and press Get started to apply them; you can change them later in Settings (Ctrl+,)"
