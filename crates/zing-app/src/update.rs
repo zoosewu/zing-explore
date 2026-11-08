@@ -121,8 +121,8 @@ fn cleanup(dir: &Path) {
     }
 }
 
-/// 背景：下載、核對、解壓縮並換掉程式旁的檔案。Ok(false) 表示途中取消
-fn install(tag: &str, cancel: &AtomicBool, progress: &dyn Fn(u32)) -> Result<bool, String> {
+/// 背景：下載、核對、解壓縮並換掉 `dst`（程式旁）的檔案。Ok(false) 表示途中取消
+fn install(tag: &str, dst: &Path, cancel: &AtomicBool, progress: &dyn Fn(u32)) -> Result<bool, String> {
     zing_core::guard::io("下載並安裝更新");
     let work = local_dir().ok_or_else(|| tr!("找不到 %LOCALAPPDATA%").to_string())?.join("update");
     let _ = std::fs::remove_dir_all(&work);
@@ -140,7 +140,7 @@ fn install(tag: &str, cancel: &AtomicBool, progress: &dyn Fn(u32)) -> Result<boo
         if cancel.load(Ordering::Relaxed) {
             return Ok(false);
         }
-        replace_files(&work.join("files"), &crate::settings::app_dir())?;
+        replace_files(&work.join("files"), dst)?;
         Ok(true)
     })();
     let _ = std::fs::remove_dir_all(&work);
@@ -396,7 +396,7 @@ impl App {
         let n = self.notifier.clone();
         std::thread::spawn(move || {
             let progress = |percent| n.send(Msg::UpdateProgress { percent });
-            let result = install(&tag, &cancel, &progress);
+            let result = install(&tag, &crate::settings::app_dir(), &cancel, &progress);
             n.send(Msg::UpdateInstalled(result));
         });
     }
@@ -701,6 +701,28 @@ mod tests {
 
     fn read(p: PathBuf) -> String {
         std::fs::read_to_string(p).unwrap_or_default()
+    }
+
+    /// 從 GitHub 下載最新的 Release 安裝到暫存資料夾（舊的 zing.exe 改名成 .old）：檢查轉址取得標籤、下載、
+    /// 雜湊核對、解壓縮、替換整條路。`cargo test -p zing-app install_latest_release -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn install_latest_release() {
+        let tag = http::latest_tag().expect("查詢最新版").expect("沒有 Release");
+        println!("最新版：{tag}");
+        let d = dir("install");
+        let app = d.join("app");
+        std::fs::write(app.join("zing.exe"), "舊版").unwrap();
+        let cancel = AtomicBool::new(false);
+        let last = std::cell::Cell::new(0);
+        assert_eq!(install(&tag, &app, &cancel, &|p| last.set(p)), Ok(true));
+        let exe = std::fs::read(app.join("zing.exe")).unwrap();
+        assert_eq!(&exe[..2], b"MZ", "換上的不是執行檔");
+        assert!(exe.len() > 1 << 20, "執行檔太小：{}", exe.len());
+        assert_eq!(read(app.join("zing.exe.old")), "舊版");
+        assert!(app.join("zing-index.exe").exists(), "沒有 zing-index.exe");
+        println!("最後的進度：{}%；換上 {} 位元組", last.get(), exe.len());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

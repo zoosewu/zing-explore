@@ -171,7 +171,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   先全部複製成程式旁的 `.new`，再把現有的改名成 `.old`（執行中的 exe 只能改名）、`.new` 換上，失敗就還原；下次啟動刪 `.old`。
   重新啟動照一般方式關閉視窗，訊息迴圈結束後才啟動新版（`update::relaunch`）。winhttp.dll、bcrypt.dll 延遲載入（build.rs）。
   隔離模式不連網、不寫檔，冒煙測試以 `update::TEST_LATEST` 提供最新版；連網的測試：
-  `cargo test -p zing-app latest_release -- --ignored --nocapture`。Release 壓縮檔的內容（檔名、平放在最上層）改變時同步修改這裡。
+  `cargo test -p zing-app latest_release -- --ignored --nocapture`；下載最新版安裝到暫存資料夾（整條安裝流程）：
+  `cargo test -p zing-app install_latest_release -- --ignored --nocapture`。Release 壓縮檔的內容（檔名、平放在最上層）改變時同步修改這裡。
 - 設為預設的檔案總管（`defaultapp.rs`）：只寫 `HKCU\Software\Classes`（`Directory`、`Drive` 的預設動作 `zing-explore`、
   Win+E 的 `CLSID\{52205fd8-…}\shell\opennewwindow`），關閉時只刪自己寫的；在背景執行緒讀寫，啟動時（第一幀之後）
   發現登錄指向的 zing.exe 已不存在就改成目前的位置。隔離模式只在記憶體中切換；單元測試寫在自己的測試機碼下並刪除。
