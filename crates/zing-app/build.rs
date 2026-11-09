@@ -13,14 +13,24 @@ fn main() {
     }
     println!("cargo:rustc-link-arg-bins=delayimp.lib");
 
-    let rc_file = assets.join("zing.rc");
-    println!("cargo:rerun-if-changed={}", rc_file.display());
+    let template = assets.join("zing.rc");
+    println!("cargo:rerun-if-changed={}", template.display());
     println!("cargo:rerun-if-changed={}", assets.join("zing.ico").display());
     println!("cargo:rerun-if-env-changed=RC");
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    // 版本資訊（檔案內容的「詳細資料」）用 Cargo.toml 的版本，不寫死在 zing.rc
+    let version = env!("CARGO_PKG_VERSION");
+    let comma = format!("{},{},{},0", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR"), env!("CARGO_PKG_VERSION_PATCH"));
+    let rc_text = std::fs::read_to_string(&template).expect("讀取 zing.rc").replace("@VERSION_COMMA@", &comma).replace("@VERSION@", version);
+    let rc_file = out.join("zing.rc");
+    std::fs::write(&rc_file, rc_text).expect("寫入 zing.rc");
     let rc = find_rc().expect("找不到 rc.exe：請安裝 Windows SDK，或以環境變數 RC 指定路徑");
-    let res = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("zing.res");
+    let res = out.join("zing.res");
+    // 產生的 zing.rc 在 OUT_DIR：圖示以 /i 從 assets 找
     let status = std::process::Command::new(&rc)
         .arg("/nologo")
+        .arg("/i")
+        .arg(&assets)
         .arg("/fo")
         .arg(&res)
         .arg(&rc_file)

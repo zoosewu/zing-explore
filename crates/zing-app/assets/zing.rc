@@ -1,11 +1,11 @@
 // zing.exe 的資源：圖示與版本資訊（應用程式資訊清單由連結器嵌入，見 build.rs）
-// 不引用 SDK 標頭，常數直接寫數值
+// 不引用 SDK 標頭，常數直接寫數值；@VERSION@／@VERSION_COMMA@ 由 build.rs 換成 Cargo.toml 的版本（發佈時 CI 以標籤的版本號建置）
 
 1 ICON "zing.ico"
 
 1 VERSIONINFO
-FILEVERSION 0,1,0,0
-PRODUCTVERSION 0,1,0,0
+FILEVERSION @VERSION_COMMA@
+PRODUCTVERSION @VERSION_COMMA@
 FILEFLAGSMASK 0x3F
 FILEFLAGS 0x0
 FILEOS 0x40004
@@ -17,11 +17,11 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "FileDescription", "zing-explore"
-            VALUE "FileVersion", "0.1.0"
+            VALUE "FileVersion", "@VERSION@"
             VALUE "InternalName", "zing"
             VALUE "OriginalFilename", "zing.exe"
             VALUE "ProductName", "zing-explore"
-            VALUE "ProductVersion", "0.1.0"
+            VALUE "ProductVersion", "@VERSION@"
         END
     END
     BLOCK "VarFileInfo"
