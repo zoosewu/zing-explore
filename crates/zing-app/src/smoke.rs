@@ -598,6 +598,35 @@ fn probe_others(a: &App) -> Option<crate::hub::Probe> {
     rx.recv_timeout(Duration::from_millis(50)).ok()
 }
 
+fn close_other_windows(c: &Ctx) {
+    for (h, _) in other_windows(c.hwnd) {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(h), windows::Win32::UI::WindowsAndMessaging::WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+fn tab_total(a: &App) -> usize {
+    a.panes.iter().map(|p| p.tabs.len()).sum()
+}
+
+/// 另一個視窗分頁列的最右邊（版面與這個視窗相同），換成這個視窗的用戶區座標（DIP）
+fn point_over_other_strip(main: HWND, other: HWND) -> (f32, f32) {
+    let at = with_app(|a| {
+        a.layout = a.compute_layout();
+        let s = a.layout.panes.first().map(|p| p.strip)?;
+        Some((s.r - 4.0, (s.t + s.b) / 2.0))
+    })
+    .flatten()
+    .unwrap_or((0.0, 0.0));
+    let mut pt = screen_point(other, at);
+    unsafe {
+        let _ = windows::Win32::Graphics::Gdi::ScreenToClient(main, &mut pt);
+    }
+    let sc = scale(main);
+    (pt.x as f32 / sc, pt.y as f32 / sc)
+}
+
 /// 這個程序的其他 zing 視窗（多視窗）：(視窗, 標題)
 fn other_windows(main: HWND) -> Vec<(HWND, String)> {
     use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowTextW, GetWindowThreadProcessId};
@@ -5073,20 +5102,91 @@ function smoke_auto() end
         )
         .slow(),
     );
+    // ------------------------------------------------ 分頁在視窗之間移動（tabmove.rs）
+    v.push(
+        step(
+            "多視窗：分頁的「移到新視窗」",
+            |c| {
+                // 先關掉上面的測試視窗，只看這一步開的
+                close_other_windows(c);
+                with_app(|a| a.exec("tab.new"));
+                let n = with_app(|a| tab_total(a)).unwrap_or(0);
+                c.notes.push(("tabs_before_move", n.to_string()));
+                with_app(|a| a.exec("tab.newwindow"));
+            },
+            |c, a| {
+                let before: usize = c.note("tabs_before_move").and_then(|s| s.parse().ok()).unwrap_or(0);
+                expect("這個視窗的分頁數", tab_total(a), before - 1)?;
+                expect("其他視窗", other_windows(c.hwnd).len(), 1)?;
+                let p = probe_others(a).ok_or("其他視窗沒有回答")?;
+                expect("新視窗的分頁數", p.tabs, 1)?;
+                expect("新視窗的資料夾", p.tab, a.tab().path.clone())
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：拖曳分頁經過另一個視窗，那個視窗的分頁列標示插入的位置",
+            |c| {
+                with_app(|a| a.exec("tab.new"));
+                let n = with_app(|a| tab_total(a)).unwrap_or(0);
+                c.notes.push(("tabs_before_drag", n.to_string()));
+                let Some(other) = other_windows(c.hwnd).first().map(|(h, _)| *h) else { return };
+                *crate::tabmove::TEST_WINDOW_AT.lock().unwrap() = Some(other.0 as isize);
+                let from = with_app(|a| (a.active_pane, a.panes[a.active_pane].active)).and_then(|(p, t)| tab_pos(p, t, 0.5));
+                let Some(from) = from else { return };
+                let to = point_over_other_strip(c.hwnd, other);
+                let h = c.hwnd;
+                send(h, WM_MOUSEMOVE, 0, mouse_lparam(h, from));
+                send(h, WM_LBUTTONDOWN, MK_LBUTTON.0 as usize, mouse_lparam(h, from));
+                send(h, WM_MOUSEMOVE, MK_LBUTTON.0 as usize, mouse_lparam(h, to));
+            },
+            |_, a| {
+                let p = probe_others(a).ok_or("其他視窗沒有回答")?;
+                expect("插入的位置（最後面）", p.tab_insert, Some((0, p.tabs)))
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：放開，分頁移到那個視窗，標示消失",
+            |c| {
+                let Some(other) = other_windows(c.hwnd).first().map(|(h, _)| *h) else { return };
+                let to = point_over_other_strip(c.hwnd, other);
+                send(c.hwnd, WM_LBUTTONUP, 0, mouse_lparam(c.hwnd, to));
+            },
+            |c, a| {
+                let before: usize = c.note("tabs_before_drag").and_then(|s| s.parse().ok()).unwrap_or(0);
+                expect("這個視窗的分頁數", tab_total(a), before - 1)?;
+                let p = probe_others(a).ok_or("其他視窗沒有回答")?;
+                expect("那個視窗的分頁數", p.tabs, 2)?;
+                expect("標示", p.tab_insert, None)
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：拖曳分頁到沒有 zing 視窗的地方，開成新視窗",
+            |c| {
+                with_app(|a| a.exec("tab.new"));
+                *crate::tabmove::TEST_WINDOW_AT.lock().unwrap() = Some(0);
+                let from = with_app(|a| (a.active_pane, a.panes[a.active_pane].active)).and_then(|(p, t)| tab_pos(p, t, 0.5));
+                // 用戶區外
+                drag(c, from, Some((5000.0, 10.0)));
+            },
+            |c, _| expect("其他視窗", other_windows(c.hwnd).len(), 2),
+        )
+        .slow(),
+    );
     v.push(
         step(
             "多視窗：關閉測試的視窗",
             |c| {
-                for (h, _) in other_windows(c.hwnd) {
-                    unsafe {
-                        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                            Some(h),
-                            windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
-                            WPARAM(0),
-                            LPARAM(0),
-                        );
-                    }
-                }
+                *crate::tabmove::TEST_WINDOW_AT.lock().unwrap() = None;
+                close_other_windows(c);
             },
             |c, _| expect("其他視窗", other_windows(c.hwnd).len(), 0),
         )

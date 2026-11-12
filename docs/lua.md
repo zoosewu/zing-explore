@@ -781,6 +781,14 @@ tab.closeright()
 tab.reopen()
 ```
 
+### `tab.newwindow()`
+
+把分頁移到新視窗
+
+```lua
+tab.newwindow()
+```
+
 ### `window.new(opts?)`
 
 開新視窗（預設為目前資料夾）

@@ -175,6 +175,7 @@ pub const MORE_MENU: &[Entry] = &[
         &[
             Cmd("tab.new"),
             Cmd("window.new"),
+            Cmd("tab.newwindow"),
             Cmd("tab.close"),
             Cmd("tab.closeothers"),
             Cmd("tab.reopen"),

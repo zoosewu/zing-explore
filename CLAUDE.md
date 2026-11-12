@@ -127,6 +127,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 分頁：移動一律經 `App::move_tab`（拖曳、`tab.moveleft`／`moveright`；移到別的窗格時移走唯一分頁的窗格關閉），
   關閉經 `App::close_tab`（記進 `closed_tabs` 供 `tab.reopen`）。拖曳以游標越過的分頁中線決定位置（寬度不同也不會來回跳）。
   右鍵選單的項目都是命令、對使用中的分頁動作，所以按右鍵先切換到那個分頁。拖放檔案到其他分頁上放進那個分頁的資料夾（`drop_tab`）。
+  拖到視窗外（`tabmove.rs`）：游標下是另一個 zing 視窗就請它標示插入位置（`Msg::TabHover`），放開時交給它（`Msg::TabDrop`，
+  經 Hub、不等待；目標已關閉時 Hub 改開新視窗）；沒有 zing 視窗就在那裡開新視窗（`tab.newwindow` 是對應的命令）。
+  其他程式的視窗蓋在上面時，在自己的用戶區內拖曳仍是視窗內的拖曳（冒煙測試以 `tabmove::TEST_WINDOW_AT` 指定目標）。
 - 命令列的按鈕、樹狀列的我的最愛可以直接拖曳排序（`Press::BarButton`、`Press::Favorite`）：放開時沒有拖曳才執行／開啟
   （按下就開啟會捲動樹狀列、開出選單，拖曳的對象就不在游標下）。網址列（每一層、空白處）與欄位標題的右鍵選單在 `ctxmenu.rs`。
 - 內容對話方塊一律經 `App::show_properties`（命令、樹狀列的右鍵選單、Alt+雙擊清單或樹狀列；冒煙測試以 `ctxmenu::TEST_PROPERTIES` 記下對象）。

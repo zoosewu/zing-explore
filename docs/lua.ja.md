@@ -781,6 +781,14 @@ tab.closeright()
 tab.reopen()
 ```
 
+### `tab.newwindow()`
+
+タブを新しいウィンドウに移動
+
+```lua
+tab.newwindow()
+```
+
 ### `window.new(opts?)`
 
 新しいウィンドウを開く（既定は現在のフォルダー）

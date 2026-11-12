@@ -37,6 +37,7 @@ mod sidepanel;
 mod script;
 mod search;
 mod sizes;
+mod tabmove;
 mod themeedit;
 mod themepanel;
 mod thumbs;

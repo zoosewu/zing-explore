@@ -793,6 +793,13 @@ impl App {
                 g.text(glyph::CLOSE, Font::GlyphSmall, pl.tab_close[t], c.text_secondary);
             }
         }
+        // 另一個視窗拖曳中的分頁要插入的位置
+        if let Some((ip, it)) = self.tab_insert
+            && ip == p
+        {
+            let x = pl.tabs.get(it).map_or_else(|| pl.tabs.last().map_or(pl.strip.l, |r| r.r), |r| r.l);
+            g.fill(Rect::new(x - 1.0, pl.strip.t + 4.0, x + 1.0, pl.strip.b - 4.0), c.accent);
+        }
         if self.hover == Hit::TabNew(p) {
             g.fill_round(pl.tab_new, radius, c.hover);
         }

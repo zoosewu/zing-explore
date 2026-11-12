@@ -65,6 +65,10 @@ pub enum Msg {
     PauseWatches { paths: Vec<String>, ack: std::sync::mpsc::Sender<crate::hub::PauseAck> },
     /// 其他視窗的檔案作業結束：恢復監看
     ResumeWatches(Vec<String>),
+    /// 其他視窗拖曳中的分頁經過（螢幕座標）或離開（tabmove.rs）
+    TabHover(Option<(i32, i32)>),
+    /// 其他視窗放過來的分頁
+    TabDrop(Box<crate::tabmove::TabDrop>),
     Status { text: String, error: bool },
     Icon { id: u32, pixels: Option<crate::icons::IconPixels> },
     /// 縮圖（None：沒有縮圖，畫圖示）

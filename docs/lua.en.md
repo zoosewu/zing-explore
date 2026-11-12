@@ -781,6 +781,14 @@ Reopen the most recently closed tab
 tab.reopen()
 ```
 
+### `tab.newwindow()`
+
+Move the tab to a new window
+
+```lua
+tab.newwindow()
+```
+
 ### `window.new(opts?)`
 
 Open a new window (the current folder by default)

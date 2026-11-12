@@ -88,8 +88,9 @@ pub enum Focus {
 pub enum Press {
     Row { pane: usize, row: usize, x: f32, y: f32, deselect_on_up: bool },
     Scroll { pane: usize, grab: f32 },
-    /// 分頁：按下的分頁目前在哪裡（拖曳時跟著移動）；`moved` 表示已開始拖曳
-    Tab { pane: usize, tab: usize, x: f32, y: f32, moved: bool },
+    /// 分頁：按下的分頁目前在哪裡（拖曳時跟著移動）；`moved` 表示已開始拖曳；
+    /// `out`：游標在視窗外時的螢幕座標（放開時移到其他視窗或新視窗，tabmove.rs）
+    Tab { pane: usize, tab: usize, x: f32, y: f32, moved: bool, out: Option<(i32, i32)> },
     /// 命令列的按鈕（`config.cmdbar` 的索引）：放開時沒有拖曳才執行，拖曳時調整順序
     BarButton { item: usize, x: f32, moved: bool },
     /// 樹狀列的我的最愛：按下的是 `favorites` 的第幾個（拖曳時跟著移動）、哪個節點（放開時沒有拖曳才開啟）
@@ -264,6 +265,10 @@ pub struct App {
     pub win: crate::hub::WinInfo,
     /// 其他視窗切換的主題正在載入：載入完成時不再轉送
     theme_from_hub: Option<String>,
+    /// 另一個視窗拖曳中的分頁經過：插入的位置（窗格, 第幾個）（tabmove.rs）
+    pub tab_insert: Option<(usize, usize)>,
+    /// 拖曳分頁經過的另一個視窗（離開時請它拿掉標示）
+    pub tab_hover_target: Option<isize>,
 }
 
 impl App {
@@ -410,6 +415,8 @@ impl App {
             session,
             win,
             theme_from_hub: None,
+            tab_insert: None,
+            tab_hover_target: None,
         };
 
         // 起始分頁：效能測試固定從「此電腦」開始；否則依設定（startup）與命令列要開啟的資料夾
@@ -504,7 +511,12 @@ impl App {
             let step = (32.0 * self.gfx.scale()) as i32;
             (w.x + step, w.y + step, w.w, w.h)
         });
-        let isolated = self.isolated;
+        let (isolated, inherit) = (self.isolated, self.inherit_for_new_window());
+        crate::hub::open_window(crate::hub::WindowInit { open: Some(path), rect, isolated, inherit, ..Default::default() });
+    }
+
+    /// 新視窗接手的：復原與重做的堆疊、進行中的作業
+    pub fn inherit_for_new_window(&self) -> crate::hub::Inherit {
         let jobs = self
             .jobs
             .list
@@ -512,8 +524,7 @@ impl App {
             .filter(|j| !j.is_finished())
             .map(|j| crate::jobs::JobInfo { id: j.id, title: j.title.clone(), glyph: j.glyph, ctl: j.ctl.clone() })
             .collect();
-        let inherit = crate::hub::Inherit { undo: self.undo_stack.clone(), redo: self.redo_stack.clone(), jobs };
-        crate::hub::open_window(crate::hub::WindowInit { open: Some(path), rect, isolated, inherit, ..Default::default() });
+        crate::hub::Inherit { undo: self.undo_stack.clone(), redo: self.redo_stack.clone(), jobs }
     }
 
     /// 接手開這個視窗的視窗的復原堆疊與進行中的作業
@@ -602,6 +613,8 @@ impl App {
                     theme: self.theme_name.clone(),
                     favorites: self.favorites.clone(),
                     tab: self.tab().path.clone(),
+                    tabs: self.panes.iter().map(|p| p.tabs.len()).sum(),
+                    tab_insert: self.tab_insert,
                     jobs: self.jobs.list.iter().map(|j| j.id).collect(),
                     undo: self.undo_label().map(String::from),
                 });
@@ -628,7 +641,7 @@ impl App {
         self.panes[self.active_pane].tab_mut()
     }
 
-    fn new_tab(&mut self, p: String) -> Tab {
+    pub(crate) fn new_tab(&mut self, p: String) -> Tab {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         let view = self.folder_views.get(&p);
@@ -674,7 +687,7 @@ impl App {
     // ------------------------------------------------------------ 載入與導覽
 
     /// 開始載入分頁目前的路徑（取消先前的載入）
-    fn load(&mut self, p: usize, t: usize) {
+    pub(crate) fn load(&mut self, p: usize, t: usize) {
         let notifier = self.notifier.clone();
         let paused = self.watch_paused(&self.panes[p].tabs[t].path);
         let tab = &mut self.panes[p].tabs[t];
@@ -1237,6 +1250,8 @@ impl App {
                 let _ = ack.send(crate::hub::PauseAck::Paused);
             }
             Msg::ResumeWatches(paths) => self.resume_watches(&paths),
+            Msg::TabHover(screen) => self.on_tab_hover(screen),
+            Msg::TabDrop(drop) => self.on_tab_drop(*drop),
             Msg::Status { text, error } => self.set_status(text, error),
             Msg::Icon { id, pixels } => self.icons.store(id, pixels),
             Msg::MenuRename => self.start_rename(),
@@ -1629,6 +1644,7 @@ impl App {
                 let target = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
                 self.open_new_window(target);
             }
+            Cmd::TabNewwindow => self.tab_to_new_window(p, self.panes[p].active, None),
             Cmd::TabClose => self.close_tab(p, self.panes[p].active),
             Cmd::TabCloseothers | Cmd::TabCloseright => {
                 let active = self.panes[p].active;
@@ -1869,7 +1885,7 @@ impl App {
     }
 
     /// 視窗內的座標（DIP）換成螢幕座標
-    fn client_to_screen(&self, x: f32, y: f32) -> POINT {
+    pub(crate) fn client_to_screen(&self, x: f32, y: f32) -> POINT {
         let s = self.gfx.scale();
         let mut pt = POINT { x: (x * s) as i32, y: (y * s) as i32 };
         unsafe {
@@ -2153,7 +2169,7 @@ impl App {
     }
 
     /// 從窗格取出分頁（窗格至少還有一個分頁時），使用中的分頁維持不變或移到相鄰的
-    fn take_tab(&mut self, p: usize, t: usize) -> Tab {
+    pub(crate) fn take_tab(&mut self, p: usize, t: usize) -> Tab {
         let pane = &mut self.panes[p];
         let tab = pane.tabs.remove(t);
         if pane.active >= pane.tabs.len() || pane.active > t {

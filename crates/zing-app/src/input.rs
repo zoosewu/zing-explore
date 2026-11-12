@@ -61,10 +61,12 @@ impl App {
                     }
                 }
             }
-            Some(Press::Tab { pane, tab, x: x0, y: y0, moved }) => {
+            Some(Press::Tab { pane, tab, x: x0, y: y0, moved, .. }) => {
                 if moved || (x - x0).abs() > DRAG_THRESHOLD || (y - y0).abs() > DRAG_THRESHOLD {
-                    let (pane, tab) = self.drag_tab(pane, tab, x, y);
-                    self.press = Some(Press::Tab { pane, tab, x: x0, y: y0, moved: true });
+                    // 游標在視窗外：分頁留在原處，放開時移到其他視窗或新視窗
+                    let out = self.tab_drag_outside(x, y);
+                    let (pane, tab) = if out.is_some() { (pane, tab) } else { self.drag_tab(pane, tab, x, y) };
+                    self.press = Some(Press::Tab { pane, tab, x: x0, y: y0, moved: true, out });
                 }
             }
             Some(Press::BarButton { item, x: x0, moved }) => {
@@ -307,7 +309,7 @@ impl App {
                 self.panes[p].active = t;
                 self.focus = Focus::List;
                 self.sync_tree();
-                self.press = Some(Press::Tab { pane: p, tab: t, x, y, moved: false });
+                self.press = Some(Press::Tab { pane: p, tab: t, x, y, moved: false, out: None });
             }
             Hit::TabClose(p, t) => self.close_tab(p, t),
             Hit::TabNew(p) => {
@@ -397,6 +399,7 @@ impl App {
         match press {
             Some(Press::Row { pane, row, deselect_on_up: true, .. }) => self.panes[pane].tab_mut().select_only(row),
             Some(Press::Favorite { node, moved: false, .. }) => self.open_tree_node(node),
+            Some(Press::Tab { pane, tab, out: Some(screen), .. }) => self.tab_drag_end(pane, tab, screen),
             Some(Press::BarButton { item, moved: false, .. }) => {
                 self.layout = self.compute_layout();
                 if let Some(&(_, r, _)) = self.layout.cmdbar.as_ref().and_then(|b| b.buttons.iter().find(|b| b.0 == item)) {
@@ -503,7 +506,7 @@ impl App {
     /// 分頁（`on_tab`）或分頁列空白處的右鍵選單
     fn open_tab_menu(&mut self, on_tab: bool, x: f32, y: f32) {
         let cmds: &[&str] = if on_tab {
-            &["tab.new", "", "tab.close", "tab.closeothers", "tab.closeright", "tab.reopen", "", "tab.moveleft", "tab.moveright", "", "pane.split"]
+            &["tab.new", "", "tab.close", "tab.closeothers", "tab.closeright", "tab.reopen", "", "tab.moveleft", "tab.moveright", "tab.newwindow", "", "pane.split"]
         } else {
             &["tab.new", "tab.reopen"]
         };

@@ -85,6 +85,10 @@ pub struct Probe {
     pub favorites: Vec<String>,
     /// 作用中的分頁
     pub tab: String,
+    /// 分頁總數
+    pub tabs: usize,
+    /// 另一個視窗拖曳中的分頁要插入的位置
+    pub tab_insert: Option<(usize, usize)>,
     pub jobs: Vec<crate::jobs::JobId>,
     pub undo: Option<String>,
 }
@@ -111,6 +115,8 @@ enum HubMsg {
     Job(crate::jobs::JobId, crate::jobs::JobEvent),
     /// 檔案作業完成：送給送出它的視窗，它已關閉時送給其他視窗
     ToWindow(u32, Box<Msg>),
+    /// 送給這個 HWND 的視窗（拖曳分頁）；它已關閉時丟掉，放過去的分頁改開新視窗
+    ToHwnd(isize, Box<Msg>),
     PauseOthers { from: u32, paths: Vec<String>, ack: Sender<PauseAck> },
     ResumeOthers { from: u32, paths: Vec<String> },
     /// 資料夾大小快取：視窗目前的全部記錄（Hub 與檔案合併後寫入）
@@ -219,6 +225,17 @@ impl Hub {
                     n.send(*msg);
                 }
             }
+            HubMsg::ToHwnd(h, msg) => match (self.notifiers.iter().find(|(_, n)| n.hwnd() == h), *msg) {
+                (Some((_, n)), msg) => n.send(msg),
+                (None, Msg::TabDrop(drop)) => self.spawn(WindowInit {
+                    restore: Some(WindowSession {
+                        panes: vec![crate::settings::PaneState { tabs: vec![drop.path], active: 0 }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                (None, _) => {}
+            },
             HubMsg::PauseOthers { from, paths, ack } => {
                 let others: Vec<&Notifier> = self.notifiers.iter().filter(|(i, _)| *i != from).map(|(_, n)| n).collect();
                 let _ = ack.send(PauseAck::Expect(others.len()));
@@ -330,6 +347,11 @@ pub fn broadcast(from: u32, shared: Shared) {
 /// 關閉所有視窗（安裝更新後重新啟動）
 pub fn close_all() {
     send(HubMsg::CloseAll);
+}
+
+/// 送給這個程序的另一個視窗（tabmove.rs）
+pub fn to_window(hwnd: isize, msg: Msg) {
+    send(HubMsg::ToHwnd(hwnd, Box::new(msg)));
 }
 
 /// 資料夾大小快取（sizes.rs）
