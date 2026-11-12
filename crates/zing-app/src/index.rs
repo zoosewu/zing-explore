@@ -165,10 +165,13 @@ impl App {
         });
     }
 
-    /// 在背景查詢索引服務是否已安裝（歡迎畫面）；隔離模式不使用索引，視為沒有安裝
+    /// 在背景查詢索引服務是否已安裝（設定、歡迎畫面的開關）；隔離模式不使用索引：一開始視為沒有安裝，
+    /// 之後保留開關切換的結果（只在記憶體中）
     pub fn query_index_installed(&mut self) {
         if self.isolated {
-            self.on_index_installed(false);
+            if self.index_installed.is_none() {
+                self.on_index_installed(false);
+            }
             return;
         }
         let n = self.notifier.clone();
@@ -181,16 +184,60 @@ impl App {
         self.run_index_tool(Tool::Update(installed));
     }
 
-    /// 命令：index.install、index.uninstall、index.status
+    /// 命令：index.install、index.uninstall、index.status（開啟設定的「NTFS 索引服務」，狀態顯示在開關下方）
     pub fn index_command(&mut self, cmd: &str) {
         match cmd {
             "index.install" => self.run_index_tool(Tool::Install),
             "index.uninstall" => self.run_index_tool(Tool::Uninstall),
-            _ => self.index_status(),
+            _ => self.open_settings_on(zing_core::prefs::Kind::IndexService),
         }
     }
 
+    /// 重新查詢是否已安裝與服務的狀態（設定切到有「NTFS 索引服務」的分頁、安裝或移除之後）
+    pub fn refresh_index_info(&mut self) {
+        self.query_index_installed();
+        self.index_status();
+    }
+
+    pub fn on_index_installed(&mut self, installed: bool) {
+        self.index_installed = Some(installed);
+        self.invalidate();
+    }
+
+    pub fn on_index_status(&mut self, text: String, error: bool) {
+        self.index_note = Some((text, error));
+        self.invalidate();
+    }
+
+    /// 設定與歡迎畫面的開關：開＝安裝（UAC），關＝確認後移除。隔離模式只在記憶體中切換
+    pub fn toggle_index_service(&mut self) {
+        let Some(on) = self.index_installed else { return };
+        if on {
+            self.confirm(tr!("確定要移除 NTFS 索引服務嗎？\n資料夾大小改回逐一掃描，全磁碟搜尋無法使用"), tr_key!("移除"), |a| {
+                a.set_index_service(false)
+            });
+        } else {
+            self.set_index_service(true);
+        }
+    }
+
+    /// 安裝或移除（已確認過）；隔離模式不跳出 UAC，只在記憶體中切換
+    pub fn set_index_service(&mut self, on: bool) {
+        if self.isolated {
+            self.on_index_installed(on);
+            self.index_status();
+            return;
+        }
+        self.run_index_tool(if on { Tool::Install } else { Tool::Uninstall });
+    }
+
     fn index_status(&mut self) {
+        // 隔離模式不連到服務：依開關（只在記憶體中）顯示
+        if self.isolated {
+            let text = if self.index_installed == Some(true) { tr!("已啟用") } else { tr!("沒有啟用") };
+            self.on_index_status(text.to_string(), false);
+            return;
+        }
         let n = self.notifier.clone();
         self.index_pool().spawn(move || {
             let (text, error) = match indexproto::query(&Request::Status) {
@@ -203,13 +250,13 @@ impl App {
                             _ => tr!("{volume} 錯誤：{detail}", volume = v.volume, detail = v.detail),
                         })
                         .collect();
-                    (tr!("索引服務：{parts}", parts = parts.join(tr!("、"))), false)
+                    (parts.join(tr!("、")), false)
                 }
-                Err(QueryError::NotRunning) => (tr!("索引服務沒有執行（命令面板：啟用 NTFS 索引服務）").into(), false),
+                Err(QueryError::NotRunning) => (tr!("沒有啟用").into(), false),
                 Ok(_) => (tr!("索引服務回應異常").into(), true),
                 Err(QueryError::Failed(e)) => (tr!("無法查詢索引服務：{e}", e), true),
             };
-            n.send(Msg::IndexAction { text, error, changed: false });
+            n.send(Msg::IndexStatus { text, error });
         });
     }
 
@@ -272,6 +319,7 @@ impl App {
     pub fn on_index_action(&mut self, text: String, error: bool, changed: bool) {
         self.set_status(text, error);
         if changed {
+            self.refresh_index_info();
             // 服務剛安裝或移除：重新查詢目前顯示的資料夾
             self.sizes.index_touched.clear();
             for p in 0..self.panes.len() {

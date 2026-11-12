@@ -51,6 +51,8 @@ pub enum Row {
     Field(usize),
     /// 欄位的說明（小字）的第 n 行
     Hint(usize, usize),
+    /// 欄位目前的狀態（NTFS 索引服務：各磁碟的索引；緊接在欄位下方）
+    Status(usize),
     /// 緩慢的擴充功能表格（`Kind::SlowList` 的欄位）：欄名、第 k 個擴充功能、沒有項目
     SlowHead(usize),
     Slow(usize, usize),
@@ -94,6 +96,9 @@ impl SettingsPage {
                 }
             }
             out.push(Row::Field(i));
+            if p.kind == Kind::IndexService {
+                out.push(Row::Status(i));
+            }
             if !p.hint.is_empty() {
                 let lines = zing_core::i18n::tr(p.hint).lines().count().max(1);
                 out.extend((0..lines).map(|n| Row::Hint(i, n)));
@@ -126,6 +131,17 @@ impl App {
         }
         self.settings_tab(tab);
         self.invalidate();
+    }
+
+    /// 開啟設定、切到這種項目所在的分頁並捲到它（命令 index.status、update.check：結果顯示在那一列）
+    pub fn open_settings_on(&mut self, kind: Kind) {
+        let Some(i) = PREFS.iter().position(|p| p.kind == kind) else { return };
+        let tab = groups().iter().position(|g| *g == PREFS[i].group).unwrap_or(0);
+        self.open_settings_at(tab);
+        self.layout = self.compute_layout();
+        if let Some(k) = self.settings_page().and_then(|p| p.rows().iter().position(|r| *r == Row::Field(i))) {
+            self.side_reveal(k);
+        }
     }
 
     /// 開著的是設定對話框（對話框外點不到底下的元件、按鍵不往下傳）
@@ -173,6 +189,9 @@ impl App {
         self.side_cursor.line = Line::Top(0);
         self.side_cursor.part = tab;
         let group = groups.get(tab).copied();
+        if PREFS.iter().any(|p| Some(p.group) == group && p.kind == Kind::IndexService) {
+            self.refresh_index_info();
+        }
         if PREFS.iter().any(|p| Some(p.group) == group && p.kind == Kind::SlowList) {
             let (n, persist) = (self.notifier.clone(), !self.isolated);
             self.pool.spawn(move || n.send(Msg::SlowMenuExts(crate::shellext::slow_list(persist))));
@@ -210,8 +229,23 @@ impl App {
 
     /// 「指定的分頁」那一列的按鈕（按了改成目前開著的分頁）：數值區的右端
     pub fn tabs_button(&self, row: Rect) -> Rect {
-        let w = self.gfx.measure(zing_core::i18n::tr(USE_CURRENT_TABS), Font::Text) + 24.0;
+        self.row_button(row, USE_CURRENT_TABS)
+    }
+
+    /// 列右端的按鈕（`label` 是原文）
+    fn row_button(&self, row: Rect, label: &'static str) -> Rect {
+        let w = self.gfx.measure(zing_core::i18n::tr(label), Font::Text) + 24.0;
         Rect::new(row.r - 4.0 - w, row.t + 2.0, row.r - 4.0, row.b - 2.0)
+    }
+
+    /// 只有右端的按鈕可以按的欄位（指定的分頁、檢查更新）：按鈕的位置與文字
+    pub fn field_button(&self, i: usize, row: Rect) -> Option<(Rect, &'static str)> {
+        let label = match PREFS[i].kind {
+            Kind::Tabs => USE_CURRENT_TABS,
+            Kind::UpdateCheck => self.update_button_label(),
+            _ => return None,
+        };
+        Some((self.row_button(row, label), label))
     }
 
     /// 緩慢的擴充功能表格的欄：名稱、類型、耗時、開關的左緣
@@ -239,10 +273,10 @@ impl App {
             if k >= 0.0 {
                 let k = k as usize;
                 match rows.get(k) {
-                    // 指定的分頁：只有按鈕可以按
-                    Some(Row::Field(i)) if PREFS[*i].kind == Kind::Tabs => {
+                    // 指定的分頁、檢查更新：只有按鈕可以按
+                    Some(Row::Field(i)) if self.field_button(*i, pl.list).is_some() => {
                         let (rr, _) = self.settings_row_rects(pl.list, k, page.scroll);
-                        if self.tabs_button(rr).contains(x, y) {
+                        if self.field_button(*i, rr).is_some_and(|(b, _)| b.contains(x, y)) {
                             return Hit::SettingsRow(k);
                         }
                     }
@@ -265,7 +299,9 @@ impl App {
             Line::Row(k) => {
                 let (rr, _) = self.settings_row_rects(pl.list, k, page.scroll);
                 match page.rows().get(k) {
-                    Some(Row::Field(i)) if PREFS[*i].kind == Kind::Tabs => vec![(Hit::SettingsRow(k), self.tabs_button(rr))],
+                    Some(Row::Field(i)) if self.field_button(*i, rr).is_some() => {
+                        self.field_button(*i, rr).map(|(b, _)| (Hit::SettingsRow(k), b)).into_iter().collect()
+                    }
                     Some(Row::Field(_)) => vec![(Hit::SettingsRow(k), rr)],
                     Some(Row::Slow(..)) if self.slow_table_enabled() => vec![(Hit::SettingsRow(k), rr)],
                     _ => Vec::new(),
@@ -289,11 +325,6 @@ impl App {
                             self.set_pref(i, (!on).to_string());
                         }
                         Kind::Text => self.begin_pref_edit(i),
-                        Kind::Action("index.uninstall") => {
-                            self.confirm(tr!("確定要移除 NTFS 索引服務嗎？\n資料夾大小改回逐一掃描，全磁碟搜尋無法使用"), tr_key!("移除"), |a| {
-                                a.exec("index.uninstall")
-                            });
-                        }
                         Kind::Action(cmd) => {
                             // 開出編輯器（主題、命令列、快速鍵）時記住分頁，完成後回到這裡
                             let tab = page.category;
@@ -311,6 +342,8 @@ impl App {
                             self.set_pref(i, tabs.join("|"));
                         }
                         Kind::DefaultApp => self.toggle_default_app(),
+                        Kind::IndexService => self.toggle_index_service(),
+                        Kind::UpdateCheck => self.update_button_click(),
                         Kind::SlowList => {}
                     },
                     Some(Row::Slow(i, e)) if self.slow_table_enabled() => {
@@ -448,6 +481,14 @@ impl App {
                 Row::Section(name) => {
                     g.text(zing_core::i18n::tr(name), Font::Bold, Rect::new(rr.l, rr.t + 4.0, rr.r, rr.b), c.text_secondary)
                 }
+                Row::Status(_) => {
+                    let (text, error) = match (&self.index_note, self.index_installed) {
+                        (Some((t, e)), _) => (t.clone(), *e),
+                        (None, None) => (tr!("查詢中…").to_string(), false),
+                        (None, Some(_)) => (String::new(), false),
+                    };
+                    g.text(&text, Font::Small, Rect::new(rr.l + 8.0, rr.t, rr.r - 6.0, rr.b), if error { c.error } else { c.text })
+                }
                 Row::Hint(i, n) => {
                     let hint = match (&PREFS[i].kind, &self.default_app) {
                         (Kind::SlowList, _) if !slow_on => tr!("「隱藏緩慢的擴充功能項目」關閉時，全部照樣放在第一層").to_string(),
@@ -466,7 +507,7 @@ impl App {
                         g.text(zing_core::i18n::tr(p.label), Font::Bold, Rect::new(rr.l + 8.0, rr.t + 2.0, rr.r, rr.b), color);
                         continue;
                     }
-                    if hover && p.kind != Kind::Tabs {
+                    if hover && self.field_button(i, rr).is_none() {
                         g.fill_round(rr, radius, c.hover);
                     }
                     let action = matches!(p.kind, Kind::Action(_));
@@ -500,6 +541,19 @@ impl App {
                             };
                             g.text(&text, Font::Text, Rect::new(vr.l, rr.t, button.l - 8.0, rr.b), c.text_secondary);
                             self.paint_button(button, USE_CURRENT_TABS, false, hover);
+                        }
+                        Kind::IndexService => {
+                            let on = self.index_installed == Some(true);
+                            let right = self.paint_switch(rr, vr.l, on, self.index_installed.is_some());
+                            let label = if on { tr!("開") } else { tr!("關") };
+                            g.text(label, Font::Text, Rect::new(right + 8.0, rr.t, vr.r, rr.b), c.text_secondary);
+                        }
+                        Kind::UpdateCheck => {
+                            if let Some((button, label)) = self.field_button(i, rr) {
+                                let (text, error) = self.update_row_text();
+                                g.text(&text, Font::Text, Rect::new(vr.l, rr.t, button.l - 8.0, rr.b), if error { c.error } else { c.text_secondary });
+                                self.paint_button(button, label, false, hover);
+                            }
                         }
                         Kind::DefaultApp => {
                             let on = self.default_app == Some(crate::defaultapp::Status::On);

@@ -3,7 +3,8 @@
 //! - 檢查：啟動時（第一幀之後）在背景執行緒讀紀錄（`%LOCALAPPDATA%\zing-explore\update.tsv`），距上次超過 24 小時
 //!   才以 WinHTTP 向 GitHub 查最新版（`/releases/latest` 不跟隨轉址，從 Location 讀出標籤），否則沿用紀錄中的最新版。
 //!   值得提示時狀態列右側常駐「有新版本」，點了開選單（安裝、版本說明、略過這個版本、不再檢查）。
-//!   設定 `update.check` 關閉時不檢查；`update.check` 命令立即檢查，有任何較新的版本都提示（含修補版、略過的版本）。
+//!   設定 `update.check` 關閉時不檢查；`update.check` 命令（設定的「檢查更新」）立即檢查，有任何較新的版本都提示
+//!   （含修補版、略過的版本），結果顯示在設定的那一列（`update_note`），按鈕依狀態是立即檢查、安裝、取消、重新啟動。
 //! - 安裝：下載這個版本的壓縮檔與 .sha256 到 `%LOCALAPPDATA%\zing-explore\update`，核對雜湊後以系統的 tar.exe
 //!   解壓縮（只用相對路徑：tar 以 ANSI 字碼頁讀參數，使用者名稱可能不是 ASCII），再把每個檔案先複製成程式旁的
 //!   `<名稱>.new`；全部成功後把現有的檔案改名成 `<名稱>.old`（執行中的 exe 可以改名、不能覆蓋）、`.new` 改成正式的名稱，
@@ -262,12 +263,10 @@ impl App {
         });
     }
 
-    /// 命令 update.check：立即檢查
+    /// 立即檢查（命令 update.check、設定的「檢查更新」）：結果顯示在設定的那一列
     pub fn check_update_now(&mut self) {
-        match &self.update {
-            Update::Downloading { .. } => return self.set_status(tr!("正在下載更新"), false),
-            Update::Ready { version, .. } => return self.set_status(tr!("已更新到 {version}，重新啟動後生效", version), false),
-            _ => {}
+        if matches!(self.update, Update::Downloading { .. } | Update::Ready { .. }) {
+            return;
         }
         let n = self.notifier.clone();
         #[cfg(feature = "smoke")]
@@ -276,9 +275,11 @@ impl App {
             return;
         }
         if self.isolated {
-            return self.set_status(tr!("效能與冒煙測試不檢查更新"), false);
+            self.update_note = Some((tr!("效能與冒煙測試不檢查更新").to_string(), false));
+            return self.invalidate();
         }
-        self.set_status(tr!("正在檢查更新…"), false);
+        self.update_note = Some((tr!("正在檢查…").to_string(), false));
+        self.invalidate();
         std::thread::spawn(move || {
             let (latest, skipped) = check(true);
             n.send(Msg::UpdateChecked { latest, skipped, manual: true });
@@ -298,7 +299,8 @@ impl App {
             Ok(tag) => tag.and_then(|t| Version::parse(&t).map(|v| (t, v))),
             Err(e) => {
                 if manual {
-                    self.set_status(tr!("無法檢查更新：{e}", e), true);
+                    self.update_note = Some((tr!("無法檢查更新：{e}", e), true));
+                    self.invalidate();
                 }
                 return;
             }
@@ -306,14 +308,12 @@ impl App {
         match latest {
             // 手動檢查：有任何較新的版本都提示
             Some((tag, version)) if (manual && version > current) || upd::worth_prompting(current, version, skipped) => {
-                if manual {
-                    self.set_status(tr!("有新版本 {version}：點狀態列右側的提示安裝", version), false);
-                }
+                self.update_note = None;
                 self.update = Update::Available { tag, version };
             }
             _ => {
                 if manual {
-                    self.set_status(tr!("已是最新版本（{current}）", current), false);
+                    self.update_note = Some((tr!("已是最新版本（{current}）", current), false));
                 }
                 self.update = Update::None;
             }
@@ -328,6 +328,36 @@ impl App {
             Update::Available { version, .. } => Some(tr!("有新版本 {version}", version)),
             Update::Downloading { percent, .. } => Some(tr!("正在下載更新 {percent}%", percent)),
             Update::Ready { version, .. } => Some(tr!("已更新到 {version}：重新啟動", version)),
+        }
+    }
+
+    /// 設定的「檢查更新」那一列：說明（目前的狀態或上次檢查的結果）與是否為錯誤
+    pub fn update_row_text(&self) -> (String, bool) {
+        let current = Version::current();
+        match &self.update {
+            Update::Available { version, .. } => (tr!("有新版本 {version}（目前 {current}）", version, current), false),
+            Update::Downloading { percent, .. } => (tr!("正在下載更新 {percent}%", percent), false),
+            Update::Ready { version, .. } => (tr!("已安裝 {version}，重新啟動後生效", version), false),
+            Update::None => self.update_note.clone().unwrap_or_else(|| (tr!("目前版本 {current}", current), false)),
+        }
+    }
+
+    /// 那一列的按鈕（原文）：依狀態是立即檢查、下載並安裝、取消、重新啟動
+    pub fn update_button_label(&self) -> &'static str {
+        match &self.update {
+            Update::None => tr_key!("立即檢查"),
+            Update::Available { .. } => tr_key!("下載並安裝"),
+            Update::Downloading { .. } => tr_key!("取消"),
+            Update::Ready { .. } => tr_key!("重新啟動"),
+        }
+    }
+
+    pub fn update_button_click(&mut self) {
+        match &self.update {
+            Update::None => self.check_update_now(),
+            Update::Available { .. } => self.update_choice(Choice::Install),
+            Update::Downloading { .. } => self.update_choice(Choice::Cancel),
+            Update::Ready { .. } => self.update_choice(Choice::Restart),
         }
     }
 

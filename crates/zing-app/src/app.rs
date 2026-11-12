@@ -243,6 +243,11 @@ pub struct App {
     pub welcome: Option<crate::welcome::Welcome>,
     /// 確認對話框（confirm.rs）
     pub confirm: Option<crate::confirm::Confirm>,
+    /// NTFS 索引服務是否已安裝（背景查詢，None 是還不知道）與狀態的說明（設定的開關下方）：設定與歡迎畫面共用
+    pub index_installed: Option<bool>,
+    pub index_note: Option<(String, bool)>,
+    /// 設定的「檢查更新」那一列顯示的結果（立即檢查之後）
+    pub update_note: Option<(String, bool)>,
     /// 檔案作業的復原、重做（undo.rs）：重做的是（說明, 原本的作業）
     pub undo_stack: Vec<crate::undo::Undo>,
     pub redo_stack: Vec<(String, crate::shell::FileOp)>,
@@ -373,6 +378,9 @@ impl App {
             shell_windows: None,
             welcome: None,
             confirm: None,
+            index_installed: None,
+            index_note: None,
+            update_note: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             side_return: None,
@@ -1130,6 +1138,7 @@ impl App {
             Msg::IndexAction { text, error, changed } => self.on_index_action(text, error, changed),
             Msg::IndexOutdated { installed } => self.on_index_outdated(installed),
             Msg::IndexInstalled(installed) => self.on_index_installed(installed),
+            Msg::IndexStatus { text, error } => self.on_index_status(text, error),
             Msg::ScriptsChanged => self.on_scripts_changed(),
             Msg::CrumbFolders { folder, names } => self.on_crumb_folders(folder, names),
             Msg::UpdateChecked { latest, skipped, manual } => self.on_update_checked(latest, skipped, manual),
@@ -1623,7 +1632,11 @@ impl App {
                 self.scripts.load(&n, self.isolated);
             }
             Cmd::AppExit => window::close(self.hwnd),
-            Cmd::UpdateCheck => self.check_update_now(),
+            Cmd::UpdateCheck => {
+                // 結果顯示在設定的「檢查更新」那一列
+                self.open_settings_on(zing_core::prefs::Kind::UpdateCheck);
+                self.check_update_now();
+            }
             Cmd::WelcomeShow => self.open_welcome(),
             Cmd::ListUp | Cmd::ListDown | Cmd::ListLeft | Cmd::ListRight | Cmd::ListPageup | Cmd::ListPagedown | Cmd::ListFirst
             | Cmd::ListLast => {

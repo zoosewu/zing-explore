@@ -139,7 +139,10 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 設定（`prefspage.rs`，命令 `settings.open`）：視窗中央的對話框（`Layout::side_dialog`，沿用右側面板的機制、位置在中央；
   對話框外點不到、點了關閉，面板沒處理的按鍵不往下傳）。上方是分頁（`Pref::group`：一般、外觀、命令列、系統），
   分頁中依副標題（`Pref::section`）分組，順序依 `PREFS`。從這裡開出的編輯器（主題、命令列、快速鍵）記住分頁
-  （`App::side_return`），完成或 Esc 經 `App::leave_side_editor` 回到原本的分頁。項目定義在
+  （`App::side_return`），完成或 Esc 經 `App::leave_side_editor` 回到原本的分頁。不是設定值的項目也放在這裡、結果顯示在那一列：
+  NTFS 索引服務是開關（`Kind::IndexService`：開＝安裝、關＝確認後移除，下方一列是服務狀態 `App::index_note`），
+  檢查更新是 `Kind::UpdateCheck`（結果 `update_row_text`、按鈕依狀態是立即檢查／安裝／取消／重新啟動）；
+  命令 `index.status`、`update.check` 開啟設定並捲到那一列（`open_settings_on`），不只在狀態列顯示。項目定義在
   `zing_core::prefs::PREFS`，新增設定時同步加上 `Config::pref_value`／
   `set_pref`；改變後的副作用只寫在 `App::apply_config`（比較新舊設定，設定頁與 `config.reload` 共用）。寫回 config.toml 只改那一行（`prefs::write_pref`，保留註解），改不了（行內表、
   多行字串）就回報錯誤、不寫入；隔離模式不寫檔。與其他面板共用 `App::side`，一次只開一個。
@@ -230,6 +233,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   （`ROW_GUTTER_L`／`ROW_GUTTER_R`，選取與游標停住的底色不畫到那裡）、縮圖格子之間與外圍留間隔（`zing_core::grid`）、
   捲到底時最後一項下方留兩列高（`max_scroll`）。項目的範圍一律經 `App::item_rect`、`Grid::cell`。
 - 自繪的選單在視窗被停用（切到別的視窗）時關閉，與 Windows 的選單相同。
+- 歡迎畫面與設定的同一個項目用同一種控制項（同一個 `Pref::kind`：開關、下拉選單），例外要寫明原因；
+  歡迎畫面的開關按下按鈕才套用，這是唯一的差別。
+- 結果顯示在觸發它的地方：設定裡的動作（查詢狀態、檢查更新）結果顯示在那一列，不只在狀態列。
 - 從幾個值中選一個，一律用 menu.rs 的下拉選單（控制項下方彈出、可用鍵盤），不在面板內展開成一列列選項。
 - 面板與對話方塊底部的按鈕：同一列同高、同寬；確認與取消成對時確認在左、用強調色（Windows 的慣例），
   一個面板最多一個強調色按鈕；還原、編輯設定檔等其他動作放在最左邊。

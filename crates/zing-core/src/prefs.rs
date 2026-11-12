@@ -22,6 +22,10 @@ pub enum Kind {
     Tabs,
     /// 不是設定值：是否為預設的檔案總管（登錄中的狀態，見 zing-app 的 defaultapp.rs）
     DefaultApp,
+    /// 不是設定值：NTFS 索引服務是否已安裝（開關：開＝安裝、關＝確認後移除；下方顯示服務的狀態，見 zing-app 的 index.rs）
+    IndexService,
+    /// 不是設定值：檢查更新（結果與按鈕：立即檢查、安裝、重新啟動，見 zing-app 的 update.rs）
+    UpdateCheck,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -88,14 +92,6 @@ pub const PREFS: &[Pref] = &[
         hint: tr_key!("「啟動時開啟」選「指定的分頁」時使用"),
         kind: Kind::Tabs,
     },
-    Pref {
-        key: "update.check",
-        group: GENERAL,
-        section: tr_key!("語言與啟動"),
-        label: tr_key!("啟動時檢查新版本"),
-        hint: tr_key!("每天最多連線到 GitHub 一次；只在有功能更新（次版號以上）時提示"),
-        kind: Kind::Bool,
-    },
     Pref { key: "show_hidden", group: GENERAL, section: tr_key!("檔案清單"), label: tr_key!("顯示隱藏檔案"), hint: "", kind: Kind::Bool },
     Pref {
         key: "list.typing",
@@ -130,6 +126,15 @@ pub const PREFS: &[Pref] = &[
         kind: Kind::SlowList,
     },
     Pref { key: "", group: GENERAL, section: tr_key!("快速鍵"), label: tr_key!("編輯快速鍵…"), hint: "", kind: Kind::Action("keys.edit") },
+    Pref {
+        key: "update.check",
+        group: GENERAL,
+        section: tr_key!("更新"),
+        label: tr_key!("啟動時檢查新版本"),
+        hint: tr_key!("每天最多連線到 GitHub 一次；只在有功能更新（次版號以上）時提示"),
+        kind: Kind::Bool,
+    },
+    Pref { key: "", group: GENERAL, section: tr_key!("更新"), label: tr_key!("檢查更新"), hint: "", kind: Kind::UpdateCheck },
     // ---- 外觀
     Pref { key: "theme", group: LOOK, section: tr_key!("主題"), label: tr_key!("主題"), hint: "", kind: Kind::Theme },
     Pref { key: "", group: LOOK, section: tr_key!("主題"), label: tr_key!("自訂主題…"), hint: "", kind: Kind::Action("theme.edit") },
@@ -156,6 +161,14 @@ pub const PREFS: &[Pref] = &[
         kind: Kind::DefaultApp,
     },
     Pref {
+        key: "",
+        group: SYSTEM,
+        section: tr_key!("資料夾大小"),
+        label: tr_key!("NTFS 索引服務（建議）"),
+        hint: tr_key!("資料夾大小立即顯示，不必逐一掃描每個子資料夾\n全磁碟搜尋：數百萬個檔案也能即時找到\n安裝、移除需要系統管理員權限（會跳出 UAC）"),
+        kind: Kind::IndexService,
+    },
+    Pref {
         key: "folder_sizes.auto",
         group: SYSTEM,
         section: tr_key!("資料夾大小"),
@@ -163,16 +176,6 @@ pub const PREFS: &[Pref] = &[
         hint: tr_key!("沒有 NTFS 索引時，進入本機磁碟上的資料夾就在背景計算"),
         kind: Kind::Bool,
     },
-    Pref {
-        key: "",
-        group: SYSTEM,
-        section: tr_key!("資料夾大小"),
-        label: tr_key!("啟用 NTFS 索引服務（建議）"),
-        hint: tr_key!("資料夾大小立即顯示，不必逐一掃描每個子資料夾\n全磁碟搜尋：數百萬個檔案也能即時找到\n需要系統管理員權限（會跳出 UAC）"),
-        kind: Kind::Action("index.install"),
-    },
-    Pref { key: "", group: SYSTEM, section: tr_key!("資料夾大小"), label: tr_key!("NTFS 索引服務狀態"), hint: "", kind: Kind::Action("index.status") },
-    Pref { key: "", group: SYSTEM, section: tr_key!("資料夾大小"), label: tr_key!("移除 NTFS 索引服務"), hint: "", kind: Kind::Action("index.uninstall") },
     Pref {
         key: "",
         group: SYSTEM,

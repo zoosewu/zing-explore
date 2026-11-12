@@ -19,19 +19,19 @@ use crate::view::Hit;
 const ITEMS: &[(Item, bool)] = &[
     (Item::Key("language"), false),
     (Item::Key("theme"), false),
-    (Item::DefaultApp, true),
+    (Item::Kind(Kind::DefaultApp), true),
     (Item::Key("startup"), false),
     (Item::Key("show_hidden"), true),
     (Item::Key("update.check"), false),
-    (Item::Action("index.install"), true),
+    (Item::Kind(Kind::IndexService), true),
 ];
 pub const BUTTONS: [&str; 2] = [tr_key!("更多設定…"), tr_key!("開始使用")];
 const CARD_W: f32 = 560.0;
 
 enum Item {
     Key(&'static str),
-    DefaultApp,
-    Action(&'static str),
+    /// 沒有設定檔鍵的項目，依種類找
+    Kind(Kind),
 }
 
 #[derive(Default)]
@@ -40,8 +40,6 @@ pub struct Welcome {
     pub focus: usize,
     /// 每個項目的開關按下按鈕時要改成的值（None：沿用目前的值；選項一律 None）
     pub pending: Vec<Option<bool>>,
-    /// NTFS 索引服務是否已安裝（背景查詢，None 是還不知道）
-    pub index_installed: Option<bool>,
 }
 
 pub struct WelcomeLayout {
@@ -65,8 +63,7 @@ pub fn items() -> Vec<usize> {
 fn item_index(it: &Item) -> Option<usize> {
     PREFS.iter().position(|p| match it {
         Item::Key(k) => p.key == *k,
-        Item::DefaultApp => p.kind == Kind::DefaultApp,
-        Item::Action(cmd) => p.kind == Kind::Action(cmd),
+        Item::Kind(k) => p.kind == *k,
     })
 }
 
@@ -83,16 +80,9 @@ impl App {
         self.refresh_default_app(false);
         let first = self.first_run;
         let pending = ITEMS.iter().filter(|(it, _)| item_index(it).is_some()).map(|&(_, on)| (first && on).then_some(true)).collect();
-        self.welcome = Some(Welcome { focus: 0, pending, index_installed: None });
+        self.welcome = Some(Welcome { focus: 0, pending });
         self.query_index_installed();
         self.invalidate();
-    }
-
-    pub fn on_index_installed(&mut self, installed: bool) {
-        if let Some(w) = self.welcome.as_mut() {
-            w.index_installed = Some(installed);
-            self.invalidate();
-        }
     }
 
     /// 第 k 個項目的開關目前的值與能否切換（選項是 None）
@@ -101,12 +91,9 @@ impl App {
         match p.kind {
             Kind::Bool => Some((self.config.pref_value(p.key) == "true", true)),
             Kind::DefaultApp => Some((self.default_app == Some(crate::defaultapp::Status::On), self.default_app.is_some())),
-            // 已安裝的服務在這裡不移除（設定頁的「移除 NTFS 索引服務」）；還不知道時也不能切換
-            Kind::Action(_) => {
-                let installed = self.welcome.as_ref()?.index_installed;
-                Some((installed == Some(true), installed == Some(false)))
-            }
-            Kind::Choice(_) | Kind::Theme | Kind::Text | Kind::Tabs | Kind::SlowList => None,
+            // 還不知道是否已安裝時不能切換（與設定相同）
+            Kind::IndexService => Some((self.index_installed == Some(true), self.index_installed.is_some())),
+            Kind::Choice(_) | Kind::Theme | Kind::Text | Kind::Tabs | Kind::SlowList | Kind::Action(_) | Kind::UpdateCheck => None,
         }
     }
 
@@ -128,8 +115,7 @@ impl App {
             match PREFS[i].kind {
                 Kind::Bool => self.set_pref(i, on.to_string()),
                 Kind::DefaultApp => self.set_default_app(on),
-                // 隔離模式（冒煙測試）不跳出 UAC
-                Kind::Action(cmd) if on && !self.isolated => self.exec(cmd),
+                Kind::IndexService => self.set_index_service(on),
                 _ => {}
             }
         }
@@ -235,14 +221,14 @@ impl App {
                     self.open_menu(menu, control);
                 }
             }
-            Kind::Bool | Kind::DefaultApp | Kind::Action(_) => {
+            Kind::Bool | Kind::DefaultApp | Kind::IndexService => {
                 if let Some((on, true)) = self.welcome_switch(k)
                     && let Some(slot) = self.welcome.as_mut().and_then(|w| w.pending.get_mut(k))
                 {
                     *slot = Some(!on);
                 }
             }
-            Kind::Text | Kind::Tabs | Kind::SlowList => {}
+            Kind::Text | Kind::Tabs | Kind::SlowList | Kind::Action(_) | Kind::UpdateCheck => {}
         }
     }
 
@@ -303,14 +289,13 @@ impl App {
                     let v = self.config.pref_value(p.key);
                     g.text(&format!("{} ▾", choice_label(p, &v)), Font::Text, *control, c.text);
                 }
-                Kind::Bool | Kind::DefaultApp | Kind::Action(_) => {
+                Kind::Bool | Kind::DefaultApp | Kind::IndexService => {
                     let (on, enabled) = self.welcome_switch(k).unwrap_or_default();
                     let right = self.paint_switch(*first, control.l, on, enabled);
-                    let installed = matches!(p.kind, Kind::Action(_)) && w.index_installed == Some(true);
-                    let label = if installed { tr!("已啟用") } else if on { tr!("開") } else { tr!("關") };
+                    let label = if on { tr!("開") } else { tr!("關") };
                     g.text(label, Font::Text, Rect::new(right + 8.0, first.t, control.r, first.b), c.text_secondary);
                 }
-                Kind::Text | Kind::Tabs | Kind::SlowList => {}
+                Kind::Text | Kind::Tabs | Kind::SlowList | Kind::Action(_) | Kind::UpdateCheck => {}
             }
         }
         let n = items().len();

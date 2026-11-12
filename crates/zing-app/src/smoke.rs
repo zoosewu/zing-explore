@@ -2917,17 +2917,37 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     v.push(step("設定：再點一次還原為 Windows 檔案總管", move |c| click(c, "", default_app_pos()), |_, a| {
         expect("狀態", a.default_app.clone(), Some(crate::defaultapp::Status::Off))
     }));
-    let uninstall_pos = || {
-        let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == zing_core::prefs::Kind::Action("index.uninstall"))?;
-        settings_pos(Row::Field(i), false)
+    let index_pos = || {
+        let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == zing_core::prefs::Kind::IndexService)?;
+        settings_pos(Row::Field(i), true)
     };
-    v.push(step("設定：「移除 NTFS 索引服務」先確認", move |c| click(c, "", uninstall_pos()), |_, a| {
-        expect("確認對話框", a.confirm.is_some(), true)
+    v.push(step("設定：NTFS 索引服務是一個開關，狀態在它下方（冒煙測試不使用索引：沒有安裝）", |_| {}, |_, a| {
+        expect("沒有安裝", a.index_installed, Some(false))?;
+        let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == zing_core::prefs::Kind::IndexService).ok_or("沒有這一項")?;
+        let rows = a.settings_page().map(|p| p.rows()).unwrap_or_default();
+        let k = rows.iter().position(|r| *r == Row::Field(i)).ok_or("沒有這一列")?;
+        expect("下一列是狀態", rows.get(k + 1).copied(), Some(Row::Status(i)))
+    }));
+    v.push(step("設定：開啟 NTFS 索引服務（冒煙測試不跳出 UAC，只在記憶體中切換）", move |c| click(c, "", index_pos()), |_, a| {
+        expect("確認對話框", a.confirm.is_none(), true)?;
+        expect("已安裝", a.index_installed, Some(true))
+    }));
+    v.push(step("設定：關閉 NTFS 索引服務先確認", move |c| click(c, "", index_pos()), |_, a| {
+        expect("確認對話框", a.confirm.is_some(), true)?;
+        expect("還沒移除", a.index_installed, Some(true))
     }));
     v.push(step("截圖：確認對話框", |_| {}, |c, _| screenshot(c, "32-確認對話框")));
     v.push(step("設定：確認對話框按「取消」不執行", |c| click(c, "", confirm_button_pos(1)), |_, a| {
         expect("確認對話框", a.confirm.is_none(), true)?;
+        expect("沒有移除", a.index_installed, Some(true))?;
         expect("設定仍開著", a.settings_page().is_some(), true)
+    }));
+    v.push(step("設定：再關一次，按「移除」", move |c| {
+        click(c, "", index_pos());
+        click(c, "", confirm_button_pos(0));
+    }, |_, a| {
+        expect("確認對話框", a.confirm.is_none(), true)?;
+        expect("已移除", a.index_installed, Some(false))
     }));
     v.push(step("設定：點「外觀」分頁", |c| click(c, "", settings_tab_pos("外觀")), move |_, a| {
         expect("分頁", category(a), group_index("外觀"))
@@ -4930,19 +4950,49 @@ function smoke_auto() end
         crate::update::Update::Available { version, .. } => Some(version.to_string()),
         _ => None,
     };
+    let update_row = |a: &App| -> Option<(usize, usize)> {
+        let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == zing_core::prefs::Kind::UpdateCheck)?;
+        let k = a.settings_page()?.rows().iter().position(|r| *r == crate::prefspage::Row::Field(i))?;
+        Some((i, k))
+    };
+    let update_button_pos = move || {
+        with_app(|a| {
+            let (i, k) = update_row(a)?;
+            a.side_reveal(k)?;
+            let list = a.settings_layout(a.layout.side_panel?).list;
+            let (row, _) = a.settings_row_rects(list, k, a.side_scroll());
+            a.field_button(i, row).map(|(b, _)| mid(b))
+        })
+        .flatten()
+    };
     v.push(step(
-        "更新：檢查到新版本，狀態列右側顯示提示",
+        "更新：「檢查更新」開啟設定，結果顯示在那一列、狀態列右側也顯示提示",
         |_| {
             *crate::update::TEST_LATEST.lock().unwrap() = Some("v99.1.0".into());
             exec("update.check");
         },
         move |_, a| {
+            expect("設定", a.settings_page().map(|p| p.category), zing_core::prefs::groups().iter().position(|g| *g == "一般"))?;
+            expect("那一列", update_row(a).is_some(), true)?;
             expect("新版本", available(a).as_deref(), Some("99.1.0"))?;
+            let (text, _) = a.update_row_text();
+            if !text.starts_with("有新版本 99.1.0") {
+                return Err(format!("那一列：{text}"));
+            }
+            expect("按鈕", a.update_button_label(), "下載並安裝")?;
             expect("提示", a.update_indicator_text().as_deref(), Some("有新版本 99.1.0"))?;
             a.layout = a.compute_layout();
             expect("提示的位置", a.layout.update_indicator.is_some(), true)
         },
     ));
+    v.push(step("截圖：設定的檢查更新", |_| {}, |c, _| screenshot(c, "33-檢查更新")));
+    v.push(step("更新：設定的「下載並安裝」（隔離模式不下載），Esc 關閉設定", move |c| {
+        click(c, "", update_button_pos());
+        key(c, "", VK_ESCAPE);
+    }, move |_, a| {
+        expect("狀態列", status(a).as_deref(), Some("效能與冒煙測試不安裝更新"))?;
+        expect("設定", a.settings_page().is_none(), true)
+    }));
     v.push(step("更新：點提示開啟選單", |c| click(c, "", update_indicator_pos()), |_, a| {
         let labels: Vec<String> = a.menu.as_ref().map(|m| m.levels[0].items.iter().map(|i| i.label.clone()).collect()).unwrap_or_default();
         expect("選單", labels, ["下載並安裝 99.1.0", "版本說明", "", "略過這個版本", "不再檢查更新"].map(String::from).to_vec())
@@ -4992,6 +5042,22 @@ function smoke_auto() end
         },
     ));
     v.push(step(
+        "更新：已是最新版本時，設定的「立即檢查」在那一列顯示結果",
+        move |c| {
+            let cur = zing_core::update::Version::current();
+            *crate::update::TEST_LATEST.lock().unwrap() = Some(format!("v{}.{}.{}", cur.major, cur.minor, cur.patch));
+            with_app(|a| a.open_settings_on(zing_core::prefs::Kind::UpdateCheck));
+            click(c, "", update_button_pos());
+        },
+        |_, a| {
+            let cur = zing_core::update::Version::current();
+            expect("那一列", a.update_row_text(), (format!("已是最新版本（{cur}）"), false))?;
+            expect("按鈕", a.update_button_label(), "立即檢查")?;
+            a.close_side_panels();
+            Ok(())
+        },
+    ));
+    v.push(step(
         "更新：還原設定（結束）",
         |_| {
             *crate::update::TEST_LATEST.lock().unwrap() = None;
@@ -5038,7 +5104,7 @@ function smoke_auto() end
                 a.first_run = false;
             });
             let on = with_app(|a| {
-                [welcome_on(a, "", Some(PrefKind::DefaultApp)), welcome_on(a, "show_hidden", None), welcome_on(a, "", Some(PrefKind::Action("index.install")))]
+                [welcome_on(a, "", Some(PrefKind::DefaultApp)), welcome_on(a, "show_hidden", None), welcome_on(a, "", Some(PrefKind::IndexService))]
             });
             c.notes.push(("welcome_first", format!("{on:?}")));
             key(c, "", VK_ESCAPE);
