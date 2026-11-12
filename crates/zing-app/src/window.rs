@@ -1241,9 +1241,10 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         // Shift+F10 照常交給 DefWindowProc（轉成 WM_CONTEXTMENU）
         WM_SYSKEYUP if wparam.0 == 0x79 && !Mods::current().shift => Some(LRESULT(0)),
         WM_CLOSE => {
-            // 還有檔案作業：確認後取消它們，隱藏視窗，等作業停止（最多 5 秒）再結束
+            // 最後一個視窗、還有檔案作業：確認後取消它們，隱藏視窗，等作業停止（最多 5 秒）再結束。
+            // 還有其他視窗時作業照樣進行（作業佇列介面在每個視窗都看得到，結果送給其他視窗）
             let active = with_app(|a| if a.pending_exit { 0 } else { a.jobs.active() }).unwrap_or(0);
-            if active > 0 {
+            if active > 0 && crate::hub::window_count() <= 1 {
                 exempt_stall();
                 let text = wide_z(&tr!("還有 {active} 個檔案作業尚未完成，結束 zing-explore 會取消這些作業。\n\n要結束嗎？", active));
                 let answer = unsafe { MessageBoxW(Some(hwnd), PCWSTR(text.as_ptr()), w!("zing-explore"), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) };
@@ -1274,6 +1275,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         }
         WM_DESTROY => {
             with_app(|a| {
+                crate::hub::unregister(a.win.id);
                 a.shell_host.shutdown();
                 if let Some(h) = a.shell_windows.take() {
                     h.stop();

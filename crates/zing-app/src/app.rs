@@ -314,7 +314,7 @@ impl App {
         zing_core::guard::set_reporter(move |m| reporter.status(m, true));
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
         let pool = Pool::new(threads);
-        let fileops = FileOps::new(notifier.clone(), !isolated);
+        let fileops = FileOps::new(crate::hub::Route { win: win.id, n: notifier.clone() }, !isolated);
         let icons = Icons::new(notifier.clone());
         let thumbs = crate::thumbs::Thumbs::new(notifier.clone(), crate::thumbs::cache_dir(isolated), crate::thumbs::custom_dir(isolated));
         thumbs.set_thumbnailers(config.thumbnailers.clone());
@@ -505,7 +505,24 @@ impl App {
             (w.x + step, w.y + step, w.w, w.h)
         });
         let isolated = self.isolated;
-        crate::hub::open_window(crate::hub::WindowInit { open: Some(path), rect, isolated, ..Default::default() });
+        let jobs = self
+            .jobs
+            .list
+            .iter()
+            .filter(|j| !j.is_finished())
+            .map(|j| crate::jobs::JobInfo { id: j.id, title: j.title.clone(), glyph: j.glyph, ctl: j.ctl.clone() })
+            .collect();
+        let inherit = crate::hub::Inherit { undo: self.undo_stack.clone(), redo: self.redo_stack.clone(), jobs };
+        crate::hub::open_window(crate::hub::WindowInit { open: Some(path), rect, isolated, inherit, ..Default::default() });
+    }
+
+    /// 接手開這個視窗的視窗的復原堆疊與進行中的作業
+    pub fn inherit(&mut self, inherit: crate::hub::Inherit) {
+        self.undo_stack = inherit.undo;
+        self.redo_stack = inherit.redo;
+        for j in inherit.jobs {
+            self.add_job(j);
+        }
     }
 
     /// 我的最愛改變：記到工作階段、通知其他視窗
@@ -516,6 +533,34 @@ impl App {
             session: self.session.favorites.clone(),
             order: self.session.favorite_order.clone(),
         });
+    }
+
+    /// 檔案作業改變了這些資料夾（這個視窗的作業，或其他視窗轉送來的 `Shared::FilesChanged`）：
+    /// 資料夾大小過時、樹狀列與分頁重新載入；`select`：作業結果要選取的項目（只在送出作業的視窗）
+    fn on_dirs_changed(&mut self, dirs: &[String], select: Option<&crate::services::Select>) {
+        for d in dirs {
+            self.sizes.mark_stale(d);
+            // 樹狀列：資料夾監看可能沒有涵蓋這個節點（收合中、超過監看數量），直接重新載入
+            self.tree.invalidate(d);
+            if self.tree.nodes.iter().any(|n| n.expanded && n.path.eq_ignore_ascii_case(d)) {
+                self.load_tree(d.clone(), TreeLoad::Refresh);
+            }
+        }
+        // 開在被刪除、移走的資料夾（或它裡面）的分頁
+        self.check_tabs_under(dirs);
+        for p in 0..self.panes.len() {
+            for t in 0..self.panes[p].tabs.len() {
+                let tp = self.panes[p].tabs[t].path.clone();
+                if !dirs.iter().any(|d| d.eq_ignore_ascii_case(&tp)) {
+                    continue;
+                }
+                if let Some(s) = select
+                    && s.dir.eq_ignore_ascii_case(&tp) && p == self.active_pane && t == self.panes[p].active {
+                        self.panes[p].tabs[t].pending_select = Some((s.name.clone(), s.rename));
+                    }
+                self.refresh(p, t);
+            }
+        }
     }
 
     /// 其他視窗的共用變更（不再轉送）
@@ -542,9 +587,24 @@ impl App {
                 self.rebuild_tree();
             }
             Shared::ConfigFiles => self.reload_config(false),
+            Shared::JobAdded(info) => self.add_job(info),
+            Shared::FilesChanged { dirs, renamed } => {
+                if let Some((old, new)) = &renamed {
+                    self.on_renamed(old, new, false);
+                }
+                self.on_dirs_changed(&dirs, None);
+            }
+            Shared::Undo(event) => self.on_undo_event(event),
+            Shared::FolderView { path, view, when } => self.folder_views.set(&path, view, when),
             #[cfg(feature = "smoke")]
             Shared::Probe(tx) => {
-                let _ = tx.send((self.theme_name.clone(), self.favorites.clone()));
+                let _ = tx.send(crate::hub::Probe {
+                    theme: self.theme_name.clone(),
+                    favorites: self.favorites.clone(),
+                    tab: self.tab().path.clone(),
+                    jobs: self.jobs.list.iter().map(|j| j.id).collect(),
+                    undo: self.undo_label().map(String::from),
+                });
             }
         }
     }
@@ -1157,39 +1217,26 @@ impl App {
                     }
                 }
             }
-            Msg::FileOpDone { dirs, error, select, renamed, vacated, origin, undo } => {
+            Msg::FileOpDone { dirs, error, select, renamed, vacated, origin, undo, win } => {
                 if let Some(e) = error {
                     self.set_status(e, true);
                 }
                 self.record_undo(origin, undo.map(|u| *u));
-                self.resume_watches(&vacated);
-                if let Some((old, new)) = renamed {
-                    self.on_renamed(&old, &new);
+                // 送出作業的視窗已關閉時，這個視窗收到它的結果：這裡的監看是經 Hub 暫停、恢復的
+                if win == self.win.id {
+                    self.resume_watches(&vacated);
                 }
-                for d in &dirs {
-                    self.sizes.mark_stale(d);
-                    // 樹狀列：資料夾監看可能沒有涵蓋這個節點（收合中、超過監看數量），直接重新載入
-                    self.tree.invalidate(d);
-                    if self.tree.nodes.iter().any(|n| n.expanded && n.path.eq_ignore_ascii_case(d)) {
-                        self.load_tree(d.clone(), TreeLoad::Refresh);
-                    }
+                if let Some((old, new)) = &renamed {
+                    self.on_renamed(old, new, true);
                 }
-                // 開在被刪除、移走的資料夾（或它裡面）的分頁
-                self.check_tabs_under(&dirs);
-                for p in 0..self.panes.len() {
-                    for t in 0..self.panes[p].tabs.len() {
-                        let tp = self.panes[p].tabs[t].path.clone();
-                        if !dirs.iter().any(|d| d.eq_ignore_ascii_case(&tp)) {
-                            continue;
-                        }
-                        if let Some(s) = &select
-                            && s.dir.eq_ignore_ascii_case(&tp) && p == self.active_pane && t == self.panes[p].active {
-                                self.panes[p].tabs[t].pending_select = Some((s.name.clone(), s.rename));
-                            }
-                        self.refresh(p, t);
-                    }
-                }
+                self.broadcast(crate::hub::Shared::FilesChanged { dirs: dirs.clone(), renamed });
+                self.on_dirs_changed(&dirs, select.as_ref());
             }
+            Msg::PauseWatches { paths, ack } => {
+                self.pause_watches(paths);
+                let _ = ack.send(crate::hub::PauseAck::Paused);
+            }
+            Msg::ResumeWatches(paths) => self.resume_watches(&paths),
             Msg::Status { text, error } => self.set_status(text, error),
             Msg::Icon { id, pixels } => self.icons.store(id, pixels),
             Msg::MenuRename => self.start_rename(),
@@ -1912,8 +1959,8 @@ impl App {
         self.invalidate();
     }
 
-    /// 資料夾改名後：我的最愛、分頁中的舊路徑換成新路徑
-    fn on_renamed(&mut self, old: &str, new: &str) {
+    /// 資料夾改名後：我的最愛、分頁中的舊路徑換成新路徑（`favorites`：其他視窗轉送來的不改我的最愛，那會另外送來）
+    fn on_renamed(&mut self, old: &str, new: &str, favorites: bool) {
         let replace = |v: &mut Vec<String>| {
             let mut changed = false;
             for f in v.iter_mut() {
@@ -1924,10 +1971,10 @@ impl App {
             }
             changed
         };
-        let fav = replace(&mut self.favorites);
-        replace(&mut self.session.favorites);
-        replace(&mut self.session.favorite_order);
+        let fav = favorites && replace(&mut self.favorites);
         if fav {
+            replace(&mut self.session.favorites);
+            replace(&mut self.session.favorite_order);
             self.favorites_changed();
             self.rebuild_tree();
         }

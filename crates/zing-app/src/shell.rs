@@ -45,7 +45,8 @@ use windows::core::{HRESULT, Interface, PCSTR, PCWSTR, PSTR, Ref, Result, implem
 
 use crate::jobs::{JobCtl, JobEvent, JobId};
 
-use crate::services::{Msg, Notifier, Select};
+use crate::hub::Route;
+use crate::services::{Msg, Select};
 
 const CMIC_MASK_UNICODE: u32 = 0x4000;
 const CMIC_MASK_SHIFT_DOWN: u32 = 0x1000_0000;
@@ -142,16 +143,15 @@ pub struct FileOps {
     queue: Sender<Queued>,
     /// 重新命名、新增資料夾：不排在大量複製後面
     quick: Sender<Queued>,
-    next_id: JobId,
 }
 
+/// 工作編號：整個程序唯一（作業佇列介面在每個視窗都顯示全部的作業）
+static NEXT_JOB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl FileOps {
-    pub fn new(n: Notifier, use_index: bool) -> Self {
-        Self {
-            queue: spawn_worker("zing-fileops", n.clone(), use_index),
-            quick: spawn_worker("zing-fileops-quick", n, use_index),
-            next_id: 1,
-        }
+    /// 每個視窗各一組作業執行緒；視窗關閉後排隊中的作業照樣做完（`Route` 把結果送給其他視窗）
+    pub fn new(n: Route, use_index: bool) -> Self {
+        Self { queue: spawn_worker("zing-fileops", n.clone(), use_index), quick: spawn_worker("zing-fileops-quick", n, use_index) }
     }
 
     /// 送出作業。耗時的作業回傳工作編號與控制旗標，交給作業佇列介面顯示
@@ -160,15 +160,14 @@ impl FileOps {
             let _ = self.quick.send((op, origin, None));
             return None;
         }
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = NEXT_JOB.fetch_add(1, Ordering::Relaxed);
         let ctl = Arc::new(JobCtl::default());
         let _ = self.queue.send((op, origin, Some((id, ctl.clone()))));
         Some((id, ctl))
     }
 }
 
-fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
+fn spawn_worker(name: &str, n: Route, use_index: bool) -> Sender<Queued> {
     let (tx, rx) = channel::<Queued>();
     std::thread::Builder::new()
         .name(name.into())
@@ -181,8 +180,8 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
                     && ctl.cancel.load(Ordering::Relaxed)
                 {
                     // 排隊中就取消了
-                    n.send(Msg::Job { id: *id, event: JobEvent::Finished { error: None, cancelled: true } });
-                    n.send(Msg::FileOpDone {
+                    n.job(*id, JobEvent::Finished { error: None, cancelled: true });
+                    n.done(Msg::FileOpDone {
                         dirs: Vec::new(),
                         error: None,
                         select: None,
@@ -190,6 +189,7 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
                         vacated: op.vacated(),
                         origin,
                         undo: None,
+                        win: n.win,
                     });
                     continue;
                 }
@@ -205,7 +205,7 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
                 let sink: Option<IFileOperationProgressSink> =
                     job.as_ref().map(|(id, ctl)| Progress::new(*id, ctl.clone(), n.clone(), log.clone()).into());
                 if let Some((id, ctl)) = &job {
-                    n.send(Msg::Job { id: *id, event: JobEvent::Running });
+                    n.job(*id, JobEvent::Running);
                     // 複製（及跨磁碟區的移動）另外計算總大小，介面才能換算速度；同一磁碟區的移動只是改名
                     if let FileOp::Transfer { sources, dest, mov } = &op {
                         let sources: Vec<String> = sources.iter().filter(|s| !*mov || !same_volume(s, dest)).cloned().collect();
@@ -214,7 +214,10 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
                         }
                     }
                 }
+                // 其他視窗開著要移走的資料夾也要暫停監看（送出的視窗已在送出時暫停）
+                n.pause_others(&vacated);
                 let result = perform(n.hwnd(), op, sink.as_ref());
+                n.resume_others(&vacated);
                 // 使用者取消時 Shell 回傳的錯誤碼不一定（ERROR_CANCELLED、E_ABORT、COPYENGINE_E_USER_CANCELLED）
                 let user_cancelled = job.as_ref().is_some_and(|(_, ctl)| ctl.cancel.load(Ordering::Relaxed));
                 let cancelled = matches!(&result, Err(e) if user_cancelled || is_cancel_code(e.code()));
@@ -229,12 +232,12 @@ fn spawn_worker(name: &str, n: Notifier, use_index: bool) -> Sender<Queued> {
                     Err(e) => (Some(e.message()), None),
                 };
                 if let Some((id, _)) = &job {
-                    n.send(Msg::Job { id: *id, event: JobEvent::Finished { error: error.clone(), cancelled } });
+                    n.job(*id, JobEvent::Finished { error: error.clone(), cancelled });
                 }
                 let renamed = rename.filter(|_| error.is_none() && !cancelled);
                 // 作業佇列介面會顯示錯誤，狀態列不再重複
                 let error = if job.is_some() { None } else { error };
-                n.send(Msg::FileOpDone { dirs, error, select, renamed, vacated, origin, undo: undo.map(Box::new) });
+                n.done(Msg::FileOpDone { dirs, error, select, renamed, vacated, origin, undo: undo.map(Box::new), win: n.win });
             }
         })
         .expect("無法建立檔案作業執行緒");
@@ -255,7 +258,7 @@ fn same_volume(a: &str, b: &str) -> bool {
 }
 
 /// 計算複製來源的總大小，完成後送出 `JobEvent::Total`（取消時不送）。資料夾優先問索引服務，否則逐資料夾加總
-fn spawn_total(id: JobId, ctl: Arc<JobCtl>, sources: Vec<String>, n: Notifier, use_index: bool) {
+fn spawn_total(id: JobId, ctl: Arc<JobCtl>, sources: Vec<String>, n: Route, use_index: bool) {
     let _ = std::thread::Builder::new().name("zing-job-total".into()).spawn(move || {
         zing_core::guard::io("計算複製來源的大小");
         let mut bytes = 0u64;
@@ -278,7 +281,7 @@ fn spawn_total(id: JobId, ctl: Arc<JobCtl>, sources: Vec<String>, n: Notifier, u
                 return;
             }
         }
-        n.send(Msg::Job { id, event: JobEvent::Total { bytes } });
+        n.job(id, JobEvent::Total { bytes });
     });
 }
 
@@ -295,7 +298,7 @@ fn is_cancel_code(hr: HRESULT) -> bool {
 struct Progress {
     id: JobId,
     ctl: Arc<JobCtl>,
-    n: Notifier,
+    n: Route,
     state: RefCell<ProgressState>,
     /// 完成的項目：（原本的路徑, 新的完整路徑；刪除到資源回收筒時是回收筒裡的項目的解析名稱）
     log: Arc<Mutex<Vec<(String, String)>>>,
@@ -316,7 +319,7 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 pub static TEST_PROGRESS_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Progress {
-    fn new(id: JobId, ctl: Arc<JobCtl>, n: Notifier, log: Arc<Mutex<Vec<(String, String)>>>) -> Self {
+    fn new(id: JobId, ctl: Arc<JobCtl>, n: Route, log: Arc<Mutex<Vec<(String, String)>>>) -> Self {
         let state = ProgressState { last_sent: Instant::now() - PROGRESS_INTERVAL, fraction: 0.0, current: String::new(), done: 0 };
         Self { id, ctl, n, state: RefCell::new(state), log }
     }
@@ -333,7 +336,7 @@ impl Progress {
     }
 
     fn send(&self, event: JobEvent) {
-        self.n.send(Msg::Job { id: self.id, event });
+        self.n.job(self.id, event);
     }
 
     /// 暫停就等到繼續或取消；取消回傳 ERROR_CANCELLED

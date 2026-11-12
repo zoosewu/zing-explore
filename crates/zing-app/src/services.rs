@@ -58,7 +58,13 @@ pub enum Msg {
         vacated: Vec<String>,
         origin: crate::shell::Origin,
         undo: Option<Box<crate::undo::Undo>>,
+        /// 送出作業的視窗（它已關閉時這個訊息送給其他視窗）
+        win: u32,
     },
+    /// 其他視窗的檔案作業要移走這些項目：暫停它們之下的監看，完成後回報（hub.rs）
+    PauseWatches { paths: Vec<String>, ack: std::sync::mpsc::Sender<crate::hub::PauseAck> },
+    /// 其他視窗的檔案作業結束：恢復監看
+    ResumeWatches(Vec<String>),
     Status { text: String, error: bool },
     Icon { id: u32, pixels: Option<crate::icons::IconPixels> },
     /// 縮圖（None：沒有縮圖，畫圖示）

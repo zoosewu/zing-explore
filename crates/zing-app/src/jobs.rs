@@ -21,13 +21,14 @@ use crate::view::{Hit, Layout};
 
 pub type JobId = u64;
 
-/// UI 與作業執行緒共用的控制旗標
-#[derive(Default)]
+/// UI 與作業執行緒共用的控制旗標（每個視窗的作業佇列介面共用同一個）
+#[derive(Default, Debug)]
 pub struct JobCtl {
     pub cancel: AtomicBool,
     pub pause: AtomicBool,
 }
 
+#[derive(Clone)]
 pub enum JobEvent {
     Running,
     Paused,
@@ -46,6 +47,15 @@ pub enum JobStatus {
     Done,
     Failed(String),
     Cancelled,
+}
+
+/// 告訴其他視窗的作業（`Shared::JobAdded`）
+#[derive(Clone, Debug)]
+pub struct JobInfo {
+    pub id: JobId,
+    pub title: String,
+    pub glyph: &'static str,
+    pub ctl: Arc<JobCtl>,
 }
 
 pub struct Job {
@@ -191,23 +201,31 @@ impl App {
         self.pause_watches(op.vacated());
         let (title, glyph) = describe(&op);
         if let Some((id, ctl)) = self.fileops.submit(op, origin) {
-            self.jobs.list.push(Job {
-                id,
-                title,
-                glyph,
-                status: JobStatus::Queued,
-                fraction: 0.0,
-                current: String::new(),
-                done: 0,
-                total: None,
-                speed: Speed::default(),
-                active: Duration::ZERO,
-                since: None,
-                finished_at: None,
-                ctl,
-            });
-            self.invalidate();
+            let info = JobInfo { id, title, glyph, ctl };
+            self.broadcast(crate::hub::Shared::JobAdded(info.clone()));
+            self.add_job(info);
         }
+    }
+
+    /// 作業佇列介面加入一個作業（這個視窗或其他視窗送出的）
+    pub fn add_job(&mut self, info: JobInfo) {
+        let JobInfo { id, title, glyph, ctl } = info;
+        self.jobs.list.push(Job {
+            id,
+            title,
+            glyph,
+            status: JobStatus::Queued,
+            fraction: 0.0,
+            current: String::new(),
+            done: 0,
+            total: None,
+            speed: Speed::default(),
+            active: Duration::ZERO,
+            since: None,
+            finished_at: None,
+            ctl,
+        });
+        self.invalidate();
     }
 
     pub fn on_job_event(&mut self, id: JobId, event: JobEvent) {

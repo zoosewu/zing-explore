@@ -136,6 +136,36 @@ fn cache_file() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("zing-explore").join("folder-sizes.tsv"))
 }
 
+/// 檔案中的記錄與各視窗送來的合併：同一個資料夾留時間較新的，最多 `CACHE_MAX` 筆（新的優先）
+pub fn merge_cache(file: Vec<CacheLine>, incoming: Vec<CacheLine>) -> Vec<CacheLine> {
+    let mut map: std::collections::HashMap<String, CacheLine> = std::collections::HashMap::new();
+    for c in file.into_iter().chain(incoming) {
+        let k = c.path.to_lowercase();
+        if map.get(&k).is_none_or(|old| c.when >= old.when) {
+            map.insert(k, c);
+        }
+    }
+    let mut v: Vec<CacheLine> = map.into_values().collect();
+    v.sort_unstable_by_key(|c| std::cmp::Reverse(c.when));
+    v.truncate(CACHE_MAX);
+    v
+}
+
+/// Hub 的執行緒：讀出檔案、合併、寫回
+pub fn write_cache(incoming: Vec<CacheLine>) {
+    zing_core::guard::io("儲存資料夾大小快取");
+    let Some(file) = cache_file() else { return };
+    let existing: Vec<CacheLine> =
+        std::fs::read_to_string(&file).map(|s| s.lines().filter_map(dirsize::parse_line).collect()).unwrap_or_default();
+    let lines = merge_cache(existing, incoming);
+    let mut text = String::with_capacity(lines.len() * 64);
+    for l in &lines {
+        text.push_str(&dirsize::to_line(l));
+        text.push('\n');
+    }
+    crate::hub::write_atomic(&file, &text);
+}
+
 impl App {
     /// 計算資料夾大小。`only_missing`：已有這次算出的值就略過（自動計算時）
     pub fn compute_folder_sizes(&mut self, p: usize, only_missing: bool, auto: bool) {
@@ -302,27 +332,11 @@ impl App {
         self.invalidate();
     }
 
+    /// 交給 Hub 寫入（多個視窗都會算資料夾大小：Hub 依序與檔案合併後寫入，不會互相蓋掉）
     fn save_size_cache(&self) {
-        if self.isolated {
-            return;
+        if !self.isolated {
+            crate::hub::save_sizes(self.sizes.snapshot());
         }
-        let Some(file) = cache_file() else { return };
-        let lines = self.sizes.snapshot();
-        self.pool.spawn(move || {
-            zing_core::guard::io("儲存資料夾大小快取");
-            let mut text = String::with_capacity(lines.len() * 64);
-            for l in &lines {
-                text.push_str(&dirsize::to_line(l));
-                text.push('\n');
-            }
-            if let Some(dir) = file.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let tmp = file.with_extension("tsv.tmp");
-            if std::fs::write(&tmp, text).is_ok() {
-                let _ = std::fs::rename(tmp, file);
-            }
-        });
     }
 
     /// 進入資料夾（列舉完成）時，若設定為自動就計算
@@ -337,4 +351,28 @@ impl App {
 pub fn new_cancel(old: &Arc<AtomicBool>) -> Arc<AtomicBool> {
     old.store(true, Ordering::Relaxed);
     Arc::new(AtomicBool::new(false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zing_core::dirsize::DirSize;
+
+    fn line(path: &str, bytes: u64, when: u64) -> CacheLine {
+        CacheLine { path: path.into(), size: DirSize { bytes, ..Default::default() }, when }
+    }
+
+    /// 兩個視窗各算了不同的資料夾：合併後都在；同一個資料夾留較新的（大小寫不同視為同一個）
+    #[test]
+    fn merge_keeps_both_windows_and_newer_entry() {
+        let file = vec![line(r"C:\a", 1, 10), line(r"C:\b", 2, 10)];
+        let incoming = vec![line(r"C:\A", 5, 20), line(r"C:\c", 3, 15), line(r"C:\b", 9, 5)];
+        let out = merge_cache(file, incoming);
+        let get = |p: &str| out.iter().find(|c| c.path.eq_ignore_ascii_case(p)).map(|c| c.size.bytes);
+        assert_eq!(out.len(), 3);
+        assert_eq!(get(r"C:\a"), Some(5));
+        assert_eq!(get(r"C:\b"), Some(2), "檔案中較新的不被舊的蓋掉");
+        assert_eq!(get(r"C:\c"), Some(3));
+        assert_eq!(out[0].when, 20, "新的在前");
+    }
 }

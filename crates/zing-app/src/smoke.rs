@@ -592,7 +592,7 @@ fn key(ctx: &Ctx, mods: &str, vk: VIRTUAL_KEY) {
 }
 
 /// 問其他視窗（hub 轉送）目前的（主題, 我的最愛）；沒有回答時是 None
-fn probe_others(a: &App) -> Option<(String, Vec<String>)> {
+fn probe_others(a: &App) -> Option<crate::hub::Probe> {
     let (tx, rx) = std::sync::mpsc::channel();
     crate::hub::broadcast(a.win.id, crate::hub::Shared::Probe(tx));
     rx.recv_timeout(Duration::from_millis(50)).ok()
@@ -4937,7 +4937,7 @@ function smoke_auto() end
         step(
             "多視窗：切換主題，其他視窗跟著換",
             |_| with_app(|a| a.exec("theme.toggle")).unwrap_or(()),
-            |_, a| expect("其他視窗的主題", probe_others(a).map(|(t, _)| t), Some(a.theme_name.clone())),
+            |_, a| expect("其他視窗的主題", probe_others(a).map(|p| p.theme), Some(a.theme_name.clone())),
         )
         .slow(),
     );
@@ -4947,7 +4947,7 @@ function smoke_auto() end
             |_| with_app(|a| a.exec("favorites.add")).unwrap_or(()),
             |_, a| {
                 expect("這個視窗", a.is_favorite(&a.tab().path.clone()), true)?;
-                expect("其他視窗的我的最愛", probe_others(a).map(|(_, f)| f), Some(a.favorites.clone()))
+                expect("其他視窗的我的最愛", probe_others(a).map(|p| p.favorites), Some(a.favorites.clone()))
             },
         )
         .slow(),
@@ -4963,7 +4963,7 @@ function smoke_auto() end
             },
             |_, a| {
                 expect("主題", a.theme_name.as_str(), "dark")?;
-                expect("其他視窗", probe_others(a), Some((a.theme_name.clone(), a.favorites.clone())))
+                expect("其他視窗", probe_others(a).map(|p| (p.theme, p.favorites)), Some((a.theme_name.clone(), a.favorites.clone())))
             },
         )
         .slow(),
@@ -4987,6 +4987,108 @@ function smoke_auto() end
                 expect("其他視窗", other_windows(c.hwnd).len(), 0)?;
                 expect("原本的視窗", a.panes.is_empty(), false)
             },
+        )
+        .slow(),
+    );
+    // 檔案作業：另一個視窗開著的資料夾也能改名（作業前經 Hub 暫停其他視窗的監看），復原的堆疊與作業佇列每個視窗一份
+    let mw_dir = path::join(&ctx.dir, "多視窗資料夾");
+    let mw_renamed = path::join(&ctx.dir, "多視窗資料夾改");
+    v.push(
+        step(
+            "多視窗：另一個視窗開著測試資料夾",
+            {
+                let mw_dir = mw_dir.clone();
+                move |_| {
+                    let _ = harness_io(|| std::fs::create_dir_all(&mw_dir));
+                    with_app(|a| a.exec(&format!("window.new --path=\"{mw_dir}\"")));
+                }
+            },
+            {
+                let mw_dir = mw_dir.clone();
+                move |c, a| {
+                    expect("其他視窗", other_windows(c.hwnd).len(), 1)?;
+                    expect("其他視窗的分頁", probe_others(a).map(|p| p.tab), Some(mw_dir.clone()))
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：改名另一個視窗開著的資料夾，那個視窗的分頁跟著換，復原的堆疊也一樣",
+            {
+                let mw_dir = mw_dir.clone();
+                move |_| {
+                    with_app(|a| a.submit_op(crate::shell::FileOp::Rename { path: mw_dir.clone(), new_name: "多視窗資料夾改".into() }));
+                }
+            },
+            {
+                let (mw_dir, mw_renamed) = (mw_dir.clone(), mw_renamed.clone());
+                move |_, a| {
+                    if !exists(&mw_renamed) || exists(&mw_dir) {
+                        return Err("沒有改名（其他視窗的監看沒有暫停？）".into());
+                    }
+                    let p = probe_others(a).ok_or("其他視窗沒有回答")?;
+                    expect("其他視窗的分頁", p.tab, mw_renamed.clone())?;
+                    expect("其他視窗的復原", p.undo, a.undo_label().map(String::from))
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：復原改名，其他視窗的堆疊跟著變",
+            |_| with_app(|a| a.exec("file.undo")).unwrap_or(()),
+            {
+                let mw_dir = mw_dir.clone();
+                move |_, a| {
+                    if !exists(&mw_dir) {
+                        return Err("沒有復原".into());
+                    }
+                    let p = probe_others(a).ok_or("其他視窗沒有回答")?;
+                    expect("其他視窗的分頁", p.tab, mw_dir.clone())?;
+                    expect("其他視窗的復原", p.undo, a.undo_label().map(String::from))
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：作業佇列在每個視窗都有同一個作業",
+            {
+                let mw_dir = mw_dir.clone();
+                move |c| {
+                    let src = c.sub("多視窗複製.txt");
+                    let _ = harness_io(|| std::fs::write(&src, "x"));
+                    with_app(|a| a.exec(&format!("copy \"{src}\" --to=\"{mw_dir}\"")));
+                }
+            },
+            |_, a| {
+                let id = a.jobs.list.last().map(|j| j.id).ok_or("沒有作業")?;
+                let p = probe_others(a).ok_or("其他視窗沒有回答")?;
+                expect("其他視窗有這個作業", p.jobs.contains(&id), true)
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：關閉測試的視窗",
+            |c| {
+                for (h, _) in other_windows(c.hwnd) {
+                    unsafe {
+                        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                            Some(h),
+                            windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
+                }
+            },
+            |c, _| expect("其他視窗", other_windows(c.hwnd).len(), 0),
         )
         .slow(),
     );

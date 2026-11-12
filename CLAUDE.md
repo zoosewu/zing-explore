@@ -64,6 +64,11 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   其餘在 `windows`；關掉的不是最後一個視窗就不再還原它。共用的狀態（設定、主題、我的最愛、快速鍵與命令列的檔案）改了就
   `App::broadcast` 一個 `hub::Shared`，其他視窗在 `on_shared` 套用、不再轉送；新增共用的狀態時同步加一種 `Shared`。
   只做一次的事（檢查更新、索引服務的版本、修正預設的檔案總管、歡迎畫面、還原其他視窗）只在 `WinInfo::primary` 的視窗做。
+  檔案作業：每個視窗一組作業執行緒，經 `hub::Route` 回報——進度送給每個視窗（作業佇列介面每個視窗都有全部的作業，
+  `Shared::JobAdded`），完成（`FileOpDone`）送給送出的視窗，它已關閉就送給其他視窗；所以關閉不是最後一個的視窗不取消作業。
+  作業前 `Route::pause_others` 經 Hub 暫停其他視窗在 `vacated` 之下的監看並等它們回報（最多 500 ms），結束後恢復。
+  復原與重做的堆疊每個視窗一份相同的（`UndoEvent` 轉送；新視窗以 `hub::Inherit` 接手）。
+  資料夾大小與檢視設定的快取檔只由 Hub 寫（`hub::save_sizes` 與檔案合併、`hub::folder_view` 同時轉送給其他視窗）。
   程序層級的狀態（`static`）會被所有視窗共用：新增時想清楚是否該依視窗（例：`shellwin` 的狀態依視窗、`guard` 的 UI 執行緒依執行緒）。
 - 會阻塞的操作開頭呼叫 `zing_core::guard::io("說明")`。debug build 在 UI 執行緒呼叫時，狀態列會顯示錯誤與程式位置；確有必要的例外用 `let _allow = guard::allow_io("原因")` 包住並寫明原因。debug build 另有卡頓監看：UI 訊息處理超過 100 ms 會回報。
 - 不必模擬輸入也能測命令：`zing --perf-out=結果.json --perf-dir=資料夾 --perf-idle-ms=2000 --perf-exec="命令"`，debug build 的防呆回報會寫進結果的 `guard_violations`（應為空陣列）。注意 `--perf-exec` 會真的執行命令，不要拿有外部副作用的命令（如 `config.edit`、檔案作業）在真實資料上測。

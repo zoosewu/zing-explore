@@ -1,7 +1,8 @@
 //! 每個資料夾記住自己的檢視設定（`zing_core::folderview`）：進入資料夾時套用，變更排序時記下。
 //!
-//! 檔案在 %LOCALAPPDATA%\zing-explore\folders.tsv（可重建的系統資料，見 CLAUDE.md），第一幀之後在背景讀取，
-//! 變更時在背景寫入。隔離模式（效能、冒煙測試）不讀寫檔案，記憶體內照常運作。
+//! 檔案在 %LOCALAPPDATA%\zing-explore\folders.tsv（可重建的系統資料，見 CLAUDE.md），第一幀之後在背景讀取；
+//! 變更送給 Hub（hub.rs）寫入並轉送給其他視窗（`Shared::FolderView`）。隔離模式（效能、冒煙測試）不讀寫檔案，
+//! 記憶體內照常運作（同樣轉送給其他視窗）。
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,7 +16,7 @@ use crate::services::Msg;
 pub const THUMB_MIN: u16 = 48;
 pub const THUMB_MAX: u16 = 256;
 
-fn file() -> Option<PathBuf> {
+pub fn file() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("zing-explore").join("folders.tsv"))
 }
 
@@ -35,26 +36,9 @@ impl App {
         view.mode = tab.mode;
         view.thumb = tab.thumb;
         let path = tab.path.clone();
-        self.folder_views.set(&path, view, now_secs());
-        self.save_folder_views();
-    }
-
-    fn save_folder_views(&self) {
-        if self.isolated {
-            return;
-        }
-        let Some(file) = file() else { return };
-        let text = self.folder_views.to_text();
-        self.pool.spawn(move || {
-            zing_core::guard::io("儲存資料夾檢視設定");
-            if let Some(dir) = file.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let tmp = file.with_extension("tsv.tmp");
-            if std::fs::write(&tmp, text).is_ok() {
-                let _ = std::fs::rename(tmp, file);
-            }
-        });
+        let when = now_secs();
+        self.folder_views.set(&path, view, when);
+        crate::hub::folder_view(self.win.id, path, view, when, !self.isolated);
     }
 
     /// 切換檢視：list、small、medium、large（縮圖 64／128／192）或 thumbnails（沿用目前的縮圖大小）

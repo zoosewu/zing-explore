@@ -114,7 +114,7 @@ pub fn window_thread(init: hub::WindowInit) {
 }
 
 fn run(init: hub::WindowInit) -> windows::core::Result<()> {
-    let hub::WindowInit { perf, smoke, open, primary, restore, rect, id, .. } = init;
+    let hub::WindowInit { perf, smoke, open, primary, restore, rect, id, inherit, .. } = init;
     let is_perf = perf.is_some();
     let isolated = is_perf || smoke.is_some() || init.isolated;
     window::register_class();
@@ -141,7 +141,8 @@ fn run(init: hub::WindowInit) -> windows::core::Result<()> {
 
     // 先建立 App 並開始背景列舉，再顯示視窗：資料可能在第一幀前就到了
     let info = hub::WinInfo { id, primary, isolated };
-    let app = app::App::new(hwnd, dpi, perf, smoke.as_ref().map(|s| s.dir().to_string()), open, info, restore)?;
+    let mut app = app::App::new(hwnd, dpi, perf, smoke.as_ref().map(|s| s.dir().to_string()), open, info, restore)?;
+    app.inherit(inherit);
     app::apply_window_theme(hwnd, &app.theme);
     window::refresh_edit_style(&app);
     window::APP.with(|a| *a.borrow_mut() = Some(app));

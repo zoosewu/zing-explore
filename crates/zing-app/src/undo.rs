@@ -83,6 +83,17 @@ pub fn undo_of(op: &FileOp, created: Option<&str>, log: &[(String, String)]) -> 
     Some(Undo { label, ops, redo: op.clone() })
 }
 
+/// 復原與重做堆疊的變化：每個視窗各有一份相同的堆疊，變化轉送給其他視窗（`Shared::Undo`）
+#[derive(Clone, Debug)]
+pub enum UndoEvent {
+    /// 作業完成（`record_undo`）
+    Record(Origin, Undo),
+    /// 復原了最上面的作業（移到重做的堆疊）
+    Undo,
+    /// 重做了最上面的作業
+    Redo,
+}
+
 impl App {
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
@@ -98,9 +109,9 @@ impl App {
     }
 
     pub fn undo(&mut self) {
-        let Some(u) = self.undo_stack.pop() else { return };
+        let Some(u) = self.pop_undo() else { return };
+        self.broadcast(crate::hub::Shared::Undo(UndoEvent::Undo));
         self.set_status(tr!("復原：{what}", what = u.label), false);
-        self.redo_stack.push((u.label.clone(), u.redo));
         for op in u.ops {
             self.submit_op_from(op, Origin::Undo);
         }
@@ -108,12 +119,41 @@ impl App {
 
     pub fn redo(&mut self) {
         let Some((label, op)) = self.redo_stack.pop() else { return };
+        self.broadcast(crate::hub::Shared::Undo(UndoEvent::Redo));
         self.set_status(tr!("重做：{what}", what = label), false);
         self.submit_op_from(op, Origin::Redo);
     }
 
-    /// 作業完成：一般作業與重做記進復原的堆疊；新的一般作業清掉重做的堆疊
+    fn pop_undo(&mut self) -> Option<Undo> {
+        let u = self.undo_stack.pop()?;
+        self.redo_stack.push((u.label.clone(), u.redo.clone()));
+        Some(u)
+    }
+
+    /// 其他視窗的堆疊變化
+    pub fn on_undo_event(&mut self, event: UndoEvent) {
+        match event {
+            UndoEvent::Record(origin, u) => self.apply_record(origin, Some(u)),
+            UndoEvent::Undo => {
+                self.pop_undo();
+            }
+            UndoEvent::Redo => {
+                self.redo_stack.pop();
+            }
+        }
+        self.invalidate();
+    }
+
+    /// 作業完成：記進堆疊並告訴其他視窗
     pub fn record_undo(&mut self, origin: Origin, undo: Option<Undo>) {
+        if let Some(u) = &undo {
+            self.broadcast(crate::hub::Shared::Undo(UndoEvent::Record(origin, u.clone())));
+        }
+        self.apply_record(origin, undo);
+    }
+
+    /// 一般作業與重做記進復原的堆疊；新的一般作業清掉重做的堆疊
+    fn apply_record(&mut self, origin: Origin, undo: Option<Undo>) {
         match origin {
             Origin::Normal => {
                 if let Some(u) = undo {
@@ -212,7 +252,7 @@ mod shell_tests {
         std::fs::write(&file, "x").unwrap();
         let file_s = file.to_string_lossy().into_owned();
         let (n, rx) = Notifier::new(windows::Win32::Foundation::HWND::default());
-        let mut ops = FileOps::new(n, false);
+        let mut ops = FileOps::new(crate::hub::Route { win: 0, n }, false);
 
         // 改名、復原
         ops.submit(FileOp::Rename { path: file_s.clone(), new_name: "改名後.txt".into() }, Origin::Normal);
