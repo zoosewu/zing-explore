@@ -3725,6 +3725,43 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         },
     ));
     v.push(step(
+        "樹狀列鍵盤：焦點在資料夾節點時，檔案命令的對象是那個節點（不是清單的選取）",
+        move |_| {
+            with_app(|a| {
+                a.focus = Focus::Tree;
+                a.tree.focus = cur_node(a).unwrap_or(0);
+                a.exec("file.properties");
+            });
+        },
+        move |_, a| {
+            let p = a.tab().path.clone();
+            expect("對象", a.tree_command_target(), Some((crate::model::NodeKind::Folder, p.clone())))?;
+            expect("複製可以按", a.cmd_disabled("file.copy"), None)?;
+            expect("內容", crate::ctxmenu::TEST_PROPERTIES.lock().unwrap().take(), Some(vec![p]))
+        },
+    ));
+    v.push(step(
+        "樹狀列鍵盤：在我的最愛節點按 Delete 只從我的最愛移除（資料夾還在）",
+        {
+            let dir_b = dir_b.clone();
+            move |c| {
+                with_app(|a| {
+                    a.focus = Focus::Tree;
+                    let k = a.tree.nodes.iter().position(|n| n.kind == crate::model::NodeKind::Favorite && n.path == dir_b);
+                    a.tree.focus = k.unwrap_or(0);
+                });
+                key(c, "", VIRTUAL_KEY(0x2E));
+            }
+        },
+        {
+            let dir_b = dir_b.clone();
+            move |_, a| {
+                expect("從我的最愛移除", a.favorites.iter().any(|f| f.eq_ignore_ascii_case(&dir_b)), false)?;
+                expect("資料夾還在", exists(&dir_b), true)
+            }
+        },
+    ));
+    v.push(step(
         "我的最愛：移除測試項目",
         {
             let (dir_a, dir_b) = (dir_a.clone(), dir_b.clone());

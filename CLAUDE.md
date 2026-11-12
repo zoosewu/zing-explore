@@ -101,6 +101,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   （改動時跑 `cargo bench -p zing-core --bench core -- ntfs`，`search_1m_*` 不可明顯退步）。
 - 樹狀列展開中的節點由 `services::TreeWatch` 監看（一條執行緒、只看子資料夾名稱，最多 63 個），變更合併 250 ms 後
   以 `TreeLoad::Refresh` 重新載入並 `reconcile`。
+- 樹狀列有鍵盤焦點時，檔案命令（複製、剪下、貼上、刪除、內容、複製路徑、重新命名）的對象是焦點節點，與清單相同的按鍵
+  （`App::tree_command_target`，與樹狀列的右鍵選單同一個 `tree_menu_target`；`command_paths` 依焦點選對象），
+  命令列按鈕的「不能用」也跟著焦點走。我的最愛的節點按 Delete 只從我的最愛移除，磁碟機不能刪除。
 - 分頁開著的資料夾被刪除或改名（資料夾監看看不到自己被刪除）：上層的子資料夾變更（樹狀列監看）、檔案作業完成時，
   在背景確認它下面的分頁（`services::check_gone`）；重新整理時找不到也一樣（`Msg::ListingError` 的 `gone`）。
   不在了就移到仍存在的上層（`App::on_folder_gone`）。只限列舉成功過的路徑（`Tab::shown`），輸入錯的路徑照樣顯示錯誤。

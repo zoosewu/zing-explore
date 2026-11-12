@@ -96,9 +96,21 @@ impl App {
         let tab = self.tab();
         let pane = &self.panes[self.active_pane];
         let in_pc = tab.path.is_empty();
-        // 與檔案總管相同：沒有選取（只有焦點）時剪下、複製等按鈕是灰色的
-        let has_sel = tab.selection_count().0 > 0;
+        // 與檔案總管相同：沒有選取（只有焦點）時剪下、複製等按鈕是灰色的；焦點在樹狀列時對象是焦點節點
+        let tree = (self.focus == crate::app::Focus::Tree).then(|| self.tree_command_target());
+        let has_sel = match &tree {
+            Some(t) => t.is_some(),
+            None => tab.selection_count().0 > 0,
+        };
+        let tree_kind = tree.flatten().map(|(k, _)| k);
+        use crate::model::NodeKind;
         match cmd {
+            "file.delete" | "file.delete --permanent" if tree_kind == Some(NodeKind::Drive) => Some(tr!("磁碟機不能刪除")),
+            "file.rename" | "file.batchrename" | "thumb.set" | "thumb.clear" | "file.delete --permanent"
+                if tree_kind.is_some_and(|k| k != NodeKind::Folder) =>
+            {
+                Some(tr!("只能對資料夾這樣做"))
+            }
             "file.cut" | "file.copy" | "file.delete" | "file.delete --permanent" | "file.rename" | "file.batchrename" | "thumb.set" | "thumb.clear"
                 if !has_sel =>
             {

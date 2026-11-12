@@ -1340,7 +1340,7 @@ impl App {
             Cmd::JobsToggle => self.jobs_toggle(),
             Cmd::JobsClear => self.jobs_clear(),
             Cmd::FileCopy | Cmd::FileCut => {
-                let paths = self.tab().target_paths();
+                let paths = self.command_paths();
                 if paths.is_empty() {
                     return Ok(());
                 }
@@ -1348,16 +1348,30 @@ impl App {
                 self.shell_host.submit(ShellJob::SetClipboard { paths, cut });
             }
             Cmd::FilePaste => {
-                let dest = self.tab().path.clone();
+                // 焦點在樹狀列：貼到焦點節點的資料夾
+                let dest = match self.tree_command_target() {
+                    Some((_, p)) => p,
+                    None => self.tab().path.clone(),
+                };
                 if dest.is_empty() {
                     return Err(tr!("無法貼到「此電腦」").into());
                 }
                 self.shell_host.submit(ShellJob::Paste { dest });
             }
             Cmd::FileDelete => {
-                let paths = self.tab().target_paths();
-                if !paths.is_empty() && !self.tab().path.is_empty() {
-                    self.submit_op(FileOp::Delete { paths, permanent: inv.has("permanent") });
+                let permanent = inv.has("permanent");
+                match self.tree_command_target() {
+                    // 樹狀列：我的最愛只從我的最愛移除，磁碟機不能刪除
+                    Some((NodeKind::Favorite, p)) => self.remove_favorite(&p)?,
+                    Some((NodeKind::Drive, _)) => return Err(tr!("磁碟機不能刪除").into()),
+                    Some((_, p)) => self.submit_op(FileOp::Delete { paths: vec![p], permanent }),
+                    None if self.focus == Focus::Tree => {}
+                    None => {
+                        let paths = self.tab().target_paths();
+                        if !paths.is_empty() && !self.tab().path.is_empty() {
+                            self.submit_op(FileOp::Delete { paths, permanent });
+                        }
+                    }
                 }
             }
             // 選取多個項目時開啟批次重新命名
@@ -1389,7 +1403,7 @@ impl App {
                 self.submit_op(FileOp::NewFile { dir });
             }
             Cmd::FileProperties => {
-                let paths = self.tab().target_paths();
+                let paths = self.command_paths();
                 let paths = if paths.is_empty() { vec![self.tab().path.clone()] } else { paths };
                 self.show_properties(paths);
             }
@@ -1422,7 +1436,7 @@ impl App {
             Cmd::FileUndo => self.undo(),
             Cmd::FileRedo => self.redo(),
             Cmd::FileCopypath => {
-                let paths = self.tab().target_paths();
+                let paths = self.command_paths();
                 let text = if paths.is_empty() { self.tab().path.clone() } else { paths.join("\r\n") };
                 self.shell_host.submit(ShellJob::SetText { text, status: tr!("已複製路徑").into(), reply: None });
             }
@@ -1951,6 +1965,26 @@ impl App {
         self.closed_tabs.push(ClosedTab { index: t, path: std::mem::take(&mut tab.path), back: std::mem::take(&mut tab.back), forward: std::mem::take(&mut tab.forward) });
         self.sync_tree();
         self.invalidate();
+    }
+
+    /// 鍵盤焦點在樹狀列時檔案命令的對象：焦點節點的種類與路徑（與樹狀列的右鍵選單相同，`tree_menu_target`）；
+    /// 焦點不在樹狀列、或節點沒有路徑（我的最愛、此電腦的標題）時是 None
+    pub fn tree_command_target(&self) -> Option<(NodeKind, String)> {
+        if self.focus != Focus::Tree {
+            return None;
+        }
+        let i = self.tree.focus;
+        self.tree_menu_target(i)?;
+        self.tree.nodes.get(i).map(|n| (n.kind, n.path.clone()))
+    }
+
+    /// 檔案命令（複製、剪下、內容、複製路徑）的對象：焦點在樹狀列時是焦點節點，否則是清單的選取（沒有選取時是焦點項目）
+    pub fn command_paths(&self) -> Vec<String> {
+        match self.tree_command_target() {
+            Some((_, p)) => vec![p],
+            None if self.focus == Focus::Tree => Vec::new(),
+            None => self.tab().target_paths(),
+        }
     }
 
     pub fn has_closed_tabs(&self) -> bool {
