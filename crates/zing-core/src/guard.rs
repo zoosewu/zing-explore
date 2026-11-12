@@ -6,29 +6,33 @@
 
 #[cfg(debug_assertions)]
 mod imp {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::panic::Location;
-    use std::sync::{Mutex, OnceLock};
-    use std::thread::ThreadId;
+    use std::sync::Mutex;
 
-    static UI_THREAD: OnceLock<ThreadId> = OnceLock::new();
-    static REPORTER: OnceLock<Box<dyn Fn(String) + Send + Sync>> = OnceLock::new();
     static VIOLATIONS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+    type Reporter = Box<dyn Fn(String)>;
+
+    // 每個視窗一條 UI 執行緒：是否為 UI 執行緒、回報到哪個視窗都依執行緒
     thread_local! {
         static ALLOWED: Cell<u32> = const { Cell::new(0) };
+        static UI_THREAD: Cell<bool> = const { Cell::new(false) };
+        static REPORTER: RefCell<Option<Reporter>> = const { RefCell::new(None) };
     }
 
+    /// 這條執行緒是 UI 執行緒（每個視窗的執行緒各呼叫一次）
     pub fn mark_ui_thread() {
-        let _ = UI_THREAD.set(std::thread::current().id());
+        UI_THREAD.with(|u| u.set(true));
     }
 
-    pub fn set_reporter(f: impl Fn(String) + Send + Sync + 'static) {
-        let _ = REPORTER.set(Box::new(f));
+    /// 這條 UI 執行緒的回報方式（顯示在它的視窗）
+    pub fn set_reporter(f: impl Fn(String) + 'static) {
+        REPORTER.with(|r| *r.borrow_mut() = Some(Box::new(f)));
     }
 
     pub fn on_ui_thread() -> bool {
-        UI_THREAD.get() == Some(&std::thread::current().id())
+        UI_THREAD.with(Cell::get)
     }
 
     #[track_caller]
@@ -44,9 +48,14 @@ mod imp {
         if let Ok(mut v) = VIOLATIONS.lock() {
             v.push(msg.clone());
         }
-        if let Some(r) = REPORTER.get() {
-            r(msg);
-        }
+        // 回報器正在執行（重入）時不再回報
+        REPORTER.with(|r| {
+            if let Ok(r) = r.try_borrow()
+                && let Some(f) = r.as_ref()
+            {
+                f(msg);
+            }
+        });
     }
 
     pub struct AllowIo(());
@@ -70,7 +79,7 @@ mod imp {
 #[cfg(not(debug_assertions))]
 mod imp {
     pub fn mark_ui_thread() {}
-    pub fn set_reporter(_f: impl Fn(String) + Send + Sync + 'static) {}
+    pub fn set_reporter(_f: impl Fn(String) + 'static) {}
     pub fn on_ui_thread() -> bool {
         false
     }

@@ -155,30 +155,31 @@ struct State {
     pidl: Option<Pidl>,
 }
 
-static STATE: Mutex<Option<State>> = Mutex::new(None);
+/// 每個視窗各一份（多個視窗各自登記）：COM 物件與登記的執行緒共用
+type Shared = std::sync::Arc<Mutex<Option<State>>>;
 
 thread_local! {
     static TYPE_INFO: RefCell<Option<Option<ITypeInfo>>> = const { RefCell::new(None) };
 }
 
-fn with_state<R>(f: impl FnOnce(&State) -> R) -> Option<R> {
-    STATE.lock().ok()?.as_ref().map(f)
+fn with_state<R>(st: &Shared, f: impl FnOnce(&State) -> R) -> Option<R> {
+    st.lock().ok()?.as_ref().map(f)
 }
 
 fn run(hwnd: HWND, notifier: Notifier, rx: Receiver<Req>, ready: Sender<u32>) {
     if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
         return;
     }
-    *STATE.lock().unwrap() = Some(State { hwnd: hwnd.0 as isize, notifier, path: String::new(), pidl: None });
+    let st: Shared = std::sync::Arc::new(Mutex::new(Some(State { hwnd: hwnd.0 as isize, notifier, path: String::new(), pidl: None })));
     // 先建立訊息佇列，再告訴 UI 執行緒可以 PostThreadMessage
     let mut msg = MSG::default();
     unsafe {
         let _ = windows::Win32::UI::WindowsAndMessaging::PeekMessageW(&mut msg, None, 0, 0, windows::Win32::UI::WindowsAndMessaging::PM_NOREMOVE);
     }
     let _ = ready.send(unsafe { GetCurrentThreadId() });
-    let view: IShellView = View.into();
-    let browser: IShellBrowser = Browser { view }.into();
-    let app: IWebBrowserApp = Window { browser }.into();
+    let view: IShellView = View { st: st.clone() }.into();
+    let browser: IShellBrowser = Browser { view, st: st.clone() }.into();
+    let app: IWebBrowserApp = Window { browser, st: st.clone() }.into();
     let windows: Option<IShellWindows> = unsafe { CoCreateInstance(&ShellWindows, None, CLSCTX_ALL).ok() };
     let mut cookie: Option<i32> = None;
     'outer: while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
@@ -200,7 +201,7 @@ fn run(hwnd: HWND, notifier: Notifier, rx: Receiver<Req>, ready: Sender<u32>) {
                 }
             }
             if let (Some(sw), Some(path)) = (&windows, show) {
-                cookie = register(sw, &app, cookie, path);
+                cookie = register(&st, sw, &app, cookie, path);
             }
             continue;
         }
@@ -212,13 +213,13 @@ fn run(hwnd: HWND, notifier: Notifier, rx: Receiver<Req>, ready: Sender<u32>) {
             break;
         }
     }
-    STATE.lock().unwrap().take();
+    st.lock().unwrap().take();
     drop((app, windows));
     unsafe { CoUninitialize() };
 }
 
 /// 取消舊的登記，以新的位置重新登記；回傳新的 cookie
-fn register(sw: &IShellWindows, app: &IWebBrowserApp, old: Option<i32>, path: String) -> Option<i32> {
+fn register(st: &Shared, sw: &IShellWindows, app: &IWebBrowserApp, old: Option<i32>, path: String) -> Option<i32> {
     zing_core::guard::io("登記到 ShellWindows（跨程序呼叫 Explorer）");
     unsafe {
         if let Some(c) = old {
@@ -226,8 +227,8 @@ fn register(sw: &IShellWindows, app: &IWebBrowserApp, old: Option<i32>, path: St
         }
     }
     let pidl = Pidl::folder(&path);
-    let hwnd = HWND(with_state(|s| s.hwnd)? as _);
-    if let Some(s) = STATE.lock().unwrap().as_mut() {
+    let hwnd = HWND(with_state(st, |s| s.hwnd)? as _);
+    if let Some(s) = st.lock().unwrap().as_mut() {
         s.path = path;
         s.pidl = pidl.as_ref().map(Pidl::clone_of);
     }
@@ -246,7 +247,7 @@ fn register(sw: &IShellWindows, app: &IWebBrowserApp, old: Option<i32>, path: St
 /// 擁有的 ITEMIDLIST
 struct Pidl(*mut ITEMIDLIST);
 
-// 只在 STATE 的鎖之內使用
+// 只在 State 的鎖之內使用
 unsafe impl Send for Pidl {}
 
 impl Pidl {
@@ -283,21 +284,21 @@ impl Drop for Pidl {
 }
 
 /// 目前資料夾之下的項目（`SelectItem`、相對的 `BrowseObject` 傳來的是相對 ITEMIDLIST）的完整路徑
-fn child_path(child: *const ITEMIDLIST) -> Option<String> {
+fn child_path(st: &Shared, child: *const ITEMIDLIST) -> Option<String> {
     let full = {
-        let s = STATE.lock().ok()?;
+        let s = st.lock().ok()?;
         let base = s.as_ref()?.pidl.as_ref()?;
         Pidl(unsafe { ILCombine(Some(base.0), Some(child)) })
     };
     Pidl::path(full.0)
 }
 
-fn send(msg: Msg) {
-    with_state(|s| s.notifier.send(msg));
+fn send(st: &Shared, msg: Msg) {
+    with_state(st, |s| s.notifier.send(msg));
 }
 
-fn current_path() -> String {
-    with_state(|s| s.path.clone()).unwrap_or_default()
+fn current_path(st: &Shared) -> String {
+    with_state(st, |s| s.path.clone()).unwrap_or_default()
 }
 
 fn nope<T>() -> Result<T> {
@@ -310,6 +311,7 @@ fn nope<T>() -> Result<T> {
 #[implement(IWebBrowserApp, IServiceProvider)]
 struct Window {
     browser: IShellBrowser,
+    st: Shared,
 }
 
 fn type_info() -> Option<ITypeInfo> {
@@ -377,7 +379,7 @@ impl IWebBrowser_Impl for Window_Impl {
         } else {
             url
         };
-        send(Msg::ShellOpen(path));
+        send(&self.st, Msg::ShellOpen(path));
         Ok(())
     }
     fn Refresh(&self) -> Result<()> {
@@ -433,7 +435,7 @@ impl IWebBrowser_Impl for Window_Impl {
     }
     fn LocationName(&self) -> Result<BSTR> {
         let name = (|| {
-            let s = STATE.lock().ok()?;
+            let s = self.st.lock().ok()?;
             let p = s.as_ref()?.pidl.as_ref()?;
             unsafe { take_name(SHGetNameFromIDList(p.0, SIGDN_NORMALDISPLAY).ok()?) }
         })();
@@ -441,7 +443,7 @@ impl IWebBrowser_Impl for Window_Impl {
     }
     /// 目前資料夾的 file:// 網址（「此電腦」是空字串，與 Explorer 相同）
     fn LocationURL(&self) -> Result<BSTR> {
-        let path = current_path();
+        let path = current_path(&self.st);
         if path.is_empty() {
             return Ok(BSTR::new());
         }
@@ -472,7 +474,7 @@ impl IWebBrowserApp_Impl for Window_Impl {
         Ok(BSTR::from("zing-explore"))
     }
     fn HWND(&self) -> Result<SHANDLE_PTR> {
-        Ok(SHANDLE_PTR(with_state(|s| s.hwnd).unwrap_or(0)))
+        Ok(SHANDLE_PTR(with_state(&self.st, |s| s.hwnd).unwrap_or(0)))
     }
     fn FullName(&self) -> Result<BSTR> {
         Ok(BSTR::from(crate::defaultapp::current_exe()))
@@ -522,11 +524,12 @@ impl IWebBrowserApp_Impl for Window_Impl {
 #[implement(IShellBrowser)]
 struct Browser {
     view: IShellView,
+    st: Shared,
 }
 
 impl IOleWindow_Impl for Browser_Impl {
     fn GetWindow(&self) -> Result<HWND> {
-        with_state(|s| HWND(s.hwnd as _)).ok_or(E_NOTIMPL.into())
+        with_state(&self.st, |s| HWND(s.hwnd as _)).ok_or(E_NOTIMPL.into())
     }
     fn ContextSensitiveHelp(&self, _: BOOL) -> Result<()> {
         nope()
@@ -555,14 +558,14 @@ impl IShellBrowser_Impl for Browser_Impl {
     /// 換資料夾：絕對、相對於目前的資料夾，或上一層
     fn BrowseObject(&self, pidl: *const ITEMIDLIST, flags: u32) -> Result<()> {
         let path = if flags & SBSP_PARENT != 0 {
-            zing_core::path::parent(&current_path())
+            zing_core::path::parent(&current_path(&self.st))
         } else if flags & SBSP_RELATIVE != 0 {
-            child_path(pidl)
+            child_path(&self.st, pidl)
         } else {
             Pidl::path(pidl)
         };
         let path = path.ok_or(windows::core::Error::from(E_NOTIMPL))?;
-        send(Msg::ShellOpen(path));
+        send(&self.st, Msg::ShellOpen(path));
         Ok(())
     }
     fn GetViewStateStream(&self, _: u32) -> Result<IStream> {
@@ -586,11 +589,13 @@ impl IShellBrowser_Impl for Browser_Impl {
 }
 
 #[implement(IShellView)]
-struct View;
+struct View {
+    st: Shared,
+}
 
 impl IOleWindow_Impl for View_Impl {
     fn GetWindow(&self) -> Result<HWND> {
-        with_state(|s| HWND(s.hwnd as _)).ok_or(E_NOTIMPL.into())
+        with_state(&self.st, |s| HWND(s.hwnd as _)).ok_or(E_NOTIMPL.into())
     }
     fn ContextSensitiveHelp(&self, _: BOOL) -> Result<()> {
         nope()
@@ -630,8 +635,8 @@ impl IShellView_Impl for View_Impl {
         if flags & SVSI_SELECT == 0 {
             return Ok(());
         }
-        let path = child_path(pidl).ok_or(windows::core::Error::from(E_NOTIMPL))?;
-        send(Msg::ShellSelect { path, rename: flags & SVSI_EDIT == SVSI_EDIT });
+        let path = child_path(&self.st, pidl).ok_or(windows::core::Error::from(E_NOTIMPL))?;
+        send(&self.st, Msg::ShellSelect { path, rename: flags & SVSI_EDIT == SVSI_EDIT });
         Ok(())
     }
     fn GetItemObject(&self, _: &_SVGIO, _: *const GUID, _: *mut *mut core::ffi::c_void) -> Result<()> {

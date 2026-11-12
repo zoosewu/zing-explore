@@ -10,6 +10,7 @@ mod ctxmenu;
 mod defaultapp;
 mod edit;
 mod gfx;
+mod hub;
 mod icons;
 mod index;
 mod instance;
@@ -86,7 +87,6 @@ fn main() {
     let perf = perf::Perf::from_args(&args);
     let smoke = smoke::Smoke::from_args(&args);
     perf::mark("main");
-    zing_core::guard::mark_ui_thread();
     let isolated = perf.is_some() || smoke.is_some();
     // 命令列的資料夾（設為預設的檔案總管後由 Windows 傳入）；隔離模式不看
     let open = match zing_core::startup::parse_args(&args).filter(|_| !isolated) {
@@ -101,6 +101,14 @@ fn main() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
+    hub::run(hub::WindowInit { perf, smoke, open });
+    update::relaunch();
+}
+
+/// 視窗的執行緒（hub.rs）：建立視窗與 App，處理訊息直到視窗關閉
+pub fn window_thread(init: hub::WindowInit) {
+    zing_core::guard::mark_ui_thread();
+    let hub::WindowInit { perf, smoke, open } = init;
     if let Err(e) = run(perf, smoke, open) {
         fatal(&tr!("zing-explore 無法啟動：{e}", e = e.message()));
     }
@@ -109,7 +117,7 @@ fn main() {
 fn run(perf: Option<perf::Perf>, smoke: Option<smoke::Smoke>, open: Option<String>) -> windows::core::Result<()> {
     let is_perf = perf.is_some();
     let isolated = is_perf || smoke.is_some();
-    window::register_class()?;
+    window::register_class();
     let saved = if isolated {
         None
     } else {
@@ -163,7 +171,6 @@ fn run(perf: Option<perf::Perf>, smoke: Option<smoke::Smoke>, open: Option<Strin
         }
     }
     window::APP.with(|a| a.borrow_mut().take());
-    update::relaunch();
     Ok(())
 }
 

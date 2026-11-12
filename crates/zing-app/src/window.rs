@@ -67,7 +67,15 @@ fn lparam_xy(lparam: LPARAM) -> (i32, i32) {
     ((v & 0xFFFF) as i16 as i32, (v >> 16) as i16 as i32)
 }
 
-pub fn register_class() -> windows::core::Result<()> {
+/// 註冊視窗類別（每個程序一次；第二個視窗起直接回傳）
+pub fn register_class() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = register_class_once();
+    });
+}
+
+fn register_class_once() -> windows::core::Result<()> {
     unsafe {
         let instance = GetModuleHandleW(None)?;
         let wc = WNDCLASSEXW {

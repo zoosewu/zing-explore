@@ -58,6 +58,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 ### 規則
 
 - UI 執行緒禁止：檔案 I/O、網路、等待鎖、會阻塞的 Shell 呼叫。工作交給 `services::Pool`，結果經 `Notifier` 送回。
+- 多視窗（`hub.rs`）：每個視窗一條 UI 執行緒、各有一個 `App`（`window::APP` 是 thread_local），一個視窗卡住不影響其他視窗。
+  主執行緒是 Hub：開視窗的執行緒（`hub::open_window`），最後一個視窗結束時結束程序；視窗送給 Hub 的訊息經 channel，不等待回覆。
+  程序層級的狀態（`static`）會被所有視窗共用：新增時想清楚是否該依視窗（例：`shellwin` 的狀態依視窗、`guard` 的 UI 執行緒依執行緒）。
 - 會阻塞的操作開頭呼叫 `zing_core::guard::io("說明")`。debug build 在 UI 執行緒呼叫時，狀態列會顯示錯誤與程式位置；確有必要的例外用 `let _allow = guard::allow_io("原因")` 包住並寫明原因。debug build 另有卡頓監看：UI 訊息處理超過 100 ms 會回報。
 - 不必模擬輸入也能測命令：`zing --perf-out=結果.json --perf-dir=資料夾 --perf-idle-ms=2000 --perf-exec="命令"`，debug build 的防呆回報會寫進結果的 `guard_violations`（應為空陣列）。注意 `--perf-exec` 會真的執行命令，不要拿有外部副作用的命令（如 `config.edit`、檔案作業）在真實資料上測。
 - 所有背景任務都必須可取消（換資料夾時中止舊任務），結果分批送回 UI；以 generation 丟棄過時結果。
