@@ -59,7 +59,11 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 
 - UI 執行緒禁止：檔案 I/O、網路、等待鎖、會阻塞的 Shell 呼叫。工作交給 `services::Pool`，結果經 `Notifier` 送回。
 - 多視窗（`hub.rs`）：每個視窗一條 UI 執行緒、各有一個 `App`（`window::APP` 是 thread_local），一個視窗卡住不影響其他視窗。
-  主執行緒是 Hub：開視窗的執行緒（`hub::open_window`），最後一個視窗結束時結束程序；視窗送給 Hub 的訊息經 channel，不等待回覆。
+  主執行緒是 Hub：開視窗的執行緒（`hub::open_window`，`window.new`／Ctrl+N），最後一個視窗結束時結束程序；視窗送給 Hub 的訊息經 channel，不等待回覆。
+  session.toml 只有 Hub 寫：各視窗送快照（`App::save_session` → `hub::snapshot`），第一個視窗在最上層（舊版讀得懂）、
+  其餘在 `windows`；關掉的不是最後一個視窗就不再還原它。共用的狀態（設定、主題、我的最愛、快速鍵與命令列的檔案）改了就
+  `App::broadcast` 一個 `hub::Shared`，其他視窗在 `on_shared` 套用、不再轉送；新增共用的狀態時同步加一種 `Shared`。
+  只做一次的事（檢查更新、索引服務的版本、修正預設的檔案總管、歡迎畫面、還原其他視窗）只在 `WinInfo::primary` 的視窗做。
   程序層級的狀態（`static`）會被所有視窗共用：新增時想清楚是否該依視窗（例：`shellwin` 的狀態依視窗、`guard` 的 UI 執行緒依執行緒）。
 - 會阻塞的操作開頭呼叫 `zing_core::guard::io("說明")`。debug build 在 UI 執行緒呼叫時，狀態列會顯示錯誤與程式位置；確有必要的例外用 `let _allow = guard::allow_io("原因")` 包住並寫明原因。debug build 另有卡頓監看：UI 訊息處理超過 100 ms 會回報。
 - 不必模擬輸入也能測命令：`zing --perf-out=結果.json --perf-dir=資料夾 --perf-idle-ms=2000 --perf-exec="命令"`，debug build 的防呆回報會寫進結果的 `guard_violations`（應為空陣列）。注意 `--perf-exec` 會真的執行命令，不要拿有外部副作用的命令（如 `config.edit`、檔案作業）在真實資料上測。
@@ -280,7 +284,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   圖示與版本資訊由 `build.rs` 以 Windows SDK 的 `rc.exe` 編譯進執行檔。
 - 資料存放位置：
   - 使用者的設定與習慣放在 `zing.exe` 所在的資料夾（可攜式，重灌系統不受影響）：`config.toml`（設定）、
-    `themes\*.toml`（主題）、`session.toml`（視窗、分頁、我的最愛與其順序、命令面板最近使用）、
+    `themes\*.toml`（主題）、`session.toml`（每個視窗的位置與分頁、我的最愛與其順序、命令面板最近使用）、
     `keys.toml`（快速鍵編輯器寫的按鍵，只含與預設＋config.toml 不同的，見 `zing_core::keyedit`）、
     `toolbar.toml`（命令列的按鈕，「自訂命令列」寫的，見 `zing_core::cmdbar`）、`script-settings.toml`（腳本的 `setting()`）。
     路徑一律經 `settings::app_dir()`。

@@ -781,6 +781,16 @@ tab.closeright()
 tab.reopen()
 ```
 
+### `window.new(opts?)`
+
+開新視窗（預設為目前資料夾）
+
+- `opts?`：{path?: string}
+
+```lua
+window.new{ path = "C:\\" }
+```
+
 ### `tab.moveleft()`
 
 分頁往左移

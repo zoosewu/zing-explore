@@ -386,10 +386,12 @@ impl App {
         if !self.isolated {
             let text = keyedit::to_toml(&keyedit::overrides(&self.config.config_keys, &self.config.keys));
             let n = self.notifier.clone();
+            let id = self.win.id;
             self.pool.spawn(move || {
                 zing_core::guard::io("儲存快速鍵");
-                if let Err(e) = std::fs::write(crate::settings::keys_path(), text) {
-                    n.status(tr!("無法儲存 keys.toml：{e}", e), true);
+                match std::fs::write(crate::settings::keys_path(), text) {
+                    Ok(()) => crate::hub::broadcast(id, crate::hub::Shared::ConfigFiles),
+                    Err(e) => n.status(tr!("無法儲存 keys.toml：{e}", e), true),
                 }
             });
         }

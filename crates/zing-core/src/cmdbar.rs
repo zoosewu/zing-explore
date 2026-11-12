@@ -174,6 +174,7 @@ pub const MORE_MENU: &[Entry] = &[
         tr_key!("分頁與窗格"),
         &[
             Cmd("tab.new"),
+            Cmd("window.new"),
             Cmd("tab.close"),
             Cmd("tab.closeothers"),
             Cmd("tab.reopen"),

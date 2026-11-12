@@ -866,9 +866,13 @@ fn deferred_init(hwnd: HWND) {
             unsafe {
                 SetTimer(Some(hwnd), crate::app::TIMER_INDEX, crate::app::INDEX_POLL_MS, None);
             }
-            a.check_index_version();
-            a.startup_update();
-            a.refresh_default_app(true);
+            // 只在程式啟動時的第一個視窗做一次（索引服務的更新會跳出 UAC）
+            if a.win.primary {
+                a.check_index_version();
+                a.startup_update();
+                a.restore_other_windows();
+            }
+            a.refresh_default_app(a.win.primary);
             if a.first_run {
                 a.open_welcome();
             }
@@ -1244,7 +1248,6 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 let text = wide_z(&tr!("還有 {active} 個檔案作業尚未完成，結束 zing-explore 會取消這些作業。\n\n要結束嗎？", active));
                 let answer = unsafe { MessageBoxW(Some(hwnd), PCWSTR(text.as_ptr()), w!("zing-explore"), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) };
                 if answer == IDYES {
-                    let _allow = zing_core::guard::allow_io("結束時儲存工作階段（之後程序即結束）");
                     with_app(|a| {
                         a.save_session();
                         a.cancel_all_jobs();
@@ -1263,7 +1266,6 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 }
                 return Some(LRESULT(0));
             }
-            let _allow = zing_core::guard::allow_io("結束時儲存工作階段（之後程序即結束）");
             with_app(|a| a.save_session());
             unsafe {
                 let _ = DestroyWindow(hwnd);

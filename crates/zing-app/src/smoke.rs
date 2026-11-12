@@ -591,6 +591,32 @@ fn key(ctx: &Ctx, mods: &str, vk: VIRTUAL_KEY) {
     key_to(ctx.hwnd, mods, vk);
 }
 
+/// 問其他視窗（hub 轉送）目前的（主題, 我的最愛）；沒有回答時是 None
+fn probe_others(a: &App) -> Option<(String, Vec<String>)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::hub::broadcast(a.win.id, crate::hub::Shared::Probe(tx));
+    rx.recv_timeout(Duration::from_millis(50)).ok()
+}
+
+/// 這個程序的其他 zing 視窗（多視窗）：(視窗, 標題)
+fn other_windows(main: HWND) -> Vec<(HWND, String)> {
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowTextW, GetWindowThreadProcessId};
+    let mut out = Vec::new();
+    let mut after: Option<HWND> = None;
+    while let Ok(h) = unsafe { FindWindowExW(None, after, windows::core::w!("zing.main"), windows::core::PCWSTR::null()) } {
+        after = Some(h);
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+        if h == main || pid != std::process::id() {
+            continue;
+        }
+        let mut buf = [0u16; 512];
+        let n = unsafe { GetWindowTextW(h, &mut buf) } as usize;
+        out.push((h, String::from_utf16_lossy(&buf[..n])));
+    }
+    out
+}
+
 fn letter(c: char) -> VIRTUAL_KEY {
     VIRTUAL_KEY(c.to_ascii_uppercase() as u16)
 }
@@ -3161,7 +3187,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             cfg.theme = a.theme_name.clone();
             f(&mut cfg);
             let theme = a.theme.clone();
-            a.on_service_msg(crate::services::Msg::ConfigLoaded { config: Box::new(cfg), theme, warnings: Vec::new() });
+            a.on_service_msg(crate::services::Msg::ConfigLoaded { config: Box::new(cfg), theme: Some(theme), warnings: Vec::new() });
         });
     };
     v.push(step(
@@ -4885,6 +4911,81 @@ function smoke_auto() end
             },
             |_, a| {
                 if a.scripts.has("smoke_cmd") { Err("測試命令還在".into()) } else { Ok(()) }
+            },
+        )
+        .slow(),
+    );
+
+    // ------------------------------------------------ 多視窗（hub.rs）：每個視窗一條 UI 執行緒
+    v.push(
+        step(
+            "多視窗：Ctrl+N 以目前的資料夾開新視窗，在另一條 UI 執行緒",
+            |c| key(c, "c", letter('n')),
+            |c, a| {
+                let others = other_windows(c.hwnd);
+                expect("新視窗數", others.len(), 1)?;
+                let (h, title) = &others[0];
+                expect("標題", title.clone(), format!("{} - zing-explore", a.tab().title()))?;
+                let thread = unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(*h, None) };
+                let mine = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+                if thread == mine { Err("新視窗在同一條執行緒".into()) } else { Ok(()) }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：切換主題，其他視窗跟著換",
+            |_| with_app(|a| a.exec("theme.toggle")).unwrap_or(()),
+            |_, a| expect("其他視窗的主題", probe_others(a).map(|(t, _)| t), Some(a.theme_name.clone())),
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：加入我的最愛，其他視窗跟著更新",
+            |_| with_app(|a| a.exec("favorites.add")).unwrap_or(()),
+            |_, a| {
+                expect("這個視窗", a.is_favorite(&a.tab().path.clone()), true)?;
+                expect("其他視窗的我的最愛", probe_others(a).map(|(_, f)| f), Some(a.favorites.clone()))
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：還原主題與我的最愛（其他視窗同樣還原）",
+            |_| {
+                with_app(|a| {
+                    a.exec("favorites.remove");
+                    a.exec("theme.toggle");
+                });
+            },
+            |_, a| {
+                expect("主題", a.theme_name.as_str(), "dark")?;
+                expect("其他視窗", probe_others(a), Some((a.theme_name.clone(), a.favorites.clone())))
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "多視窗：關閉新視窗，原本的視窗照常運作",
+            |c| {
+                for (h, _) in other_windows(c.hwnd) {
+                    unsafe {
+                        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                            Some(h),
+                            windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
+                }
+            },
+            |c, a| {
+                expect("其他視窗", other_windows(c.hwnd).len(), 0)?;
+                expect("原本的視窗", a.panes.is_empty(), false)
             },
         )
         .slow(),

@@ -285,10 +285,12 @@ impl App {
         }
         let text = core::to_toml(&self.config.cmdbar);
         let n = self.notifier.clone();
+        let id = self.win.id;
         self.pool.spawn(move || {
             zing_core::guard::io("儲存命令列");
-            if let Err(e) = std::fs::write(crate::settings::toolbar_path(), text) {
-                n.status(tr!("無法儲存 toolbar.toml：{e}", e), true);
+            match std::fs::write(crate::settings::toolbar_path(), text) {
+                Ok(()) => crate::hub::broadcast(id, crate::hub::Shared::ConfigFiles),
+                Err(e) => n.status(tr!("無法儲存 toolbar.toml：{e}", e), true),
             }
         });
     }

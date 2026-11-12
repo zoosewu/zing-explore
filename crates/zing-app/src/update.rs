@@ -463,11 +463,8 @@ impl App {
             return self.set_status(tr!("還有檔案作業尚未完成，完成後再重新啟動"), true);
         }
         RESTART.store(true, Ordering::Relaxed);
-        unsafe {
-            use windows::Win32::Foundation::{LPARAM, WPARAM};
-            use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
-            let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-        }
+        // 所有視窗照一般方式關閉，最後一個結束後才啟動新版
+        crate::hub::close_all();
     }
 }
 

@@ -980,3 +980,5 @@
 "已啟用" = "Enabled"
 "只能對資料夾這樣做" = "Only folders can do this"
 "磁碟機不能刪除" = "Drives can't be deleted"
+"開新視窗（預設為目前資料夾）" = "Open a new window (the current folder by default)"
+"新增視窗" = "New window"

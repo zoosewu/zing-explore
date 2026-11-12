@@ -99,6 +99,9 @@ impl App {
     pub fn on_theme_loaded(&mut self, name: String, result: Result<Theme, String>) {
         match result {
             Ok(theme) => {
+                if !self.theme_loaded_from_hub(&name) {
+                    self.broadcast(crate::hub::Shared::Theme(name.clone()));
+                }
                 self.theme_name = name.clone();
                 // 編輯面板開著：存檔後的狀態成為新的還原點
                 if let Some(ed) = self.theme_editor_mut() {

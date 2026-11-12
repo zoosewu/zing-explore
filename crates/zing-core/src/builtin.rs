@@ -128,6 +128,7 @@ builtins! {
     TabCloseothers, TABS, Some("tab") => spec("tab.closeothers", &[], tr_key!("關閉其他分頁（同一個窗格）"), "tab.closeothers()");
     TabCloseright, TABS, Some("tab") => spec("tab.closeright", &[], tr_key!("關閉右側的分頁"), "tab.closeright()");
     TabReopen, TABS, Some("tab") => spec("tab.reopen", &[], tr_key!("重新開啟最近關閉的分頁"), "tab.reopen()");
+    WindowNew, TABS, None => spec("window.new", &["opts? {path?: string}"], tr_key!("開新視窗（預設為目前資料夾）"), "window.new{ path = \"C:\\\\\" }");
     TabMoveleft, TABS, Some("tab") => spec("tab.moveleft", &[], tr_key!("分頁往左移"), "tab.moveleft()");
     TabMoveright, TABS, Some("tab") => spec("tab.moveright", &[], tr_key!("分頁往右移"), "tab.moveright()");
     PaneSplit, TABS, Some("split") => spec("pane.split", &[], tr_key!("分割出新窗格"), "pane.split()");
@@ -265,6 +266,7 @@ pub const PRESETS: &[Preset] = &[
     titled("sel.none", tr_key!("取消選取")),
     titled("sel.invert", tr_key!("反向選取")),
     titled("tab.new", tr_key!("新增分頁")),
+    titled("window.new", tr_key!("新增視窗")),
     titled("tab.close", tr_key!("關閉分頁")),
     titled("tab.next", tr_key!("下一個分頁")),
     titled("tab.prev", tr_key!("上一個分頁")),

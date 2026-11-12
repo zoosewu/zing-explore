@@ -411,6 +411,7 @@ impl App {
             return;
         }
         self.apply_config(&old);
+        self.broadcast(crate::hub::Shared::Pref { key: p.key.to_string(), value: value.clone() });
         if p.key == "theme" {
             self.load_theme_by_name(value.clone());
         }

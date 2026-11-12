@@ -123,6 +123,23 @@ pub struct Session {
     pub favorite_order: Vec<String>,
     /// 命令面板最近執行的命令（最新在前）
     pub palette_recent: Vec<String>,
+    /// 第二個以後的視窗（多視窗）；第一個視窗就是上面的欄位，舊版讀得懂
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<WindowSession>,
+}
+
+/// 一個視窗自己的工作階段（位置、窗格、分頁、樹狀列、預覽、欄寬）；其餘（主題、我的最愛…）是所有視窗共用的
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowSession {
+    pub window: Option<WindowState>,
+    pub panes: Vec<PaneState>,
+    pub active_pane: usize,
+    pub tree_visible: bool,
+    pub tree_width: Option<f32>,
+    pub preview_visible: bool,
+    pub preview_width: Option<f32>,
+    pub columns: Option<[f32; 3]>,
 }
 
 impl Default for Session {
@@ -140,11 +157,44 @@ impl Default for Session {
             favorites: Vec::new(),
             favorite_order: Vec::new(),
             palette_recent: Vec::new(),
+            windows: Vec::new(),
         }
     }
 }
 
+impl Default for WindowSession {
+    fn default() -> Self {
+        Session::default().window_part()
+    }
+}
+
 impl Session {
+    /// 這個視窗自己的部分
+    pub fn window_part(&self) -> WindowSession {
+        WindowSession {
+            window: self.window.clone(),
+            panes: self.panes.clone(),
+            active_pane: self.active_pane,
+            tree_visible: self.tree_visible,
+            tree_width: self.tree_width,
+            preview_visible: self.preview_visible,
+            preview_width: self.preview_width,
+            columns: self.columns,
+        }
+    }
+
+    /// 換成另一個視窗的部分（共用的不變）
+    pub fn set_window_part(&mut self, w: WindowSession) {
+        self.window = w.window;
+        self.panes = w.panes;
+        self.active_pane = w.active_pane;
+        self.tree_visible = w.tree_visible;
+        self.tree_width = w.tree_width;
+        self.preview_visible = w.preview_visible;
+        self.preview_width = w.preview_width;
+        self.columns = w.columns;
+    }
+
     /// 程式旁已經有 session.toml（不是第一次啟動）
     pub fn exists() -> bool {
         zing_core::guard::io("確認工作階段是否存在");

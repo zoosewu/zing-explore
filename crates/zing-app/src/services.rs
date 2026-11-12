@@ -74,7 +74,12 @@ pub enum Msg {
     /// 剪貼簿上的檔案已讀出，交給檔案作業佇列
     Paste { sources: Vec<String>, dest: String, cut: bool },
     /// 背景重新讀取的設定與主題
-    ConfigLoaded { config: Box<zing_core::config::Config>, theme: zing_core::theme::Theme, warnings: Vec<String> },
+    /// 重新讀取的設定；`theme` 為 None 時主題不變（其他視窗改了快速鍵、命令列的檔案）
+    ConfigLoaded { config: Box<zing_core::config::Config>, theme: Option<zing_core::theme::Theme>, warnings: Vec<String> },
+    /// 其他視窗的共用變更（hub.rs）
+    Shared(crate::hub::Shared),
+    /// 關閉這個視窗（Hub：安裝更新後重新啟動）
+    CloseWindow,
     /// 背景讀取的主題（theme.set）
     ThemeLoaded { name: String, result: Result<zing_core::theme::Theme, String> },
     /// 主題檔寫入完成（另存、覆蓋、匯入）

@@ -159,6 +159,9 @@ cmd = "sel.invert"
 key = "Ctrl+T"
 cmd = "tab.new"
 [[key]]
+key = "Ctrl+N"
+cmd = "window.new"
+[[key]]
 key = "Ctrl+W"
 cmd = "tab.close"
 [[key]]

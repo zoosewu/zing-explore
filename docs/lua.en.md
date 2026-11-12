@@ -781,6 +781,16 @@ Reopen the most recently closed tab
 tab.reopen()
 ```
 
+### `window.new(opts?)`
+
+Open a new window (the current folder by default)
+
+- `opts?`: {path?: string}
+
+```lua
+window.new{ path = "C:\\" }
+```
+
 ### `tab.moveleft()`
 
 Move tab left

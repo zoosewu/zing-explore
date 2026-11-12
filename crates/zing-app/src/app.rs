@@ -260,20 +260,34 @@ pub struct App {
     /// 第一次啟動（程式旁沒有 session.toml）：第一幀之後顯示歡迎畫面
     pub first_run: bool,
     session: Session,
+    /// 這個視窗（多視窗，hub.rs）
+    pub win: crate::hub::WinInfo,
+    /// 其他視窗切換的主題正在載入：載入完成時不再轉送
+    theme_from_hub: Option<String>,
 }
 
 impl App {
     /// `smoke_dir`：冒煙測試的起始資料夾（使用預設設定與深色主題，結果才可重現）；`open`：命令列要開啟的資料夾
-    pub fn new(hwnd: HWND, dpi: f32, perf: Option<Perf>, smoke_dir: Option<String>, open: Option<String>) -> windows::core::Result<Self> {
-        let isolated = perf.is_some() || smoke_dir.is_some();
+    /// `win`：這是哪個視窗；`restore`：還原上次的視窗（第二個以後的視窗）
+    pub fn new(
+        hwnd: HWND,
+        dpi: f32,
+        perf: Option<Perf>,
+        smoke_dir: Option<String>,
+        open: Option<String>,
+        win: crate::hub::WinInfo,
+        restore: Option<settings::WindowSession>,
+    ) -> windows::core::Result<Self> {
+        let isolated = win.isolated;
         let mut first_run = false;
         // 第一幀之前必須知道設定與主題；檔案很小且在本機，屬於明確的例外
-        let (mut config, warnings, session, theme, theme_warning, theme_name) = if smoke_dir.is_some() {
+        // 冒煙測試（與它開出的視窗）用預設設定
+        let (mut config, warnings, mut session, theme, theme_warning, theme_name) = if smoke_dir.is_some() || (isolated && perf.is_none()) {
             let (config, warnings) = Config::load(None);
             (config, warnings, Session::default(), Theme::dark(), None, "dark".to_string())
         } else {
             let _allow = zing_core::guard::allow_io("啟動時讀取設定、主題與工作階段");
-            first_run = !isolated && !Session::exists();
+            first_run = !isolated && win.primary && !Session::exists();
             let (config, warnings) = settings::load_config();
             let session = if isolated { Session::default() } else { Session::load() };
             // 最後選用的主題優先於設定檔
@@ -281,6 +295,11 @@ impl App {
             let (theme, theme_warning) = settings::resolve_theme(&theme_name);
             (config, warnings, session, theme, theme_warning, theme_name)
         };
+        // 第二個以後的視窗：共用的部分（我的最愛、主題…）照讀，視窗自己的是還原的或新的
+        if !win.primary {
+            session.set_window_part(restore.unwrap_or_default());
+            session.windows.clear();
+        }
         // 隔離模式（效能、冒煙測試）固定用繁體中文，結果才可重現
         if isolated {
             config.language = zing_core::i18n::Lang::ZhTw;
@@ -290,6 +309,7 @@ impl App {
         let gfx = Gfx::new(hwnd, dpi, &theme, perf.is_some())?;
         crate::perf::mark("gfx");
         let (notifier, rx) = Notifier::new(hwnd);
+        crate::hub::register(win.id, notifier.clone());
         let reporter = notifier.clone();
         zing_core::guard::set_reporter(move |m| reporter.status(m, true));
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
@@ -388,6 +408,8 @@ impl App {
             closed_tabs: Vec::new(),
             first_run,
             session,
+            win,
+            theme_from_hub: None,
         };
 
         // 起始分頁：效能測試固定從「此電腦」開始；否則依設定（startup）與命令列要開啟的資料夾
@@ -396,6 +418,15 @@ impl App {
             (vec![PaneTabs { tabs: vec![d], active: 0 }], 0)
         } else if app.perf.is_some() {
             (vec![PaneTabs { tabs: vec![String::new()], active: 0 }], 0)
+        } else if !app.win.primary {
+            // 還原的視窗照它的分頁；Ctrl+N 開的視窗只有要開的資料夾
+            let panes: Vec<PaneTabs> =
+                app.session.panes.iter().map(|p| PaneTabs { tabs: p.tabs.clone(), active: p.active }).collect();
+            if panes.is_empty() {
+                (vec![PaneTabs { tabs: vec![open.clone().unwrap_or_default()], active: 0 }], 0)
+            } else {
+                (panes, app.session.active_pane)
+            }
         } else {
             let session: Vec<PaneTabs> =
                 app.session.panes.iter().map(|p| PaneTabs { tabs: p.tabs.clone(), active: p.active }).collect();
@@ -441,24 +472,90 @@ impl App {
             favorites: self.session.favorites.clone(),
             favorite_order: self.session.favorite_order.clone(),
             palette_recent: self.palette_recent.clone(),
+            windows: Vec::new(),
         }
     }
 
-    /// 結束時同步儲存（之後程序即結束，不能交給背景）
+    /// 送出工作階段的快照，Hub 合併所有視窗後寫入 session.toml（不等待；隔離模式不送）
     pub fn save_session(&self) {
         if !self.isolated {
-            let _ = self.session_snapshot().save();
+            crate::hub::snapshot(self.win.id, self.session_snapshot());
         }
     }
 
-    /// 執行中的儲存交給背景執行緒
-    fn save_session_async(&self) {
-        if !self.isolated {
-            let snapshot = self.session_snapshot();
-            self.pool.spawn(move || {
-                let _ = snapshot.save();
-            });
+    /// 共用的變更轉送給其他視窗
+    pub fn broadcast(&self, shared: crate::hub::Shared) {
+        crate::hub::broadcast(self.win.id, shared);
+    }
+
+    /// 上次開著的其他視窗（第一個視窗在第一幀之後；啟動時開啟「還原上次的分頁」才還原）
+    pub fn restore_other_windows(&mut self) {
+        if !self.win.primary || self.isolated || self.config.startup != zing_core::config::Startup::Session {
+            return;
         }
+        for w in std::mem::take(&mut self.session.windows) {
+            crate::hub::open_window(crate::hub::WindowInit { restore: Some(w), ..Default::default() });
+        }
+    }
+
+    /// 開新視窗（`window.new`，Ctrl+N）：目前的資料夾，位置比這個視窗往右下錯開
+    pub fn open_new_window(&mut self, path: String) {
+        let rect = window::placement(self.hwnd).map(|w| {
+            let step = (32.0 * self.gfx.scale()) as i32;
+            (w.x + step, w.y + step, w.w, w.h)
+        });
+        let isolated = self.isolated;
+        crate::hub::open_window(crate::hub::WindowInit { open: Some(path), rect, isolated, ..Default::default() });
+    }
+
+    /// 我的最愛改變：記到工作階段、通知其他視窗
+    fn favorites_changed(&mut self) {
+        self.save_session();
+        self.broadcast(crate::hub::Shared::Favorites {
+            all: self.favorites.clone(),
+            session: self.session.favorites.clone(),
+            order: self.session.favorite_order.clone(),
+        });
+    }
+
+    /// 其他視窗的共用變更（不再轉送）
+    fn on_shared(&mut self, shared: crate::hub::Shared) {
+        use crate::hub::Shared;
+        match shared {
+            Shared::Pref { key, value } => {
+                let old = self.config.clone();
+                // 主題另外以 Shared::Theme 送來
+                if self.config.set_pref(&key, &value).is_ok() {
+                    self.apply_config(&old);
+                }
+            }
+            Shared::Theme(name) => {
+                if name != self.theme_name {
+                    self.theme_from_hub = Some(name.clone());
+                    self.load_theme_by_name(name);
+                }
+            }
+            Shared::Favorites { all, session, order } => {
+                self.favorites = all;
+                self.session.favorites = session;
+                self.session.favorite_order = order;
+                self.rebuild_tree();
+            }
+            Shared::ConfigFiles => self.reload_config(false),
+            #[cfg(feature = "smoke")]
+            Shared::Probe(tx) => {
+                let _ = tx.send((self.theme_name.clone(), self.favorites.clone()));
+            }
+        }
+    }
+
+    /// 載入完成的主題是不是其他視窗切換的（是就不再轉送）
+    pub fn theme_loaded_from_hub(&mut self, name: &str) -> bool {
+        if self.theme_from_hub.as_deref() == Some(name) {
+            self.theme_from_hub = None;
+            return true;
+        }
+        false
     }
 
     // ------------------------------------------------------------ 存取工具
@@ -1154,14 +1251,20 @@ impl App {
                 }
                 let old = std::mem::replace(&mut self.config, *config);
                 self.apply_config(&old);
+                match (&theme, warnings.into_iter().next()) {
+                    (_, Some(w)) => self.set_status(w, true),
+                    // 其他視窗改了快速鍵、命令列：主題不變、不顯示訊息
+                    (None, None) => {}
+                    (Some(_), None) => self.set_status(tr!("已重新載入設定"), false),
+                }
                 // 重新載入設定時以設定檔的主題為準
-                self.theme_name = self.config.theme.clone();
-                self.apply_theme(theme);
-                match warnings.into_iter().next() {
-                    Some(w) => self.set_status(w, true),
-                    None => self.set_status(tr!("已重新載入設定"), false),
+                if let Some(theme) = theme {
+                    self.theme_name = self.config.theme.clone();
+                    self.apply_theme(theme);
                 }
             }
+            Msg::Shared(shared) => self.on_shared(shared),
+            Msg::CloseWindow => window::close(self.hwnd),
             Msg::ThemeLoaded { name, result } => self.on_theme_loaded(name, result),
             Msg::ThemeSaved { name, result } => self.on_theme_saved(name, result),
             Msg::ThemeFileTime { name, mtime } => self.on_theme_file_time(name, mtime),
@@ -1205,13 +1308,16 @@ impl App {
         self.invalidate();
     }
 
-    /// 在背景重新讀取設定與主題，完成後以 Msg::ConfigLoaded 套用
-    pub fn reload_config(&mut self) {
+    /// 在背景重新讀取設定（`with_theme`：連同設定檔的主題），完成後以 Msg::ConfigLoaded 套用
+    pub fn reload_config(&mut self, with_theme: bool) {
         let n = self.notifier.clone();
         self.pool.spawn(move || {
             let (config, mut warnings) = settings::load_config();
-            let (theme, warn) = settings::resolve_theme(&config.theme);
-            warnings.extend(warn);
+            let theme = with_theme.then(|| {
+                let (theme, warn) = settings::resolve_theme(&config.theme);
+                warnings.extend(warn);
+                theme
+            });
             n.send(Msg::ConfigLoaded { config: Box::new(config), theme, warnings });
         });
     }
@@ -1472,6 +1578,10 @@ impl App {
                 let target = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
                 self.open_in_new_tab(target);
             }
+            Cmd::WindowNew => {
+                let target = inv.flag("path").map(String::from).unwrap_or_else(|| self.tab().path.clone());
+                self.open_new_window(target);
+            }
             Cmd::TabClose => self.close_tab(p, self.panes[p].active),
             Cmd::TabCloseothers | Cmd::TabCloseright => {
                 let active = self.panes[p].active;
@@ -1624,6 +1734,7 @@ impl App {
                 // 同一風格的另一種深淺色
                 let theme = self.theme.toggled();
                 self.theme_name = theme.name.clone();
+                self.broadcast(crate::hub::Shared::Theme(theme.name.clone()));
                 self.apply_theme(theme);
             }
             Cmd::ConfigEdit => {
@@ -1640,7 +1751,10 @@ impl App {
                     Err(e) => n.status(tr!("無法建立設定檔：{e}", e), true),
                 });
             }
-            Cmd::ConfigReload => self.reload_config(),
+            Cmd::ConfigReload => {
+                self.reload_config(true);
+                self.broadcast(crate::hub::Shared::ConfigFiles);
+            }
             Cmd::ScriptReload => {
                 let n = self.notifier.clone();
                 self.scripts.load(&n, self.isolated);
@@ -1737,7 +1851,7 @@ impl App {
         }
         self.favorites.push(p.clone());
         self.session.favorites.push(p.clone());
-        self.save_session_async();
+        self.favorites_changed();
         self.rebuild_tree();
         self.set_status(tr!("已加入我的最愛：{p}", p), false);
         Ok(())
@@ -1814,7 +1928,7 @@ impl App {
         replace(&mut self.session.favorites);
         replace(&mut self.session.favorite_order);
         if fav {
-            self.save_session_async();
+            self.favorites_changed();
             self.rebuild_tree();
         }
         for p in 0..self.panes.len() {
@@ -1840,7 +1954,7 @@ impl App {
         let f = self.favorites.remove(i);
         self.favorites.insert(j, f.clone());
         self.session.favorite_order = self.favorites.clone();
-        self.save_session_async();
+        self.favorites_changed();
         // 原地重排（不重建樹狀列，展開的子樹與焦點都保留）
         self.tree.reorder_favorites(&self.favorites);
         // 焦點跟著移動的項目
@@ -1859,7 +1973,7 @@ impl App {
         self.favorites.retain(|f| !f.eq_ignore_ascii_case(p));
         self.session.favorites.retain(|f| !f.eq_ignore_ascii_case(p));
         self.session.favorite_order.retain(|f| !f.eq_ignore_ascii_case(p));
-        self.save_session_async();
+        self.favorites_changed();
         self.rebuild_tree();
         self.set_status(tr!("已從我的最愛移除：{p}", p), false);
         Ok(())

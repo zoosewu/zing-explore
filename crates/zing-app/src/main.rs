@@ -101,31 +101,36 @@ fn main() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
-    hub::run(hub::WindowInit { perf, smoke, open });
+    hub::run(hub::WindowInit { perf, smoke, open, primary: true, ..Default::default() });
     update::relaunch();
 }
 
 /// 視窗的執行緒（hub.rs）：建立視窗與 App，處理訊息直到視窗關閉
 pub fn window_thread(init: hub::WindowInit) {
     zing_core::guard::mark_ui_thread();
-    let hub::WindowInit { perf, smoke, open } = init;
-    if let Err(e) = run(perf, smoke, open) {
+    if let Err(e) = run(init) {
         fatal(&tr!("zing-explore 無法啟動：{e}", e = e.message()));
     }
 }
 
-fn run(perf: Option<perf::Perf>, smoke: Option<smoke::Smoke>, open: Option<String>) -> windows::core::Result<()> {
+fn run(init: hub::WindowInit) -> windows::core::Result<()> {
+    let hub::WindowInit { perf, smoke, open, primary, restore, rect, id, .. } = init;
     let is_perf = perf.is_some();
-    let isolated = is_perf || smoke.is_some();
+    let isolated = is_perf || smoke.is_some() || init.isolated;
     window::register_class();
-    let saved = if isolated {
+    let saved = if !primary {
+        // 還原的視窗帶著自己的位置；Ctrl+N 開的由呼叫端給位置
+        restore.as_ref().and_then(|r| r.window.clone())
+    } else if isolated {
         None
     } else {
         let _allow = zing_core::guard::allow_io("啟動時讀取工作階段（第一幀之前必須知道視窗位置）");
         settings::Session::load().window
     };
     // 效能與冒煙測試固定視窗位置與大小，結果才可重現
-    let rect = if isolated {
+    let rect = if rect.is_some() {
+        rect
+    } else if isolated {
         Some((100, 100, 1280, 800))
     } else {
         saved.as_ref().filter(|w| w.w > 200 && w.h > 150).map(|w| (w.x, w.y, w.w, w.h))
@@ -135,7 +140,8 @@ fn run(perf: Option<perf::Perf>, smoke: Option<smoke::Smoke>, open: Option<Strin
     let dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
 
     // 先建立 App 並開始背景列舉，再顯示視窗：資料可能在第一幀前就到了
-    let app = app::App::new(hwnd, dpi, perf, smoke.as_ref().map(|s| s.dir().to_string()), open)?;
+    let info = hub::WinInfo { id, primary, isolated };
+    let app = app::App::new(hwnd, dpi, perf, smoke.as_ref().map(|s| s.dir().to_string()), open, info, restore)?;
     app::apply_window_theme(hwnd, &app.theme);
     window::refresh_edit_style(&app);
     window::APP.with(|a| *a.borrow_mut() = Some(app));
@@ -144,7 +150,7 @@ fn run(perf: Option<perf::Perf>, smoke: Option<smoke::Smoke>, open: Option<Strin
     let maximized = saved.is_some_and(|w| w.maximized);
     unsafe {
         // 冒煙測試不搶前景：使用者可以繼續操作其他視窗
-        let show = if smoke.is_some() {
+        let show = if isolated && !is_perf {
             SW_SHOWNOACTIVATE
         } else if maximized {
             SW_SHOWMAXIMIZED

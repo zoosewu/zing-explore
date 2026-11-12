@@ -781,6 +781,16 @@ tab.closeright()
 tab.reopen()
 ```
 
+### `window.new(opts?)`
+
+新しいウィンドウを開く（既定は現在のフォルダー）
+
+- `opts?`：{path?: string}
+
+```lua
+window.new{ path = "C:\\" }
+```
+
 ### `tab.moveleft()`
 
 タブを左へ移動
