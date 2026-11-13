@@ -72,7 +72,7 @@ pub enum Msg {
     Status { text: String, error: bool },
     Icon { id: u32, pixels: Option<crate::icons::IconPixels> },
     /// 縮圖（None：沒有縮圖，畫圖示）
-    Thumb { id: u32, pixels: Option<crate::icons::IconPixels>, source: crate::thumbs::Source },
+    Thumb { id: u32, thumb: Option<std::sync::Arc<crate::thumbs::Thumb>> },
     /// 手動指定（`set`）或移除縮圖完成
     ThumbCustom { path: String, set: bool, result: Result<(), String> },
     /// 右鍵選單選了「重新命名」

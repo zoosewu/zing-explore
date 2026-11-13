@@ -3,7 +3,9 @@
 //!
 //! - 只要求畫面上看得到的格子：繪製時登記，繪製結束時把已不可見、還沒開始的請求從佇列移除。
 //! - 本機檔案由兩條背景執行緒處理；網路磁碟、光碟另有一條，一次只取一張，不拖慢本機。
-//! - 結果放在記憶體（上限 64 MB，最久沒用的先丟），以清單中的修改時間與大小（`stamp`）判斷檔案是否改寫過。
+//! - 產生縮圖的執行緒與記憶體中的結果是整個程序共用的（多視窗）：同一張縮圖只解碼一次，所有視窗合計上限 64 MB，
+//!   最久沒用的先丟；視窗只持有 `Weak`，丟掉時記憶體真的釋放，視窗在繪製結束時清掉自己的點陣圖。
+//!   以清單中的修改時間與大小（`stamp`）判斷檔案是否改寫過。
 //!   資料夾的封面不能這樣判斷（上層列舉到的子資料夾修改時間不會因為裡面的變更而更新）：縮圖檢視的分頁監看子資料夾的
 //!   內容（`services::watch` 的 `covers`），變更時 `forget`。外部命令產生的 PNG 另存在磁碟快取，
 //!   以「路徑、修改時間、大小、邊長、命令」判斷是否需要重做（啟動程序太慢，不能每次重跑）。
@@ -13,7 +15,8 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{CloseHandle, SIZE, WAIT_OBJECT_0};
@@ -34,7 +37,7 @@ use zing_core::text::wide_z;
 use crate::icons::IconPixels;
 use crate::services::{Msg, Notifier};
 
-/// 記憶體快取上限
+/// 記憶體快取上限（所有視窗合計）
 const MEMORY_LIMIT: usize = 64 << 20;
 /// 磁碟快取（外部命令產生的 PNG）超過這個大小時刪掉最舊的，直到低於 3/4
 const DISK_LIMIT: u64 = 256 << 20;
@@ -61,22 +64,99 @@ pub fn bucket(px: f32) -> u32 {
     BUCKETS.iter().copied().find(|&b| b as f32 >= px).unwrap_or(*BUCKETS.last().unwrap())
 }
 
+/// 一張解碼好的縮圖。整個程序共用：`CACHE` 持有，視窗只持有 `Weak`，所以快取丟掉它時記憶體真的釋放
+pub struct Thumb {
+    pixels: IconPixels,
+    #[cfg_attr(not(feature = "smoke"), allow(dead_code))]
+    source: Source,
+    /// 取得時項目的 stamp
+    stamp: u64,
+    /// 最後一次繪製的時間（`TICK`）：所有視窗共用一個「最久沒用」的順序
+    used: AtomicU64,
+}
+
+/// 所有視窗共用的記憶體快取（多視窗，hub.rs）：同一張縮圖只解碼一次，合計不超過 `MEMORY_LIMIT`。
+/// 鎖只在查表、放入、丟掉時持有一下（繪製時看的是視窗自己的 `Inner`，不碰這個鎖）
+#[derive(Default)]
+struct Cache {
+    /// (路徑小寫, 像素邊長) → 縮圖
+    map: HashMap<(String, u32), Arc<Thumb>>,
+    bytes: usize,
+}
+
+static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+static TICK: AtomicU64 = AtomicU64::new(0);
+/// 共用的快取丟掉過縮圖的次數：視窗看到它改變就清掉自己指向已釋放縮圖的項目
+static DROPS: AtomicU64 = AtomicU64::new(0);
+
+fn cache() -> std::sync::MutexGuard<'static, Option<Cache>> {
+    CACHE.lock().unwrap()
+}
+
+/// 放進共用的快取，超過上限時丟掉最久沒用的，直到低於上限的 3/4
+fn cache_insert(key: (String, u32), thumb: Arc<Thumb>) {
+    let mut g = cache();
+    let c = g.get_or_insert_with(Cache::default);
+    c.bytes += thumb.pixels.bgra.len();
+    if let Some(old) = c.map.insert(key, thumb) {
+        c.bytes -= old.pixels.bgra.len();
+        DROPS.fetch_add(1, Ordering::Relaxed);
+    }
+    if c.bytes <= MEMORY_LIMIT {
+        return;
+    }
+    let mut by_age: Vec<(u64, (String, u32))> = c.map.iter().map(|(k, t)| (t.used.load(Ordering::Relaxed), k.clone())).collect();
+    by_age.sort_unstable();
+    for (_, k) in by_age {
+        if c.bytes <= MEMORY_LIMIT / 4 * 3 {
+            break;
+        }
+        if let Some(t) = c.map.remove(&k) {
+            c.bytes -= t.pixels.bgra.len();
+        }
+    }
+    DROPS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// 共用的快取中、stamp 相同的縮圖
+fn cache_get(key: &(String, u32), stamp: u64) -> Option<Arc<Thumb>> {
+    cache().as_ref()?.map.get(key).filter(|t| t.stamp == stamp).cloned()
+}
+
+/// 丟掉共用的快取中符合條件的縮圖
+fn cache_remove(mut f: impl FnMut(&(String, u32)) -> bool) {
+    let mut g = cache();
+    let Some(c) = g.as_mut() else { return };
+    let before = c.map.len();
+    let mut freed = 0;
+    c.map.retain(|k, t| {
+        let keep = !f(k);
+        if !keep {
+            freed += t.pixels.bgra.len();
+        }
+        keep
+    });
+    c.bytes -= freed;
+    if c.map.len() != before {
+        DROPS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 enum Slot {
     Pending,
-    Ready {
-        pixels: IconPixels,
-        #[cfg_attr(not(feature = "smoke"), allow(dead_code))]
-        source: Source,
-        used: u64,
-    },
+    Ready(Weak<Thumb>),
     Failed,
 }
 
 struct Job {
     id: u32,
+    /// 要求的視窗（`Thumbs::owner`）：繪製結束時只取消自己的
+    owner: u32,
+    n: Notifier,
     path: String,
     is_dir: bool,
     px: u32,
+    stamp: u64,
 }
 
 struct Queue {
@@ -105,6 +185,7 @@ impl Queue {
     }
 }
 
+/// 整個程序一份：工作佇列與產生縮圖的執行緒（所有視窗共用）、外部命令、手動縮圖
 struct Shared {
     local: Queue,
     slow: Queue,
@@ -114,103 +195,128 @@ struct Shared {
     custom_dir: PathBuf,
     /// 手動指定的縮圖：檔案鍵 → 圖片；第一次用到時列舉 `custom_dir` 載入
     custom: Mutex<Option<HashMap<String, PathBuf>>>,
+    started: std::sync::Once,
 }
 
+static SHARED: std::sync::OnceLock<Arc<Shared>> = std::sync::OnceLock::new();
+
+/// 視窗自己的：這個視窗要過的縮圖（id 給繪圖端對應點陣圖）
 #[derive(Default)]
 struct Inner {
     /// (路徑小寫, 像素邊長) → id
     ids: HashMap<(String, u32), u32>,
-    /// id → (結果, 鍵, 取得時項目的 stamp)
+    /// id → (結果, 鍵, 要求時項目的 stamp)
     slots: HashMap<u32, (Slot, (String, u32), u64)>,
-    bytes: usize,
-    tick: u64,
     /// 這一幀要求過的 id
     wanted: HashSet<u32>,
     /// 被丟掉的 id：繪圖端要一併釋放點陣圖
     evicted: Vec<u32>,
+    /// 上次看到的 `DROPS`
+    drops_seen: u64,
 }
 
 pub struct Thumbs {
     inner: RefCell<Inner>,
     shared: Arc<Shared>,
     notifier: Notifier,
-    started: std::cell::Cell<bool>,
+    owner: u32,
 }
 
 impl Thumbs {
-    /// `cache_dir`：外部命令產生的 PNG 放在哪裡（隔離模式用暫存資料夾）
+    /// `cache_dir`：外部命令產生的 PNG 放在哪裡（隔離模式用暫存資料夾）。同一個程序的視窗共用第一個視窗給的資料夾
     pub fn new(notifier: Notifier, cache_dir: PathBuf, custom_dir: PathBuf) -> Self {
-        let shared = Arc::new(Shared {
-            local: Queue::new(),
-            slow: Queue::new(),
-            thumbnailers: Mutex::new(Arc::new(Vec::new())),
-            cache_dir,
-            pruned: std::sync::Once::new(),
-            custom_dir,
-            custom: Mutex::new(None),
-        });
-        Thumbs { inner: RefCell::default(), shared, notifier, started: std::cell::Cell::new(false) }
+        let shared = SHARED
+            .get_or_init(|| {
+                Arc::new(Shared {
+                    local: Queue::new(),
+                    slow: Queue::new(),
+                    thumbnailers: Mutex::new(Arc::new(Vec::new())),
+                    cache_dir,
+                    pruned: std::sync::Once::new(),
+                    custom_dir,
+                    custom: Mutex::new(None),
+                    started: std::sync::Once::new(),
+                })
+            })
+            .clone();
+        let owner = crate::icons::next_id();
+        Thumbs { inner: RefCell::default(), shared, notifier, owner }
     }
 
     pub fn set_thumbnailers(&self, t: Vec<Thumbnailer>) {
-        *self.shared.thumbnailers.lock().unwrap() = Arc::new(t);
-        // 設定改變：已有的結果可能來自舊的命令，全部重取
+        {
+            let mut cur = self.shared.thumbnailers.lock().unwrap();
+            // 設定改變（每個視窗都會收到，只有第一個需要清）：已有的結果可能來自舊的命令，全部重取
+            if **cur != t {
+                *cur = Arc::new(t);
+                drop(cur);
+                cache_remove(|_| true);
+            }
+        }
         let mut inner = self.inner.borrow_mut();
         let ids: Vec<u32> = inner.slots.keys().copied().collect();
         inner.evicted.extend(ids);
         inner.slots.clear();
         inner.ids.clear();
-        inner.bytes = 0;
     }
 
     /// 繪製時呼叫：已就緒回傳 id；否則送出請求（只送一次）並回傳 None。
-    /// `stamp` 是項目在清單中的修改時間與大小（`stamp()`），與取得時不同就丟掉重新取得
+    /// `stamp` 是項目在清單中的修改時間與大小（`stamp()`），與取得時不同就丟掉重新取得。
+    /// 其他視窗已取得的縮圖直接用（共用的快取）
     pub fn get(&self, path: &str, is_dir: bool, px: u32, stamp: u64) -> Option<u32> {
         let mut inner = self.inner.borrow_mut();
-        inner.tick += 1;
-        let tick = inner.tick;
         let key = (path.to_lowercase(), px);
         if let Some(&id) = inner.ids.get(&key) {
-            if inner.slots.get(&id).is_some_and(|s| s.2 == stamp) {
-                inner.wanted.insert(id);
-                return match &mut inner.slots.get_mut(&id)?.0 {
-                    Slot::Ready { used, .. } => {
-                        *used = tick;
-                        Some(id)
+            match inner.slots.get(&id) {
+                Some((Slot::Ready(w), _, s)) if *s == stamp => {
+                    if let Some(t) = w.upgrade() {
+                        t.used.store(TICK.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+                        inner.wanted.insert(id);
+                        return Some(id);
                     }
-                    _ => None,
-                };
+                }
+                Some((_, _, s)) if *s == stamp => {
+                    inner.wanted.insert(id);
+                    return None;
+                }
+                _ => {}
             }
+            // 項目改變了，或共用的快取已丟掉這張縮圖
             drop_id(&mut inner, id);
         }
         let id = crate::icons::next_id();
         inner.ids.insert(key.clone(), id);
-        inner.slots.insert(id, (Slot::Pending, key, stamp));
         inner.wanted.insert(id);
+        if let Some(t) = cache_get(&key, stamp) {
+            t.used.store(TICK.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+            inner.slots.insert(id, (Slot::Ready(Arc::downgrade(&t)), key, stamp));
+            return Some(id);
+        }
+        inner.slots.insert(id, (Slot::Pending, key, stamp));
         drop(inner);
         self.start();
-        self.shared.local.push(Job { id, path: path.to_string(), is_dir, px });
+        self.shared.local.push(Job { id, owner: self.owner, n: self.notifier.clone(), path: path.to_string(), is_dir, px, stamp });
         None
     }
 
     fn start(&self) {
-        if self.started.replace(true) {
-            return;
-        }
-        for i in 0..2 {
-            spawn_worker(format!("zing-thumbs-{i}"), self.shared.clone(), self.notifier.clone(), false);
-        }
-        spawn_worker("zing-thumbs-slow".into(), self.shared.clone(), self.notifier.clone(), true);
+        self.shared.started.call_once(|| {
+            for i in 0..2 {
+                spawn_worker(format!("zing-thumbs-{i}"), self.shared.clone(), false);
+            }
+            spawn_worker("zing-thumbs-slow".into(), self.shared.clone(), true);
+        });
     }
 
-    /// 繪製結束時呼叫：還在佇列裡、這一幀沒有要求的工作取消（之後再看到時重新要求）
+    /// 繪製結束時呼叫：這個視窗還在佇列裡、這一幀沒有要求的工作取消（之後再看到時重新要求）；
+    /// 共用的快取丟掉過縮圖時，清掉指向已釋放縮圖的項目（點陣圖一併釋放）
     pub fn end_frame(&self) {
         let mut inner = self.inner.borrow_mut();
         let wanted = std::mem::take(&mut inner.wanted);
         let mut dropped = Vec::new();
         for q in [&self.shared.local, &self.shared.slow] {
             q.jobs.lock().unwrap().retain(|j| {
-                let keep = wanted.contains(&j.id);
+                let keep = j.owner != self.owner || wanted.contains(&j.id);
                 if !keep {
                     dropped.push(j.id);
                 }
@@ -222,26 +328,30 @@ impl Thumbs {
                 inner.ids.remove(&key);
             }
         }
+        let drops = DROPS.load(Ordering::Relaxed);
+        if drops != inner.drops_seen {
+            inner.drops_seen = drops;
+            let dead: Vec<u32> =
+                inner.slots.iter().filter(|(_, (s, _, _))| matches!(s, Slot::Ready(w) if w.strong_count() == 0)).map(|(&id, _)| id).collect();
+            for id in dead {
+                drop_id(&mut inner, id);
+            }
+        }
     }
 
-    pub fn store(&self, id: u32, pixels: Option<IconPixels>, source: Source) {
+    /// 產生縮圖的執行緒的結果（已放進共用的快取）
+    pub fn store(&self, id: u32, thumb: Option<Arc<Thumb>>) {
         let mut inner = self.inner.borrow_mut();
-        let tick = inner.tick;
         let Some((slot, _, _)) = inner.slots.get_mut(&id) else { return };
-        let size = pixels.as_ref().map_or(0, |p| p.bgra.len());
-        *slot = match pixels {
-            Some(pixels) => Slot::Ready { pixels, source, used: tick },
+        *slot = match thumb {
+            Some(t) => Slot::Ready(Arc::downgrade(&t)),
             None => Slot::Failed,
         };
-        inner.bytes += size;
-        if inner.bytes > MEMORY_LIMIT {
-            evict(&mut inner);
-        }
     }
 
     pub fn with_pixels<R>(&self, id: u32, f: impl FnOnce(&IconPixels) -> R) -> Option<R> {
         match &self.inner.borrow().slots.get(&id)?.0 {
-            Slot::Ready { pixels, .. } => Some(f(pixels)),
+            Slot::Ready(w) => Some(f(&w.upgrade()?.pixels)),
             _ => None,
         }
     }
@@ -251,7 +361,7 @@ impl Thumbs {
         let inner = self.inner.borrow();
         let id = inner.ids.get(&(path.to_lowercase(), px))?;
         match &inner.slots.get(id)?.0 {
-            Slot::Ready { source, .. } => Some(*source),
+            Slot::Ready(w) => Some(w.upgrade()?.source),
             _ => None,
         }
     }
@@ -265,10 +375,11 @@ impl Thumbs {
         });
     }
 
-    /// 丟掉 `path` 已取得的縮圖（所有大小），下次繪製時重新取得
+    /// 丟掉 `path` 已取得的縮圖（所有大小、所有視窗），下次繪製時重新取得
     pub fn forget(&self, path: &str) {
-        let mut inner = self.inner.borrow_mut();
         let lower = path.to_lowercase();
+        cache_remove(|(p, _)| *p == lower);
+        let mut inner = self.inner.borrow_mut();
         let ids: Vec<u32> = inner.ids.iter().filter(|((p, _), _)| *p == lower).map(|(_, &id)| id).collect();
         for id in ids {
             drop_id(&mut inner, id);
@@ -280,7 +391,7 @@ impl Thumbs {
         let inner = self.inner.borrow();
         let lower = path.to_lowercase();
         inner.ids.iter().any(|((p, _), id)| {
-            *p == lower && matches!(inner.slots.get(id), Some((Slot::Ready { source: Source::Custom, .. }, _, _)))
+            matches!(inner.slots.get(id), Some((Slot::Ready(w), _, _)) if *p == lower && w.upgrade().is_some_and(|t| t.source == Source::Custom))
         })
     }
 
@@ -291,50 +402,33 @@ impl Thumbs {
     /// 已就緒的數量（冒煙測試用）
     #[cfg(feature = "smoke")]
     pub fn ready_count(&self) -> usize {
-        self.inner.borrow().slots.values().filter(|(s, _, _)| matches!(s, Slot::Ready { .. })).count()
+        self.inner.borrow().slots.values().filter(|(s, _, _)| matches!(s, Slot::Ready(w) if w.strong_count() > 0)).count()
+    }
+
+    /// 已經產生過的縮圖數（冒煙測試：另一個視窗用共用的快取，不再產生）
+    #[cfg(feature = "smoke")]
+    pub fn produced() -> usize {
+        PRODUCED.load(Ordering::Relaxed)
     }
 }
+
+#[cfg(feature = "smoke")]
+static PRODUCED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// 項目的 stamp：修改時間與大小（資料夾的大小是 0，修改時間在裡面新增、刪除、改名項目時改變）
 pub fn stamp(e: &zing_core::listing::Entry) -> u64 {
     e.modified ^ e.size.rotate_left(32)
 }
 
-/// 丟掉一個結果（還在佇列中的工作完成時找不到 id，結果直接丟棄）
+/// 這個視窗不再用這個結果（還在佇列中的工作完成時找不到 id，結果直接丟棄）
 fn drop_id(inner: &mut Inner, id: u32) {
-    if let Some((slot, key, _)) = inner.slots.remove(&id) {
+    if let Some((_, key, _)) = inner.slots.remove(&id) {
         inner.ids.remove(&key);
-        if let Slot::Ready { pixels, .. } = slot {
-            inner.bytes -= pixels.bgra.len();
-        }
         inner.evicted.push(id);
     }
 }
 
-/// 丟掉最久沒用的，直到低於上限的 3/4
-fn evict(inner: &mut Inner) {
-    let mut ready: Vec<(u64, u32, usize)> = inner
-        .slots
-        .iter()
-        .filter_map(|(&id, (s, _, _))| match s {
-            Slot::Ready { pixels, used, .. } => Some((*used, id, pixels.bgra.len())),
-            _ => None,
-        })
-        .collect();
-    ready.sort_unstable();
-    for (_, id, size) in ready {
-        if inner.bytes <= MEMORY_LIMIT / 4 * 3 {
-            break;
-        }
-        if let Some((_, key, _)) = inner.slots.remove(&id) {
-            inner.ids.remove(&key);
-        }
-        inner.bytes -= size;
-        inner.evicted.push(id);
-    }
-}
-
-fn spawn_worker(name: String, shared: Arc<Shared>, n: Notifier, slow: bool) {
+fn spawn_worker(name: String, shared: Arc<Shared>, slow: bool) {
     let _ = std::thread::Builder::new().name(name).spawn(move || {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -346,8 +440,17 @@ fn spawn_worker(name: String, shared: Arc<Shared>, n: Notifier, slow: bool) {
                 shared.slow.push(job);
                 continue;
             }
-            let (pixels, source) = produce(&shared, &job);
-            n.send(Msg::Thumb { id: job.id, pixels, source });
+            let key = (job.path.to_lowercase(), job.px);
+            // 另一個視窗同時要了同一張（排在前面的已做好）
+            let thumb = cache_get(&key, job.stamp).or_else(|| {
+                #[cfg(feature = "smoke")]
+                PRODUCED.fetch_add(1, Ordering::Relaxed);
+                let (pixels, source) = produce(&shared, &job);
+                let t = Arc::new(Thumb { pixels: pixels?, source, stamp: job.stamp, used: AtomicU64::new(TICK.fetch_add(1, Ordering::Relaxed)) });
+                cache_insert(key, t.clone());
+                Some(t)
+            });
+            job.n.send(Msg::Thumb { id: job.id, thumb });
         }
     });
 }

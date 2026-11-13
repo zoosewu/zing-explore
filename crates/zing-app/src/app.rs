@@ -1302,8 +1302,8 @@ impl App {
                 self.shell_host.submit(ShellJob::SetText { text, status: String::new(), reply: Some(reply) })
             }
             Msg::ScriptsLoaded(l) => self.on_scripts_loaded(l),
-            Msg::Thumb { id, pixels, source } => {
-                self.thumbs.store(id, pixels, source);
+            Msg::Thumb { id, thumb } => {
+                self.thumbs.store(id, thumb);
                 self.invalidate();
             }
             Msg::ThumbCustom { path: p, set, result } => {

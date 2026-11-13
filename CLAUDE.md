@@ -84,7 +84,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   繪製時不掃過整個清單：選取數由 `Tab` 在選取、清單、篩選改變時更新（`selected` 只經 `Tab` 的方法修改，
   debug build 讀取時會以掃描結果核對）。
 - 縮圖同樣只取看得到的格子（`thumbs.rs`）：繪製時登記，繪製結束時取消已不可見、還沒開始的請求；
-  本機兩條、網路磁碟與光碟一條執行緒（背景模式）。記憶體中的結果以項目的修改時間與大小（`thumbs::stamp`）判斷過時；
+  本機兩條、網路磁碟與光碟一條執行緒（背景模式）。執行緒與記憶體中的結果是整個程序共用的（多視窗：同一張只解碼一次、
+  合計上限 64 MB；`CACHE` 持有、視窗只持有 `Weak`，丟掉後視窗在 `end_frame` 釋放點陣圖）。記憶體中的結果以項目的修改時間與大小（`thumbs::stamp`）判斷過時；
   資料夾的封面例外：從上層列舉到的子資料夾修改時間不會因為裡面的變更而更新（NTFS 的目錄項目），所以縮圖檢視的分頁改用
   ReadDirectoryChangesW 監看子樹的前兩層（`services::watch` 的 `covers`，`App::sync_cover_watch` 跟著檢視模式切換），
   子資料夾裡有變更就 `Thumbs::forget` 它的封面（`Msg::CoversChanged`，合併 250 ms）。清單與縮圖的幾何一律經 `App::grid`／`App::item_rect`，
@@ -300,7 +301,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   - 系統產生、可重建的資料（資料夾大小快取、縮圖快取…）放在 `%LOCALAPPDATA%\zing-explore\`（只屬於這台電腦、不漫遊，
     刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（沒有索引時的資料夾大小，見 `sizes.rs`）、
     `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`）、
-    `thumbs\`（外部命令產生的縮圖 PNG，上限 256 MB，見 `thumbs.rs`；Windows 的縮圖只放記憶體，上限 64 MB）、
+    `thumbs\`（外部命令產生的縮圖 PNG，上限 256 MB，見 `thumbs.rs`；Windows 的縮圖只放記憶體，所有視窗合計上限 64 MB）、
     `custom-thumbs\`（手動指定的縮圖，檔名是「磁碟區序號-NTFS 檔案 ID」：鍵只在這台電腦有意義，所以不放在程式旁）、
     `slow-menu-extensions.tsv`（讓右鍵選單變慢的第三方擴充功能，7 天後失效重新量，見 `shellext.rs`）、
     `update.tsv`（上次檢查新版本的時間、當時的最新版、略過的版本，見 `update.rs`）、

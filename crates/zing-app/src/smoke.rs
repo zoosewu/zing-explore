@@ -3892,6 +3892,21 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         })
         .slow(),
     );
+    v.push(step("縮圖：另一個視窗（另一個 Thumbs）直接用共用的快取，不再產生", |_| {}, |_, a| {
+        let t = a.tab();
+        let px = crate::thumbs::bucket(a.tab().thumb as f32 * a.gfx.scale());
+        let before = crate::thumbs::Thumbs::produced();
+        let other = crate::thumbs::Thumbs::new(a.notifier.clone(), crate::thumbs::cache_dir(true), crate::thumbs::custom_dir(true));
+        let ready = t
+            .view
+            .iter()
+            .map(|&e| e as usize)
+            .filter(|&e| other.get(&t.full_path(e), t.listing.entries[e].is_dir(), px, crate::thumbs::stamp(&t.listing.entries[e])).is_some())
+            .count();
+        other.end_frame();
+        expect("就緒", ready, t.view.len())?;
+        expect("產生的縮圖數", crate::thumbs::Thumbs::produced(), before)
+    }));
     v.push(step("截圖：縮圖檢視", |_| {}, |c, _| screenshot(c, "07-縮圖")));
     v.push(step(
         "縮圖：點格子選取",
