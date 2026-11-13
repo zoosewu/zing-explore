@@ -1020,6 +1020,12 @@ impl App {
 
     /// 分頁的資料夾已不存在：開在它（或它裡面）的分頁都移到仍存在的上層
     fn on_folder_gone(&mut self, gone: &str, existing: String) {
+        // 檔案作業正在移走它（或它的上層）：Shell 的作業在磁碟上改好名稱之後還要一段時間才結束，
+        // 期間樹狀列監看的確認會以為資料夾不見了。作業結束時改名的分頁跟著換（`on_renamed`），
+        // 刪除、移動則由完成後的確認（`check_tabs_under`）處理
+        if self.watch_pause.iter().any(|v| crate::model::within(gone, v)) {
+            return;
+        }
         let mut moved = false;
         for p in 0..self.panes.len() {
             for t in 0..self.panes[p].tabs.len() {
