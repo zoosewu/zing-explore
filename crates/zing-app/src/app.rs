@@ -269,6 +269,8 @@ pub struct App {
     pub tab_insert: Option<(usize, usize)>,
     /// 拖曳分頁經過的另一個視窗（離開時請它拿掉標示）
     pub tab_hover_target: Option<isize>,
+    /// 已經算進「開始關閉」（`hub::begin_close`）
+    closing: bool,
 }
 
 impl App {
@@ -417,6 +419,7 @@ impl App {
             theme_from_hub: None,
             tab_insert: None,
             tab_hover_target: None,
+            closing: false,
         };
 
         // 起始分頁：效能測試固定從「此電腦」開始；否則依設定（startup）與命令列要開啟的資料夾
@@ -487,6 +490,21 @@ impl App {
     pub fn save_session(&self) {
         if !self.isolated {
             crate::hub::snapshot(self.win.id, self.session_snapshot());
+        }
+    }
+
+    /// 這個視窗開始關閉：回傳是不是最後一個（只算一次）
+    pub fn begin_close(&mut self) -> bool {
+        if std::mem::replace(&mut self.closing, true) {
+            return false;
+        }
+        crate::hub::begin_close()
+    }
+
+    /// 使用者取消了關閉
+    pub fn cancel_close(&mut self) {
+        if std::mem::replace(&mut self.closing, false) {
+            crate::hub::cancel_close();
         }
     }
 
@@ -1822,7 +1840,8 @@ impl App {
                 let n = self.notifier.clone();
                 self.scripts.load(&n, self.isolated);
             }
-            Cmd::AppExit => window::close(self.hwnd),
+            // 關閉所有視窗；最後一個關閉的視窗照常詢問進行中的檔案作業
+            Cmd::AppExit => crate::hub::close_all(),
             Cmd::UpdateCheck => {
                 // 結果顯示在設定的「檢查更新」那一列
                 self.open_settings_on(zing_core::prefs::Kind::UpdateCheck);

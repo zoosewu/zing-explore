@@ -1241,10 +1241,18 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         // Shift+F10 照常交給 DefWindowProc（轉成 WM_CONTEXTMENU）
         WM_SYSKEYUP if wparam.0 == 0x79 && !Mods::current().shift => Some(LRESULT(0)),
         WM_CLOSE => {
+            // 已確認結束、等作業停止的視窗（計時器或作業結束時再送 WM_CLOSE）
+            if with_app(|a| a.pending_exit).unwrap_or(false) {
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+                return Some(LRESULT(0));
+            }
             // 最後一個視窗、還有檔案作業：確認後取消它們，隱藏視窗，等作業停止（最多 5 秒）再結束。
             // 還有其他視窗時作業照樣進行（作業佇列介面在每個視窗都看得到，結果送給其他視窗）
-            let active = with_app(|a| if a.pending_exit { 0 } else { a.jobs.active() }).unwrap_or(0);
-            if active > 0 && crate::hub::window_count() <= 1 {
+            let active = with_app(|a| a.jobs.active()).unwrap_or(0);
+            let last = with_app(|a| a.begin_close()).unwrap_or(false);
+            if active > 0 && last {
                 exempt_stall();
                 let text = wide_z(&tr!("還有 {active} 個檔案作業尚未完成，結束 zing-explore 會取消這些作業。\n\n要結束嗎？", active));
                 let answer = unsafe { MessageBoxW(Some(hwnd), PCWSTR(text.as_ptr()), w!("zing-explore"), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) };
@@ -1258,12 +1266,8 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                         let _ = ShowWindow(hwnd, SW_HIDE);
                         SetTimer(Some(hwnd), TIMER_EXIT, 5000, None);
                     }
-                }
-                return Some(LRESULT(0));
-            }
-            if with_app(|a| a.pending_exit).unwrap_or(false) {
-                unsafe {
-                    let _ = DestroyWindow(hwnd);
+                } else {
+                    with_app(|a| a.cancel_close());
                 }
                 return Some(LRESULT(0));
             }
@@ -1275,6 +1279,8 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         }
         WM_DESTROY => {
             with_app(|a| {
+                // 沒經過 WM_CLOSE 就結束的視窗也要算關閉了
+                a.begin_close();
                 crate::hub::unregister(a.win.id);
                 a.shell_host.shutdown();
                 if let Some(h) = a.shell_windows.take() {

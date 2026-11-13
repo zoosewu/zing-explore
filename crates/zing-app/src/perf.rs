@@ -243,5 +243,6 @@ pub fn finish(app: &mut App) {
     body.push(format!("  \"guard_violations\": [{}]", violations.join(", ")));
     let json = format!("{{\n{}\n}}\n", body.join(",\n"));
     let _ = std::fs::write(&perf.out, json);
-    crate::window::close(app.hwnd);
+    // 效能模式可能開了其他視窗（--perf-exec=window.new）：全部關閉，程序才會結束
+    crate::hub::close_all();
 }

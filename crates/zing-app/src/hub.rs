@@ -125,8 +125,8 @@ enum HubMsg {
     FolderView { from: u32, path: String, view: zing_core::folderview::FolderView, when: u64, persist: bool },
 }
 
-/// 開著的視窗數（關閉視窗時判斷是不是最後一個）
-static WINDOWS: AtomicUsize = AtomicUsize::new(0);
+/// 還沒開始關閉的視窗數：關閉時原子地減一，所以同時關閉多個視窗（app.exit、close_all）也只有一個是「最後一個」
+static OPEN: AtomicUsize = AtomicUsize::new(0);
 
 static HUB: OnceLock<Sender<HubMsg>> = OnceLock::new();
 
@@ -181,7 +181,6 @@ impl Hub {
         match msg {
             HubMsg::Closed(id) => {
                 self.running -= 1;
-                WINDOWS.store(self.running, Ordering::Release);
                 self.notifiers.retain(|(i, _)| *i != id);
                 // 關掉的不是最後一個視窗：下次不還原它
                 if self.running > 0 {
@@ -286,7 +285,7 @@ impl Hub {
             });
         if started.is_ok() {
             self.running += 1;
-            WINDOWS.store(self.running, Ordering::Release);
+            OPEN.fetch_add(1, Ordering::AcqRel);
         }
     }
 
@@ -380,9 +379,14 @@ pub fn unregister(id: u32) {
     send(HubMsg::Unregister(id));
 }
 
-/// 開著的視窗數
-pub fn window_count() -> usize {
-    WINDOWS.load(Ordering::Acquire)
+/// 視窗開始關閉（WM_CLOSE，每個視窗只呼叫一次）：回傳是不是最後一個
+pub fn begin_close() -> bool {
+    OPEN.fetch_sub(1, Ordering::AcqRel) == 1
+}
+
+/// 使用者取消了關閉
+pub fn cancel_close() {
+    OPEN.fetch_add(1, Ordering::AcqRel);
 }
 
 /// 檔案作業執行緒送訊息的路線：進度給每個視窗，完成給送出作業的視窗（已關閉時給其他視窗）。
