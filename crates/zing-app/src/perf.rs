@@ -180,6 +180,8 @@ fn scroll_test(app: &mut App, frames: u32) {
     for i in 0..frames as usize {
         let tab = app.tab_mut();
         tab.scroll = if tab.scroll + step > max { 0.0 } else { tab.scroll + step };
+        // 與一般使用相同：先等交換鏈能再收一幀（等垂直同步），不算在幀時間內
+        app.gfx.wait_frame();
         let t = Instant::now();
         app.paint();
         let total = t.elapsed().as_secs_f64() * 1000.0;

@@ -313,7 +313,7 @@ impl App {
         }
         zing_core::i18n::set(config.language);
         crate::perf::mark("config");
-        let gfx = Gfx::new(hwnd, dpi, &theme, perf.is_some())?;
+        let gfx = Gfx::new(hwnd, dpi, &theme)?;
         crate::perf::mark("gfx");
         let (notifier, rx) = Notifier::new(hwnd);
         crate::hub::register(win.id, notifier.clone());

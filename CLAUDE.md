@@ -244,6 +244,10 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   - `examples/scripts` 的每個範例在 `script.rs` 都有單元測試（`example_*`，以真的檔案與外部程式執行）。
 - 啟動路徑上不放非必要初始化，能延後的就延後（OLE、拖放在第一幀之後初始化）。
 - 第一幀用 WARP 繪製，硬體 GPU 裝置在第一幀呈現後於背景建立再切換；不要在第一幀前碰硬體裝置（驅動初始化約 130 ms，且會鎖住 DXGI）。
+- 交換鏈的呈現佇列最多一幀（frame latency waitable object，`gfx.rs`）：WM_PAINT 時交換鏈還不能收新的一幀就不畫
+  （`Gfx::ready_or_defer`），訊息迴圈（main.rs）同時等交換鏈與訊息，好了再重畫，UI 執行緒不等垂直同步。
+  直接呼叫 `App::paint`（改變大小、開選單或輸入框前）會等交換鏈（最多一個更新週期），效能測試在計時前等。
+  WM_SIZE 畫好整個視窗後 `ValidateRect`，不再為同一次改變大小處理 WM_PAINT（啟動時的第一幀就是這一幀）。
 - 分析工具：`--perf-out` 模式的 `phase_*` 時間點、Windows Performance Recorder/Analyzer（ETW）、`criterion`；需要符號時用 `cargo build --profile profiling`。
 
 ### 介面準則
@@ -277,11 +281,11 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   DragOver 決定的（與檔案總管規則相同），移動時以「最佳化移動」回報來源（回傳 DROPEFFECT_NONE、設定 Performed DropEffect）。
   右鍵拖曳、建立捷徑、虛擬檔案（非 CF_HDROP）、資源回收筒內的項目仍交給 Shell 的 `Drop`，會在 UI 執行緒同步執行
   （約 120–190 ms），以 `window::exempt_stall()` 排除在卡頓監看外。
-- 捲動時偶有一幀約 17–20 ms（約一個 60 Hz 更新週期）的停頓，p99 不受影響。已查明時間全部花在 `Present`
-  （等待桌面合成器），CPU 繪製約 2 ms、EndDraw 約 0.15 ms；連續呈現約 70–100 ms 後發生、閒置後會再發生。
-  是否發生取決於桌面當下的狀態（同一版本同一條件，一輪 12/12、另一輪 0/3），緩衝數量、FLIP_SEQUENTIAL、
-  blt 模式都無法穩定消除，所以沒有修改。下一步：用 PresentMon／ETW 確認是否為呈現模式切換（independent flip）。
-  效能報告的 `frames_over_8ms` 與結果 JSON 的 `worst_*` 欄位會顯示每次的狀況。
+- 連續繪製（捲動、拖曳）約 40 幀後，系統把視窗從桌面合成（Composed: Flip）改成獨立翻轉（Hardware: Independent Flip），
+  切換時 GPU 停約 30 ms，那一幀的 `Present` 跟著等（PresentMon 查明，見 docs/decisions.md）。這是系統的行為，
+  呈現的佇列限制在一幀後已從約 62 ms 降到約 30 ms；閒置後退回桌面合成，下次連續繪製會再發生一次。
+  只在視窗沒有被蓋住時發生（被蓋住時系統不切換），所以效能報告有時有、有時沒有。
+  `frames_over_8ms` 與結果 JSON 的 `worst_*` 欄位會顯示每次的狀況。
 
 ## 專案結構
 

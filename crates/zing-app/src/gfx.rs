@@ -27,10 +27,14 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_PRESENT_DO_NOT_WAIT, DXGI_SCALING_NONE,
-    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
-    IDXGIDevice1, IDXGIFactory2, IDXGISurface, IDXGISwapChain1,
+    DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_SCALING_NONE,
+    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIDevice1, IDXGIFactory2, IDXGISurface, IDXGISwapChain1, IDXGISwapChain2,
 };
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::WAIT_OBJECT_0;
+use windows::Win32::Graphics::Gdi::InvalidateRect;
+use windows::Win32::System::Threading::WaitForSingleObjectEx;
 use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, PostMessageW, WM_APP};
 use windows::core::{BOOL, HSTRING, Interface, Result};
 
@@ -174,10 +178,27 @@ struct Formats {
 struct Device {
     ctx: ID2D1DeviceContext,
     swap: IDXGISwapChain1,
+    /// 交換鏈可以再收一幀時觸發（最多排一幀）；畫之前等它，呈現的佇列才不會越排越長
+    waitable: HANDLE,
+    /// 這一幀已經等過 `waitable`（每次等待消耗一次觸發）
+    frame_ready: bool,
     target: Option<ID2D1Bitmap1>,
     brush: ID2D1SolidColorBrush,
     warp: bool,
 }
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        if !self.waitable.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.waitable);
+            }
+        }
+    }
+}
+
+/// 交換鏈的旗標（建立與 ResizeBuffers 必須相同）
+const SWAP_FLAGS: DXGI_SWAP_CHAIN_FLAG = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
 pub struct Gfx {
     hwnd: HWND,
@@ -193,7 +214,6 @@ pub struct Gfx {
     brush: Option<ID2D1SolidColorBrush>,
     formats: Formats,
     dpi: f32,
-    immediate: bool,
     widths: RefCell<HashMap<(Font, String), f32>>,
     /// 圖示點陣圖（屬於目前的裝置，換裝置時清空，再由 Icons 的像素重建）
     icon_bitmaps: RefCell<HashMap<u32, ID2D1Bitmap1>>,
@@ -204,6 +224,8 @@ pub struct Gfx {
     keyed_bitmaps: RefCell<HashMap<String, ID2D1Bitmap1>>,
     /// 上一幀 EndDraw（GPU 清空）與 Present 的耗時（毫秒），供效能測試拆解幀時間
     pub last_end_ms: (f64, f64),
+    /// WM_PAINT 時交換鏈還不能收新的一幀而略過：訊息迴圈等 `deferred_waitable` 觸發後重畫
+    deferred: bool,
 }
 
 fn color_f(c: Color) -> D2D1_COLOR_F {
@@ -247,8 +269,7 @@ fn spawn_hardware(hwnd: HWND) -> Receiver<usize> {
 }
 
 impl Gfx {
-    /// `immediate`：效能測試用，Present 不等待垂直同步，才能量到真實的繪製時間。
-    pub fn new(hwnd: HWND, dpi: f32, theme: &Theme, immediate: bool) -> Result<Self> {
+    pub fn new(hwnd: HWND, dpi: f32, theme: &Theme) -> Result<Self> {
         let d2d: ID2D1Factory1 = unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
         let dw: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let formats = Self::create_formats(&dw, theme)?;
@@ -263,13 +284,13 @@ impl Gfx {
             brush: None,
             formats,
             dpi,
-            immediate,
             widths: RefCell::new(HashMap::new()),
             icon_bitmaps: RefCell::new(HashMap::new()),
             thumb_bitmaps: RefCell::new(HashMap::new()),
             preview_bitmap: RefCell::new(None),
             keyed_bitmaps: RefCell::new(HashMap::new()),
             last_end_ms: (0.0, 0.0),
+            deferred: false,
         })
     }
 
@@ -339,7 +360,7 @@ impl Gfx {
             unsafe {
                 d.ctx.SetTarget(None);
                 d.target = None;
-                let _ = d.swap.ResizeBuffers(0, w.max(1), h.max(1), DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0));
+                let _ = d.swap.ResizeBuffers(0, w.max(1), h.max(1), DXGI_FORMAT_UNKNOWN, SWAP_FLAGS);
             }
         }
     }
@@ -378,8 +399,6 @@ impl Gfx {
     fn build_device(&self, d3d: ID3D11Device, warp: bool) -> Result<Device> {
         unsafe {
             let dxgi: IDXGIDevice1 = d3d.cast()?;
-            // 只排一幀，降低輸入到畫面的延遲
-            let _ = dxgi.SetMaximumFrameLatency(1);
             let ctx = self.d2d.CreateDevice(&dxgi)?.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
             let factory: IDXGIFactory2 = dxgi.GetAdapter()?.GetParent()?;
             let desc = DXGI_SWAP_CHAIN_DESC1 {
@@ -390,14 +409,21 @@ impl Gfx {
                 Scaling: DXGI_SCALING_NONE,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+                Flags: SWAP_FLAGS.0 as u32,
                 ..Default::default()
             };
 
             let swap = factory.CreateSwapChainForHwnd(&d3d, self.hwnd, &desc, None, None)?;
+            // 呈現的佇列最多一幀：連續繪製（捲動、拖曳）時畫得比螢幕更新快，桌面合成器的佇列會越排越長
+            // （PresentMon：顯示延遲 19 → 95 ms），系統改成獨立翻轉（independent flip）時要先把排著的幀顯示完，
+            // Present 因此卡住 30～100 ms。改成每幀先等交換鏈能再收一幀才畫
+            let swap2: IDXGISwapChain2 = swap.cast()?;
+            swap2.SetMaximumFrameLatency(1)?;
+            let waitable = swap2.GetFrameLatencyWaitableObject();
             let _ = factory.MakeWindowAssociation(self.hwnd, DXGI_MWA_NO_ALT_ENTER);
             ctx.SetDpi(self.dpi, self.dpi);
             let brush = ctx.CreateSolidColorBrush(&color_f(Color::rgb(0)), None)?;
-            Ok(Device { ctx, swap, target: None, brush, warp })
+            Ok(Device { ctx, swap, waitable, frame_ready: false, target: None, brush, warp })
         }
     }
 
@@ -435,12 +461,58 @@ impl Gfx {
         Ok(())
     }
 
+    /// 等交換鏈能再收一幀（上一幀已交給螢幕）。閒置時立即返回；連續繪製時最多等一個螢幕更新週期，
+    /// 與原本 Present 等垂直同步相同，只是改在畫之前等，畫面顯示的是剛畫好的內容。
+    /// 回傳等待的毫秒數（效能測試在計時前呼叫，量到的才是繪製成本）。
+    pub fn wait_frame(&mut self) -> f64 {
+        let Some(d) = &mut self.dev else { return 0.0 };
+        if d.frame_ready || d.waitable.is_invalid() {
+            return 0.0;
+        }
+        let t = std::time::Instant::now();
+        // 上限 100 ms：裝置異常時不會一直等（逾時照樣畫，Present 會回報裝置遺失）
+        unsafe { WaitForSingleObjectEx(d.waitable, 100, true) };
+        d.frame_ready = true;
+        t.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// WM_PAINT 用、不等待：交換鏈能收新的一幀就回傳 true；否則記下延後，由訊息迴圈等它觸發
+    /// （`deferred_waitable`、`frame_signaled`）再重畫，UI 執行緒不必等垂直同步
+    pub fn ready_or_defer(&mut self) -> bool {
+        let Some(d) = &mut self.dev else { return true };
+        if d.frame_ready || d.waitable.is_invalid() || unsafe { WaitForSingleObjectEx(d.waitable, 0, false) } == WAIT_OBJECT_0 {
+            d.frame_ready = true;
+            return true;
+        }
+        self.deferred = true;
+        false
+    }
+
+    /// 有延後的重畫時，訊息迴圈要一起等的物件
+    pub fn deferred_waitable(&self) -> Option<HANDLE> {
+        self.dev.as_ref().filter(|d| self.deferred && !d.waitable.is_invalid()).map(|d| d.waitable)
+    }
+
+    /// 訊息迴圈等到 `deferred_waitable`（已消耗這次觸發）：這一幀可以畫了
+    pub fn frame_signaled(&mut self) {
+        self.deferred = false;
+        if let Some(d) = &mut self.dev {
+            d.frame_ready = true;
+        }
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+    }
+
     /// 開始一幀。回傳 false 表示無法繪製（例如裝置尚未就緒）。
     pub fn begin(&mut self, clear: Color) -> bool {
         if self.ensure_target().is_err() {
             self.reset_device();
             return false;
         }
+        self.wait_frame();
+        // 整個視窗重畫：等待中的 WM_PAINT 不必再補
+        self.deferred = false;
         let rt = self.rt.as_ref().unwrap();
         unsafe {
             rt.BeginDraw();
@@ -450,13 +522,13 @@ impl Gfx {
     }
 
     pub fn end(&mut self) {
-        let Some(d) = &self.dev else { return };
+        let Some(d) = &mut self.dev else { return };
+        d.frame_ready = false;
         let t0 = std::time::Instant::now();
         let drawn = unsafe { d.ctx.EndDraw(None, None) };
         let t1 = std::time::Instant::now();
-        // 效能模式：不等垂直同步、交換鏈忙碌時直接略過這幀，量到的是純繪製成本
-        let (sync, flags) = if self.immediate { (0, DXGI_PRESENT_DO_NOT_WAIT) } else { (1, DXGI_PRESENT(0)) };
-        let presented = unsafe { d.swap.Present(sync, flags) };
+        // 已在 begin 等過交換鏈，這裡不會再等垂直同步
+        let presented = unsafe { d.swap.Present(1, DXGI_PRESENT(0)) };
         self.last_end_ms = ((t1 - t0).as_secs_f64() * 1000.0, t1.elapsed().as_secs_f64() * 1000.0);
         let lost = matches!(&drawn, Err(e) if e.code() == D2DERR_RECREATE_TARGET)
             || presented == DXGI_ERROR_DEVICE_REMOVED
@@ -474,6 +546,12 @@ impl Gfx {
         self.rt = None;
         self.brush = None;
         self.dev = None;
+        // 延後的重畫等的是舊交換鏈的物件：改成直接重畫
+        if std::mem::take(&mut self.deferred) {
+            unsafe {
+                let _ = InvalidateRect(Some(self.hwnd), None, false);
+            }
+        }
         self.icon_bitmaps.borrow_mut().clear();
         self.thumb_bitmaps.borrow_mut().clear();
         self.preview_bitmap.borrow_mut().take();
@@ -743,3 +821,4 @@ fn font_exists(dw: &IDWriteFactory, family: &str) -> bool {
         coll.FindFamilyName(&HSTRING::from(family), &mut index, &mut exists).is_ok() && exists.as_bool()
     }
 }
+
