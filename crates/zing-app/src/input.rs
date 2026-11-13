@@ -374,7 +374,9 @@ impl App {
             // 右側面板的命中在 match 之前已交給 side_click
             _ => {}
         }
-        if self.press.is_some() {
+        // 冒煙測試不攔下滑鼠：模擬的訊息直接送給視窗，攔下只會讓使用者真的滑鼠移動蓋掉模擬的游標位置
+        // （拖曳跨步驟時，例如分頁拖到另一個視窗上停住）
+        if self.press.is_some() && !crate::smoke::running() {
             unsafe { SetCapture(self.hwnd) };
         }
         self.invalidate();

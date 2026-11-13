@@ -203,7 +203,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   發現登錄指向的 zing.exe 已不存在就改成目前的位置。隔離模式只在記憶體中切換；單元測試寫在自己的測試機碼下並刪除。
   命令列的資料夾（`zing_core::startup::parse_args`）：`shell:MyComputerFolder` 是「此電腦」，其他 `shell:`、`::{CLSID}`
   直接交給 `explorer.exe`（不能用 ShellExecute 開資料夾，會再轉回 zing）。已有 zing 開著時（`instance.rs`：具名 mutex
-  表示有 zing 在執行）以 WM_COPYDATA 轉給看得見的視窗開新分頁（`App::open_folder`，已開著就切換過去），
+  表示有 zing 在執行）以 WM_COPYDATA 轉給看得見的視窗：有資料夾就開新分頁（`App::open_folder`，已開著就切換過去），
+  沒有就開新視窗（`App::new_window_from_outside`，與再次執行 explorer.exe 相同；不會有第二個 zing 程序），
   第一個 zing 還沒有視窗時最多等 3 秒；隔離模式的視窗拒絕。啟動時的分頁（`startup`：session／new／tabs）在 `zing_core::startup::initial`。
 - 「在資料夾中顯示」（`shellwin.rs`）：設為預設的檔案總管時，視窗登記到 ShellWindows（`SHOpenFolderAndSelectItems` 以此
   找視窗、呼叫 `IShellView::SelectItem`；沒有登記時呼叫端卡 20 秒）。目前的資料夾改變時（重繪時比對，與視窗標題相同）

@@ -213,16 +213,25 @@ pub struct Smoke {
 impl Smoke {
     pub fn from_args(args: &[String]) -> Option<Self> {
         let get = |k: &str| args.iter().find_map(|a| a.strip_prefix(&format!("--{k}=")).map(String::from));
-        Some(Self {
+        let smoke = Self {
             out: PathBuf::from(get("smoke-out")?),
             dir: path::normalize(&get("smoke-dir")?),
             shots: get("smoke-shots").map(PathBuf::from),
-        })
+        };
+        RUNNING.store(true, std::sync::atomic::Ordering::Relaxed);
+        Some(smoke)
     }
 
     pub fn dir(&self) -> &str {
         &self.dir
     }
+}
+
+/// 這個程序在跑冒煙測試（所有視窗）
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn running() -> bool {
+    RUNNING.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // ---------------------------------------------------------------- 驅動
@@ -610,21 +619,18 @@ fn tab_total(a: &App) -> usize {
     a.panes.iter().map(|p| p.tabs.len()).sum()
 }
 
-/// 另一個視窗分頁列的最右邊（版面與這個視窗相同），換成這個視窗的用戶區座標（DIP）
-fn point_over_other_strip(main: HWND, other: HWND) -> (f32, f32) {
-    let at = with_app(|a| {
-        a.layout = a.compute_layout();
-        let s = a.layout.panes.first().map(|p| p.strip)?;
-        Some((s.r - 4.0, (s.t + s.b) / 2.0))
-    })
-    .flatten()
-    .unwrap_or((0.0, 0.0));
-    let mut pt = screen_point(other, at);
+/// 另一個視窗分頁列的最右邊（那個視窗自己回報的：位置、大小可能與這個視窗不同），換成這個視窗的用戶區座標（DIP）
+fn point_over_other_strip(main: HWND) -> Option<(f32, f32)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    with_app(|a| crate::hub::broadcast(a.win.id, crate::hub::Shared::Probe(tx)));
+    // 等另一個視窗的執行緒回答：測試工具自己的等待，不算 UI 停頓
+    let (x, y) = crate::window::exclude_from_stall(|| rx.recv_timeout(Duration::from_secs(2)).ok())?.strip_end?;
+    let mut pt = POINT { x, y };
     unsafe {
         let _ = windows::Win32::Graphics::Gdi::ScreenToClient(main, &mut pt);
     }
     let sc = scale(main);
-    (pt.x as f32 / sc, pt.y as f32 / sc)
+    Some((pt.x as f32 / sc, pt.y as f32 / sc))
 }
 
 /// 這個程序的其他 zing 視窗（多視窗）：(視窗, 標題)
@@ -5136,7 +5142,7 @@ function smoke_auto() end
                 *crate::tabmove::TEST_WINDOW_AT.lock().unwrap() = Some(other.0 as isize);
                 let from = with_app(|a| (a.active_pane, a.panes[a.active_pane].active)).and_then(|(p, t)| tab_pos(p, t, 0.5));
                 let Some(from) = from else { return };
-                let to = point_over_other_strip(c.hwnd, other);
+                let Some(to) = point_over_other_strip(c.hwnd) else { return };
                 let h = c.hwnd;
                 send(h, WM_MOUSEMOVE, 0, mouse_lparam(h, from));
                 send(h, WM_LBUTTONDOWN, MK_LBUTTON.0 as usize, mouse_lparam(h, from));
@@ -5153,8 +5159,7 @@ function smoke_auto() end
         step(
             "多視窗：放開，分頁移到那個視窗，標示消失",
             |c| {
-                let Some(other) = other_windows(c.hwnd).first().map(|(h, _)| *h) else { return };
-                let to = point_over_other_strip(c.hwnd, other);
+                let Some(to) = point_over_other_strip(c.hwnd) else { return };
                 send(c.hwnd, WM_LBUTTONUP, 0, mouse_lparam(c.hwnd, to));
             },
             |c, a| {
@@ -5213,6 +5218,22 @@ function smoke_auto() end
         move |c, a| {
             expect("回傳值", c.note("copydata"), Some("0"))?;
             expect("分頁不變", Some(tab_paths(a).join("|")), c.note("tabs_before").map(String::from))
+        },
+    ));
+    v.push(step(
+        "外部開啟：隔離模式拒絕其他程序要求開新視窗",
+        |c| {
+            let cds = windows::Win32::System::DataExchange::COPYDATASTRUCT {
+                dwData: crate::instance::NEW_WINDOW_MAGIC,
+                cbData: 0,
+                lpData: std::ptr::null_mut(),
+            };
+            let r = unsafe { SendMessageW(c.hwnd, WM_COPYDATA, Some(WPARAM(0)), Some(LPARAM(&cds as *const _ as isize))) };
+            c.notes.push(("copydata_window", r.0.to_string()));
+        },
+        |c, _| {
+            expect("回傳值", c.note("copydata_window"), Some("0"))?;
+            expect("其他視窗", other_windows(c.hwnd).len(), 0)
         },
     ));
     v.push(step(

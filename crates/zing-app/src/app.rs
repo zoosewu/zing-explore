@@ -627,12 +627,18 @@ impl App {
             Shared::FolderView { path, view, when } => self.folder_views.set(&path, view, when),
             #[cfg(feature = "smoke")]
             Shared::Probe(tx) => {
+                self.layout = self.compute_layout();
+                let strip_end = self.layout.panes.first().map(|p| {
+                    let pt = self.client_to_screen(p.strip.r - 4.0, (p.strip.t + p.strip.b) / 2.0);
+                    (pt.x, pt.y)
+                });
                 let _ = tx.send(crate::hub::Probe {
                     theme: self.theme_name.clone(),
                     favorites: self.favorites.clone(),
                     tab: self.tab().path.clone(),
                     tabs: self.panes.iter().map(|p| p.tabs.len()).sum(),
                     tab_insert: self.tab_insert,
+                    strip_end,
                     jobs: self.jobs.list.iter().map(|j| j.id).collect(),
                     undo: self.undo_label().map(String::from),
                 });

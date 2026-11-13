@@ -70,6 +70,10 @@ mod smoke {
     pub fn start(_hwnd: HWND, _smoke: Smoke) {}
 
     pub fn tick(_hwnd: HWND) {}
+
+    pub fn running() -> bool {
+        false
+    }
 }
 mod view;
 mod welcome;
@@ -95,7 +99,7 @@ fn main() {
         Some(zing_core::startup::Target::Folder(p)) => Some(p),
         None => None,
     };
-    // 已經有 zing 開著：轉給它開新分頁
+    // 已經有 zing 開著：轉給它（有資料夾就開新分頁，沒有就開新視窗）
     if !isolated && !instance::start(open.as_deref()) {
         return;
     }

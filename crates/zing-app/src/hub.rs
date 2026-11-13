@@ -89,6 +89,8 @@ pub struct Probe {
     pub tabs: usize,
     /// 另一個視窗拖曳中的分頁要插入的位置
     pub tab_insert: Option<(usize, usize)>,
+    /// 第一個窗格分頁列的最右邊（螢幕座標，實體像素）
+    pub strip_end: Option<(i32, i32)>,
     pub jobs: Vec<crate::jobs::JobId>,
     pub undo: Option<String>,
 }

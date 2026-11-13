@@ -1,7 +1,8 @@
-//! 已經有 zing 開著時，從外部開啟的資料夾（命令列參數）轉給它開新分頁，不另外開視窗。
+//! 已經有 zing 開著時，再次啟動的 zing 把請求轉給它，不另外執行一個程序（多視窗都在同一個程序裡，hub.rs）：
+//! 指定了資料夾（命令列參數）就在它的視窗開新分頁，沒有指定就由它開一個新視窗（與再次執行 explorer.exe 相同）。
 //!
 //! - 每個 zing（隔離模式除外）開著具名的 mutex：它存在表示已有 zing 在執行（或正在啟動）。
-//! - 以資料夾啟動時，以 WM_COPYDATA 轉給看得見的 zing 視窗。mutex 存在但還沒有看得見的視窗（同時開啟多個資料夾，
+//! - 以 WM_COPYDATA 轉給看得見的 zing 視窗。mutex 存在但還沒有看得見的視窗（同時開啟多個資料夾，
 //!   第一個還在啟動）就等它出現，最多 3 秒。視窗拒絕（隔離模式、正在結束、權限較高的程序收不到）就自己開視窗。
 //! - 轉送前 `AllowSetForegroundWindow`：使用者剛開啟的是這個程序，收到的視窗才能把自己帶到前景。
 
@@ -20,6 +21,8 @@ use crate::app::App;
 
 /// WM_COPYDATA 的 dwData：開啟資料夾（內容是 UTF-16 路徑，空的是「此電腦」）
 pub const OPEN_MAGIC: usize = 0x7a69_6e67;
+/// WM_COPYDATA 的 dwData：開新視窗（沒有指定資料夾的啟動）
+pub const NEW_WINDOW_MAGIC: usize = 0x7a69_6e68;
 /// 路徑的上限（位元組）
 const MAX_BYTES: u32 = 64 * 1024;
 
@@ -30,17 +33,24 @@ enum Sent {
     NoWindow,
 }
 
-/// 啟動時呼叫（建立視窗之前）。`open`：命令列要開啟的資料夾。回傳 false 表示已轉給執行中的 zing，這個程序直接結束
+/// 啟動時呼叫（建立視窗之前）。`open`：命令列要開啟的資料夾，None 時請執行中的 zing 開新視窗。
+/// 回傳 false 表示已轉給執行中的 zing，這個程序直接結束
 pub fn start(open: Option<&str>) -> bool {
     // handle 不關閉：程序結束時才釋放，mutex 在最後一個 zing 結束後消失
     let existed = match unsafe { CreateMutexW(None, false, w!("Local\\zing-explore.instance")) } {
         Ok(_) => (unsafe { GetLastError() }) == ERROR_ALREADY_EXISTS,
         Err(_) => false,
     };
-    let Some(path) = open.filter(|_| existed) else { return true };
+    if !existed {
+        return true;
+    }
+    let (magic, path) = match open {
+        Some(p) => (OPEN_MAGIC, p),
+        None => (NEW_WINDOW_MAGIC, ""),
+    };
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        match send(path) {
+        match send(magic, path) {
             Sent::Accepted => return false,
             Sent::Refused => return true,
             Sent::NoWindow if Instant::now() >= deadline => return true,
@@ -49,9 +59,9 @@ pub fn start(open: Option<&str>) -> bool {
     }
 }
 
-fn send(path: &str) -> Sent {
+fn send(magic: usize, path: &str) -> Sent {
     let data: Vec<u16> = path.encode_utf16().collect();
-    let cds = COPYDATASTRUCT { dwData: OPEN_MAGIC, cbData: (data.len() * 2) as u32, lpData: data.as_ptr() as *mut _ };
+    let cds = COPYDATASTRUCT { dwData: magic, cbData: (data.len() * 2) as u32, lpData: data.as_ptr() as *mut _ };
     let mut found = false;
     let mut after: Option<HWND> = None;
     while let Ok(h) = unsafe { FindWindowExW(None, after, w!("zing.main"), PCWSTR::null()) } {
@@ -74,9 +84,13 @@ fn send(path: &str) -> Sent {
     if found { Sent::Refused } else { Sent::NoWindow }
 }
 
-/// 收到的 WM_COPYDATA（不是開啟資料夾的回傳 None，交給 DefWindowProc）；接受時回傳 true
+/// 收到的 WM_COPYDATA（不是開啟資料夾、開新視窗的回傳 None，交給 DefWindowProc）；接受時回傳 true
 pub fn on_copy_data(hwnd: HWND, lparam: LPARAM) -> Option<bool> {
     let cds = unsafe { &*(lparam.0 as *const COPYDATASTRUCT) };
+    if cds.dwData == NEW_WINDOW_MAGIC {
+        // 新視窗自己會到前景（它的執行緒由這個程序建立，再次啟動的程序已允許這個程序設定前景）
+        return Some(crate::window::with_app(|a| a.new_window_from_outside()).unwrap_or(false));
+    }
     if cds.dwData != OPEN_MAGIC {
         return None;
     }
@@ -107,6 +121,31 @@ impl App {
             return false;
         }
         self.open_folder(path);
+        true
+    }
+
+    /// 再次啟動 zing（沒有指定資料夾）：開新視窗，分頁依「啟動時」的設定（還原工作階段時是使用者資料夾）。
+    /// 隔離模式與正在結束時不接受
+    pub fn new_window_from_outside(&mut self) -> bool {
+        if self.isolated || self.pending_exit {
+            return false;
+        }
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        let (panes, active_pane) = zing_core::startup::initial(self.config.startup, &self.config.start_tabs, &[], 0, &home, None);
+        let rect = crate::window::placement(self.hwnd).map(|w| {
+            let step = (32.0 * self.gfx.scale()) as i32;
+            (w.x + step, w.y + step, w.w, w.h)
+        });
+        crate::hub::open_window(crate::hub::WindowInit {
+            restore: Some(crate::settings::WindowSession {
+                panes: panes.into_iter().map(|p| crate::settings::PaneState { tabs: p.tabs, active: p.active }).collect(),
+                active_pane,
+                ..Default::default()
+            }),
+            rect,
+            inherit: self.inherit_for_new_window(),
+            ..Default::default()
+        });
         true
     }
 
