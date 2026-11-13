@@ -5,9 +5,8 @@
 .EXAMPLE
     pwsh tools/perf.ps1                 # 建置 release 並量測
     pwsh tools/perf.ps1 -UpdateBaseline # 量測後把結果存成新基準（確認改善後才更新）
-    # CI：先在同一台機器量上一個 Release 的 zing.exe 當基準，再量這一版
-    pwsh tools/perf.ps1 -Exe 上一版\zing.exe -BaselineFile 不存在.json -Out 上一版\perf.json
-    pwsh tools/perf.ps1 -BaselineFile 上一版\perf.json -RelTolerance 0.15 -Out perf.json
+    # CI：和上一個 Release 的 zing.exe 在同一台機器交替量（每一項新舊輪流），上一版的結果當基準
+    pwsh tools/perf.ps1 -CompareExe 上一版\zing.exe -FolderRuns 5 -RelTolerance 0.15 -Out perf.json
 #>
 param(
     [int]$Runs = 10,
@@ -22,14 +21,20 @@ param(
     [switch]$AllowRegression,
     # 另外把結果寫到這個檔案（perf\results\latest.json 照樣寫）
     [string]$Out,
-    # 量這個 zing.exe（不建置；CI 用來在同一台機器量上一個 Release 當基準）
-    [string]$Exe
+    # 量這個 zing.exe（不建置）
+    [string]$Exe,
+    # 和這個 zing.exe（上一版）交替量，以它的結果當基準（取代 -BaselineFile）：
+    # 機器在量測途中變快或變慢時兩邊受到相同的影響，不會全算在其中一版
+    [string]$CompareExe,
+    # 開啟資料夾、捲動、主題切換量幾次（取中位數）
+    [int]$FolderRuns = 3
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 # 參數 -Exe 與這裡的變數不能同名（PowerShell 的變數名稱不分大小寫）
 $zingExe = if ($Exe) { (Resolve-Path $Exe).Path } else { Join-Path $root 'target\release\zing.exe' }
+$oldExe = if ($CompareExe) { (Resolve-Path $CompareExe).Path } else { $null }
 $baselinePath = if ($BaselineFile) { $BaselineFile } else { Join-Path $root 'perf\baseline.json' }
 $resultsDir = Join-Path $root 'perf\results'
 New-Item -ItemType Directory -Force $resultsDir | Out-Null
@@ -66,9 +71,9 @@ if (-not $SkipBuild -and -not $Exe) {
 $testRoot = if ($env:ZING_TEST_DIR) { $env:ZING_TEST_DIR } else { $env:TEMP }
 New-Item -ItemType Directory -Force $testRoot | Out-Null
 
-function Invoke-Zing([string[]]$zingArgs, [int]$timeoutMs = 60000) {
+function Invoke-Zing([string]$exe, [string[]]$zingArgs, [int]$timeoutMs = 60000) {
     $out = Join-Path $testRoot ("zing-perf-{0}.json" -f [guid]::NewGuid())
-    $p = Start-Process -FilePath $zingExe -ArgumentList (@("--perf-out=$out") + $zingArgs) -PassThru
+    $p = Start-Process -FilePath $exe -ArgumentList (@("--perf-out=$out") + $zingArgs) -PassThru
     if (-not $p.WaitForExit($timeoutMs)) { $p.Kill(); throw "zing 逾時：$zingArgs" }
     if (-not (Test-Path $out)) { throw "zing 沒有輸出結果：$zingArgs" }
     $r = Get-Content $out -Raw | ConvertFrom-Json
@@ -93,26 +98,48 @@ if (-not (Test-Path (Join-Path $benchDir '.complete'))) {
     New-Item -ItemType File (Join-Path $benchDir '.complete') | Out-Null
 }
 
-$results = [ordered]@{}
-$results.exe_mb = [math]::Round((Get-Item $zingExe).Length / 1MB, 3)
-
-Write-Host "量測冷啟動（$Runs 次）..."
-$startups = 1..$Runs | ForEach-Object { (Invoke-Zing @()).startup_ms }
-$sorted = $startups | Sort-Object
-$results.startup_ms = [math]::Round($sorted[[int][math]::Floor(($sorted.Count - 1) / 2)], 2)
-
-Write-Host '量測閒置記憶體（啟動 5 秒後）...'
-$results.private_working_set_mb = [math]::Round((Invoke-Zing @('--perf-idle-ms=5000')).private_working_set_mb, 2)
-
-# 單次的 p99 雜訊大，跑 3 次取各指標的中位數
-Write-Host "量測開啟 $Files 個項目的資料夾、捲動與主題切換（3 次）..."
-$folderRuns = 1..3 | ForEach-Object { Invoke-Zing @("--perf-dir=$benchDir", '--perf-scroll-frames=300', '--perf-theme') }
-foreach ($k in 'first_screen_ms', 'load_all_ms', 'frame_p50_ms', 'frame_p99_ms', 'frame_max_ms', 'frames_over_8ms', 'theme_switch_ms', 'listing_mb', 'scroll_warp') {
-    $vals = @($folderRuns | ForEach-Object { $_.$k } | Where-Object { $null -ne $_ } | Sort-Object)
-    if ($vals.Count -gt 0) { $results[$k] = [math]::Round($vals[[int][math]::Floor(($vals.Count - 1) / 2)], 2) }
+# 每個要量的執行檔一份結果；比較模式下每一項新舊交替（ABBA 順序，抵消先後的影響）
+$exes = @($zingExe) + @(if ($oldExe) { $oldExe })
+$raw = @{}
+foreach ($e in $exes) { $raw[$e] = @{ startup = @(); idle = @(); folder = @() } }
+function Measure-Each([int]$i, [scriptblock]$measure) {
+    $order = if ($i % 2 -eq 0) { $exes } else { @($exes)[($exes.Count - 1)..0] }
+    foreach ($e in $order) { & $measure $e }
+}
+function Get-Median($vals) {
+    $sorted = @($vals | Where-Object { $null -ne $_ } | Sort-Object)
+    if ($sorted.Count -eq 0) { return $null }
+    return [math]::Round($sorted[[int][math]::Floor(($sorted.Count - 1) / 2)], 2)
 }
 
-$baseline = if (Test-Path $baselinePath) { Get-Content $baselinePath -Raw | ConvertFrom-Json } else { $null }
+$label = if ($oldExe) { '（與上一版交替）' } else { '' }
+Write-Host "量測冷啟動（$Runs 次）$label..."
+for ($i = 0; $i -lt $Runs; $i++) { Measure-Each $i { param($e) $raw[$e].startup += (Invoke-Zing $e @()).startup_ms } }
+
+Write-Host "量測閒置記憶體（啟動 5 秒後）$label..."
+Measure-Each 0 { param($e) $raw[$e].idle += (Invoke-Zing $e @('--perf-idle-ms=5000')).private_working_set_mb }
+
+# 單次的 p99 雜訊大，跑多次取各指標的中位數
+Write-Host "量測開啟 $Files 個項目的資料夾、捲動與主題切換（$FolderRuns 次）$label..."
+for ($i = 0; $i -lt $FolderRuns; $i++) {
+    Measure-Each $i { param($e) $raw[$e].folder += Invoke-Zing $e @("--perf-dir=$benchDir", '--perf-scroll-frames=300', '--perf-theme') }
+}
+
+function Get-Results([string]$e) {
+    $r = [ordered]@{}
+    $r.exe_mb = [math]::Round((Get-Item $e).Length / 1MB, 3)
+    $r.startup_ms = Get-Median $raw[$e].startup
+    $r.private_working_set_mb = Get-Median $raw[$e].idle
+    foreach ($k in 'first_screen_ms', 'load_all_ms', 'frame_p50_ms', 'frame_p99_ms', 'frame_max_ms', 'frames_over_8ms', 'theme_switch_ms', 'listing_mb', 'scroll_warp') {
+        $v = Get-Median ($raw[$e].folder | ForEach-Object { $_.$k })
+        if ($null -ne $v) { $r[$k] = $v }
+    }
+    return $r
+}
+$results = Get-Results $zingExe
+
+$baseline = if ($oldExe) { [pscustomobject](Get-Results $oldExe) }
+            elseif (Test-Path $baselinePath) { Get-Content $baselinePath -Raw | ConvertFrom-Json } else { $null }
 $failed = $false
 $rows = foreach ($k in $results.Keys) {
     $v = $results[$k]

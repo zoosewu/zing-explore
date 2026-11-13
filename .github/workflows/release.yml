@@ -103,9 +103,10 @@ jobs:
           pwsh -NoProfile tools/ci-annotate.ps1 -Log $log -Kind smoke -ExitCode $code
           exit $code
 
-      # 每次分到的機器快慢差很多（同一版的主題切換 14～23 ms），拿上一版在別台機器量的結果比較會誤判退步：
-      # 下載上一個 Release 的 zing.exe，在這台機器先量一次當基準
-      - name: 上一個 Release 的效能（在這台機器量，當作基準）
+      # 每次分到的機器快慢差很多（同一版的主題切換 14～23 ms），拿上一版在別台機器量的結果比較會誤判退步；
+      # 同一台機器也會在量測途中變慢（v0.5.0：先量完上一版再量這一版，載入 124 → 175 ms，重跑 119 ms），
+      # 所以下載上一個 Release 的 zing.exe，在效能檢查中和這一版交替量
+      - name: 下載上一個 Release（效能檢查的基準）
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'baseline'
           New-Item -ItemType Directory -Force $dir | Out-Null
@@ -118,12 +119,14 @@ jobs:
             if (Test-Path $zip) {
               $old = Join-Path $dir 'old'
               Expand-Archive $zip $old -Force
-              # 只要數字：不和任何基準比較（給不存在的檔案），超標也不算失敗
-              pwsh -NoProfile tools/perf.ps1 -Exe (Join-Path $old 'zing.exe') -BaselineFile (Join-Path $dir 'none.json') -Out $baseline
-              Write-Host "基準：$latest（在這台機器量）"
+              $exe = Join-Path $old 'zing.exe'
+              if (Test-Path $exe) {
+                "PERF_COMPARE_EXE=$exe" >> $env:GITHUB_ENV
+                Write-Host "基準：$latest（在這台機器交替量）"
+              }
             }
-            # 量不到時退回 Release 附的結果（其他機器量的）
-            if (-not (Test-Path $baseline)) {
+            # 沒有執行檔時退回 Release 附的結果（其他機器量的）
+            if (-not (Test-Path (Join-Path $dir 'old\zing.exe'))) {
               gh release download $latest --repo $env:GITHUB_REPOSITORY --pattern perf.json --dir $dir 2>$null
               Write-Host "基準：$latest 附的 perf.json"
             }
@@ -137,9 +140,10 @@ jobs:
           New-Item -ItemType Directory -Force $dist | Out-Null
           # 外層的 @() 不可省：if 運算式回傳單一元素時會變成字串，@extra 展開字串會拆成字元（"-" 被當成 -Runs 的值）
           $extra = @(if ('${{ inputs.allow_regression }}' -eq 'true') { '-AllowRegression' })
-          # 每次分到的機器不同，相對容差比本機（5%）寬
+          $base = if ($env:PERF_COMPARE_EXE) { @('-CompareExe', $env:PERF_COMPARE_EXE) } else { @('-BaselineFile', $env:PERF_BASELINE) }
+          # 每次分到的機器不同，相對容差比本機（5%）寬；資料夾量 5 次，偶發的停頓不影響中位數
           $log = Join-Path $env:RUNNER_TEMP 'perf.log'
-          pwsh -NoProfile tools/perf.ps1 -BaselineFile $env:PERF_BASELINE -RelTolerance 0.15 -Out (Join-Path $dist 'perf.json') @extra 2>&1 |
+          pwsh -NoProfile tools/perf.ps1 @base -FolderRuns 5 -RelTolerance 0.15 -Out (Join-Path $dist 'perf.json') @extra 2>&1 |
             ForEach-Object { "$_" } | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
           pwsh -NoProfile tools/ci-annotate.ps1 -Log $log -Kind perf -ExitCode $code
