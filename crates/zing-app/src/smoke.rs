@@ -5070,6 +5070,9 @@ function smoke_auto() end
                 let mw_dir = mw_dir.clone();
                 move |_| {
                     with_app(|a| a.submit_op(crate::shell::FileOp::Rename { path: mw_dir.clone(), new_name: "多視窗資料夾改".into() }));
+                    // 送出的視窗忙碌：作業完成的通知晚到，其他視窗的樹狀列監看（合併 250 ms）先看到資料夾不見了，
+                    // 分頁仍要跟著改名，不能移到上層
+                    crate::window::exclude_from_stall(|| std::thread::sleep(Duration::from_millis(700)));
                 }
             },
             {

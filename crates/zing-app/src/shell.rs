@@ -217,7 +217,10 @@ fn spawn_worker(name: &str, n: Route, use_index: bool) -> Sender<Queued> {
                 // 其他視窗開著要移走的資料夾也要暫停監看（送出的視窗已在送出時暫停）
                 n.pause_others(&vacated);
                 let result = perform(n.hwnd(), op, sink.as_ref());
-                n.resume_others(&vacated);
+                // 改名成功時其他視窗先換掉分頁的路徑再恢復監看（取消、失敗都是 Err），
+                // 不經送出的視窗（它忙碌時，其他視窗的樹狀列監看會先以為資料夾不見了，把分頁移到上層）
+                let renamed = rename.filter(|_| result.is_ok());
+                n.resume_others(&vacated, renamed.clone());
                 // 使用者取消時 Shell 回傳的錯誤碼不一定（ERROR_CANCELLED、E_ABORT、COPYENGINE_E_USER_CANCELLED）
                 let user_cancelled = job.as_ref().is_some_and(|(_, ctl)| ctl.cancel.load(Ordering::Relaxed));
                 let cancelled = matches!(&result, Err(e) if user_cancelled || is_cancel_code(e.code()));
@@ -234,7 +237,6 @@ fn spawn_worker(name: &str, n: Route, use_index: bool) -> Sender<Queued> {
                 if let Some((id, _)) = &job {
                     n.job(*id, JobEvent::Finished { error: error.clone(), cancelled });
                 }
-                let renamed = rename.filter(|_| error.is_none() && !cancelled);
                 // 作業佇列介面會顯示錯誤，狀態列不再重複
                 let error = if job.is_some() { None } else { error };
                 n.done(Msg::FileOpDone { dirs, error, select, renamed, vacated, origin, undo: undo.map(Box::new), win: n.win });

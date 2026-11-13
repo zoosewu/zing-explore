@@ -120,7 +120,7 @@ enum HubMsg {
     /// 送給這個 HWND 的視窗（拖曳分頁）；它已關閉時丟掉，放過去的分頁改開新視窗
     ToHwnd(isize, Box<Msg>),
     PauseOthers { from: u32, paths: Vec<String>, ack: Sender<PauseAck> },
-    ResumeOthers { from: u32, paths: Vec<String> },
+    ResumeOthers { from: u32, paths: Vec<String>, renamed: Option<(String, String)> },
     /// 資料夾大小快取：視窗目前的全部記錄（Hub 與檔案合併後寫入）
     SaveSizes(Vec<zing_core::dirsize::CacheLine>),
     /// 資料夾的檢視設定改變；`persist` 為 false（隔離模式）時只轉送、不寫檔
@@ -244,9 +244,9 @@ impl Hub {
                     n.send(Msg::PauseWatches { paths: paths.clone(), ack: ack.clone() });
                 }
             }
-            HubMsg::ResumeOthers { from, paths } => {
+            HubMsg::ResumeOthers { from, paths, renamed } => {
                 for (_, n) in self.notifiers.iter().filter(|(i, _)| *i != from) {
-                    n.send(Msg::ResumeWatches(paths.clone()));
+                    n.send(Msg::ResumeWatches { paths: paths.clone(), renamed: renamed.clone() });
                 }
             }
             HubMsg::SaveSizes(lines) => self.sizes.extend(lines),
@@ -440,10 +440,10 @@ impl Route {
         }
     }
 
-    /// 作業結束：恢復其他視窗的監看
-    pub fn resume_others(&self, paths: &[String]) {
-        if !paths.is_empty() && HUB.get().is_some() {
-            send(HubMsg::ResumeOthers { from: self.win, paths: paths.to_vec() });
+    /// 作業結束：恢復其他視窗的監看；`renamed`（改名成功的資料夾）先換掉它們分頁的路徑
+    pub fn resume_others(&self, paths: &[String], renamed: Option<(String, String)>) {
+        if (!paths.is_empty() || renamed.is_some()) && HUB.get().is_some() {
+            send(HubMsg::ResumeOthers { from: self.win, paths: paths.to_vec(), renamed });
         }
     }
 }

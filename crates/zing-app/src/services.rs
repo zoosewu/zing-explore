@@ -63,8 +63,8 @@ pub enum Msg {
     },
     /// 其他視窗的檔案作業要移走這些項目：暫停它們之下的監看，完成後回報（hub.rs）
     PauseWatches { paths: Vec<String>, ack: std::sync::mpsc::Sender<crate::hub::PauseAck> },
-    /// 其他視窗的檔案作業結束：恢復監看
-    ResumeWatches(Vec<String>),
+    /// 其他視窗的檔案作業結束：先套用改名（分頁跟著換），再恢復監看
+    ResumeWatches { paths: Vec<String>, renamed: Option<(String, String)> },
     /// 其他視窗拖曳中的分頁經過（螢幕座標）或離開（tabmove.rs）
     TabHover(Option<(i32, i32)>),
     /// 其他視窗放過來的分頁

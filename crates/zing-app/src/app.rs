@@ -1273,7 +1273,12 @@ impl App {
                 self.pause_watches(paths);
                 let _ = ack.send(crate::hub::PauseAck::Paused);
             }
-            Msg::ResumeWatches(paths) => self.resume_watches(&paths),
+            Msg::ResumeWatches { paths, renamed } => {
+                if let Some((old, new)) = &renamed {
+                    self.on_renamed(old, new, false);
+                }
+                self.resume_watches(&paths);
+            }
             Msg::TabHover(screen) => self.on_tab_hover(screen),
             Msg::TabDrop(drop) => self.on_tab_drop(*drop),
             Msg::Status { text, error } => self.set_status(text, error),
