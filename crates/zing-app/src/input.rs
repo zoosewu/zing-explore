@@ -51,13 +51,22 @@ impl App {
             Some(Press::Row { pane, x: x0, y: y0, .. }) => {
                 if (x - x0).abs() > DRAG_THRESHOLD || (y - y0).abs() > DRAG_THRESHOLD {
                     let tab = self.panes[pane].tab();
-                    let paths = tab.target_paths();
+                    let paths = if tab.path.is_empty() { Vec::new() } else { tab.target_paths() };
                     self.press = None;
+                    if !paths.is_empty() && paths.iter().any(|p| crate::shell::parse_in_background(p)) {
+                        // 網路磁碟等：路徑在背景解析，好了還按著才開始拖曳（仍擷取滑鼠，放開就取消）
+                        static DRAG_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                        let id = DRAG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        self.press = Some(Press::DragOut { id });
+                        let n = self.notifier.clone();
+                        crate::shell::parse_pidls(paths, move |pidls| n.send(crate::services::Msg::DragPidls { id, pidls }));
+                        return;
+                    }
                     unsafe {
                         let _ = ReleaseCapture();
                     }
-                    if !paths.is_empty() && !tab.path.is_empty() {
-                        self.modal = Some(Modal::DragOut { paths });
+                    if let Some(pidls) = crate::shell::parse_local(&paths).filter(|p| !p.is_empty()) {
+                        self.modal = Some(Modal::DragOut { pidls });
                     }
                 }
             }
@@ -109,6 +118,8 @@ impl App {
                 self.invalidate();
             }
             Some(Press::BarEditDrag { .. }) => self.cmdbar_edit_drag(y),
+            // 等背景解析好才開始拖曳（Msg::DragPidls）
+            Some(Press::DragOut { .. }) => {}
             None => {
                 let hit = self.hit_test(&self.layout, x, y);
                 if hit != self.hover {

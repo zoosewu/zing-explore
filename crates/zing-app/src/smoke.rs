@@ -3368,6 +3368,122 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         .slow(),
     );
 
+    // 網路磁碟等的路徑在背景解析（TEST_PARSE_IN_BACKGROUND 把本機路徑當成網路路徑）
+    v.push(
+        step(
+            "拖放：網路位置的放置目標在背景解析，進入時不卡住、好了就能放",
+            {
+                let src = ctx.sub("拖放來源.txt");
+                move |c| {
+                    let (Some(target), Some(pa)) = (crate::window::drop_target(), row_pos("資料夾A")) else {
+                        c.notes.push(("bg_drop_error", "沒有放置目標或找不到資料夾列".into()));
+                        return;
+                    };
+                    let data = {
+                        let _allow = zing_core::guard::allow_io("冒煙測試扮演拖曳來源");
+                        crate::shell::data_object(std::slice::from_ref(&src))
+                    };
+                    let Ok(data) = data else {
+                        c.notes.push(("bg_drop_error", "無法建立資料物件".into()));
+                        return;
+                    };
+                    crate::shell::TEST_PARSE_IN_BACKGROUND.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let keys = MODIFIERKEYS_FLAGS(MK_LBUTTON.0);
+                    let all = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
+                    let s = screen_point(c.hwnd, pa);
+                    let pt = POINTL { x: s.x, y: s.y };
+                    let before = crate::shell::DROP_RESOLVES.load(std::sync::atomic::Ordering::Relaxed);
+                    unsafe {
+                        let mut eff = all;
+                        let t = Instant::now();
+                        let _ = target.DragEnter(&data, keys, pt, &mut eff);
+                        c.notes.push(("bg_enter_ms", format!("{:.1}", t.elapsed().as_secs_f64() * 1000.0)));
+                        c.notes.push(("bg_enter_effect", eff.0.to_string()));
+                        // COM 在拖曳中一直呼叫 DragOver：解析好之後的那一次就能放
+                        let t = Instant::now();
+                        while eff.0 == 0 && t.elapsed() < Duration::from_secs(2) {
+                            crate::window::exclude_from_stall(|| std::thread::sleep(Duration::from_millis(10)));
+                            eff = all;
+                            let _ = target.DragOver(keys, pt, &mut eff);
+                        }
+                        c.notes.push(("bg_ready_effect", eff.0.to_string()));
+                        let _ = target.DragLeave();
+                    }
+                    let resolves = crate::shell::DROP_RESOLVES.load(std::sync::atomic::Ordering::Relaxed) - before;
+                    c.notes.push(("bg_resolves", resolves.to_string()));
+                    crate::shell::TEST_PARSE_IN_BACKGROUND.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
+            |c, a| {
+                if let Some(e) = c.note("bg_drop_error") {
+                    return Err(e.to_string());
+                }
+                expect("解析中進入的效果（不能放）", c.note("bg_enter_effect"), Some("0"))?;
+                let ms: f64 = c.note("bg_enter_ms").and_then(|v| v.parse().ok()).unwrap_or(f64::MAX);
+                if ms > 30.0 {
+                    return Err(format!("DragEnter 阻塞 UI 執行緒 {ms:.0} ms"));
+                }
+                if c.note("bg_ready_effect") == Some("0") {
+                    return Err("背景解析好之後仍然不能放".into());
+                }
+                expect("建立放置目標次數", c.note("bg_resolves"), Some("1"))?;
+                expect("離開後清除標示", a.drop_hover, None)
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "拖出：網路位置的項目在背景解析，好了還按著才開始拖曳",
+            |c| {
+                let Some(at) = row_pos("資料夾B") else { return };
+                *crate::shell::TEST_DRAG_OUT.lock().unwrap() = None;
+                crate::shell::TEST_PARSE_IN_BACKGROUND.store(true, std::sync::atomic::Ordering::Relaxed);
+                let h = c.hwnd;
+                send(h, WM_MOUSEMOVE, 0, mouse_lparam(h, at));
+                send(h, WM_LBUTTONDOWN, MK_LBUTTON.0 as usize, mouse_lparam(h, at));
+                send(h, WM_MOUSEMOVE, MK_LBUTTON.0 as usize, mouse_lparam(h, (at.0 + 40.0, at.1)));
+                let pending = with_app(|a| matches!(a.press, Some(crate::app::Press::DragOut { .. }))).unwrap_or(false);
+                c.notes.push(("drag_pending", pending.to_string()));
+            },
+            |c, a| {
+                expect("超過拖曳距離時等背景解析", c.note("drag_pending"), Some("true"))?;
+                expect("拖出的項目數", *crate::shell::TEST_DRAG_OUT.lock().unwrap(), Some(1))?;
+                expect("開始拖曳後不再按著", a.press.is_none(), true)
+            },
+        )
+        .slow(),
+    );
+    v.push(step(
+        "拖出：解析好之前放開就取消",
+        |c| {
+            let Some(at) = row_pos("資料夾B") else { return };
+            let h = c.hwnd;
+            send(h, WM_LBUTTONUP, 0, mouse_lparam(h, (at.0 + 40.0, at.1)));
+            *crate::shell::TEST_DRAG_OUT.lock().unwrap() = None;
+            send(h, WM_MOUSEMOVE, 0, mouse_lparam(h, at));
+            send(h, WM_LBUTTONDOWN, MK_LBUTTON.0 as usize, mouse_lparam(h, at));
+            send(h, WM_MOUSEMOVE, MK_LBUTTON.0 as usize, mouse_lparam(h, (at.0 + 40.0, at.1)));
+            let pending = with_app(|a| matches!(a.press, Some(crate::app::Press::DragOut { .. }))).unwrap_or(false);
+            c.notes.push(("drag_pending2", pending.to_string()));
+            send(h, WM_LBUTTONUP, 0, mouse_lparam(h, (at.0 + 40.0, at.1)));
+        },
+        {
+            // 背景解析的結果送回來之後才能確定沒有開始拖曳：等 300 ms
+            let mut since: Option<Instant> = None;
+            move |c, a| {
+                let t = *since.get_or_insert_with(Instant::now);
+                if t.elapsed() < Duration::from_millis(300) {
+                    return Err("等背景解析的結果".into());
+                }
+                crate::shell::TEST_PARSE_IN_BACKGROUND.store(false, std::sync::atomic::Ordering::Relaxed);
+                expect("超過拖曳距離時等背景解析", c.note("drag_pending2"), Some("true"))?;
+                expect("放開後沒有開始拖曳", *crate::shell::TEST_DRAG_OUT.lock().unwrap(), None)?;
+                expect("沒有按著", a.press.is_none(), true)
+            }
+        },
+    ));
+
     // ------------------------------------------------ 樹狀列
     v.push(step(
         "樹狀列：可見的節點已預先載入（點擊前就知道能否展開）",

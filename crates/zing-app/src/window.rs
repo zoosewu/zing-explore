@@ -739,8 +739,8 @@ pub fn check_stall(msg: &MSG, elapsed: std::time::Duration) {
 fn run_modal(hwnd: HWND, modal: Modal) {
     IN_MODAL.with(|m| m.set(true));
     match modal {
-        Modal::DragOut { paths } => {
-            let _ = shell::drag_out(hwnd, &paths);
+        Modal::DragOut { pidls } => {
+            let _ = shell::drag_out(hwnd, &pidls);
             with_app(|a| {
                 a.drop_hover = None;
                 a.drop_tab = None;

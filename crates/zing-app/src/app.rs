@@ -102,6 +102,8 @@ pub enum Press {
     ThemeSlider { field: usize, row: usize },
     /// 自訂命令列面板：拖曳按鈕調整順序（`item` 是命令列的第幾個按鈕）
     BarEditDrag { item: usize },
+    /// 拖出網路磁碟等的項目：路徑在背景解析，好了（`Msg::DragPidls`）還按著才開始拖曳，放開就取消
+    DragOut { id: u32 },
 }
 
 /// 關閉的分頁：重新開啟時回到原本的位置與上一頁／下一頁
@@ -116,7 +118,8 @@ const CLOSED_TABS_MAX: usize = 20;
 
 /// 有自己訊息迴圈的動作：必須在釋放 App 借用後才執行（見 window.rs）
 pub enum Modal {
-    DragOut { paths: Vec<String> },
+    /// 路徑已解析成 PIDL（網路磁碟等在背景解析，見 `Press::DragOut`）
+    DragOut { pidls: Vec<crate::shell::Pidl> },
     /// 主題編輯器：選色對話框
     PickColor { target: crate::themepanel::Target, initial: String },
     ImportTheme,
@@ -1290,6 +1293,17 @@ impl App {
             Msg::Status { text, error } => self.set_status(text, error),
             Msg::Icon { id, pixels } => self.icons.store(id, pixels),
             Msg::MenuRename => self.start_rename(),
+            Msg::DragPidls { id, pidls } => {
+                if matches!(self.press, Some(Press::DragOut { id: d }) if d == id) {
+                    self.press = None;
+                    unsafe {
+                        let _ = windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
+                    }
+                    if let Some(pidls) = pidls {
+                        self.modal = Some(Modal::DragOut { pidls });
+                    }
+                }
+            }
             Msg::MenuExtra { id, target } => self.on_menu_extra(id, target),
             Msg::MenuExtensions { items, folder, menus, hidden } => self.menu_exts = Some(crate::ctxmenu::MenuExts { items, folder, menus, hidden }),
             Msg::Job { id, event } => self.on_job_event(id, event),

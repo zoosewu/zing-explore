@@ -77,6 +77,8 @@ pub enum Msg {
     ThumbCustom { path: String, set: bool, result: Result<(), String> },
     /// 右鍵選單選了「重新命名」
     MenuRename,
+    /// 拖出的項目在背景解析好了（`Press::DragOut`）
+    DragPidls { id: u32, pidls: Option<Vec<crate::shell::Pidl>> },
     /// 右鍵選單選了程式自訂的項目
     MenuExtra { id: u32, target: String },
     /// 預先準備好的第三方擴充功能項目（精簡右鍵選單的第一層）

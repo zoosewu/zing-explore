@@ -7,7 +7,7 @@
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -16,8 +16,8 @@ use zing_core::text::wide_z;
 use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, POINTL, WPARAM};
 use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
 use windows::Win32::System::Com::{
-    CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
-    CoInitializeEx, CoTaskMemFree, DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
+    CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, COINIT_MULTITHREADED, CoCreateInstance,
+    CoInitializeEx, CoUninitialize, CoTaskMemFree, DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
 };
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
@@ -74,6 +74,35 @@ impl Drop for Pidl {
     }
 }
 
+// SAFETY: PIDL 是 CoTaskMemAlloc 配置的一般記憶體，不屬於任何 COM 套間，在哪條執行緒使用、釋放都可以
+unsafe impl Send for Pidl {}
+
+/// 冒煙測試：把所有路徑當成網路路徑，一律在背景解析（測試環境沒有網路磁碟）
+pub static TEST_PARSE_IN_BACKGROUND: AtomicBool = AtomicBool::new(false);
+
+/// 解析成 PIDL 要不要放到背景：SHParseDisplayName 會讀項目的屬性，網路磁碟、UNC、隨身碟、光碟可能停很久；
+/// 本機固定磁碟很快，照樣在 UI 執行緒解析（拖曳、放置目標不必等一個來回）
+pub fn parse_in_background(p: &str) -> bool {
+    TEST_PARSE_IN_BACKGROUND.load(Ordering::Relaxed) || !crate::services::is_fixed_drive(p)
+}
+
+/// 在背景解析 PIDL，全部成功才回傳。每次一條執行緒：某個網路位置卡住時不影響其他的
+pub fn parse_pidls(paths: Vec<String>, done: impl FnOnce(Option<Vec<Pidl>>) + Send + 'static) {
+    let _ = std::thread::Builder::new().name("zing-pidl".into()).spawn(move || {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        done(paths.iter().map(|p| Pidl::parse(p).ok()).collect());
+        unsafe { CoUninitialize() };
+    });
+}
+
+/// 在 UI 執行緒解析本機固定磁碟的路徑（`parse_in_background` 為 false 的）
+pub fn parse_local(paths: &[String]) -> Option<Vec<Pidl>> {
+    let _allow = guard::allow_io("本機固定磁碟的路徑，解析很快（其他的在背景解析）");
+    paths.iter().map(|p| Pidl::parse(p).ok()).collect()
+}
+
 fn shell_item(p: &str) -> Result<IShellItem> {
     guard::io("建立 Shell 項目");
     let w = wide_z(p);
@@ -88,6 +117,11 @@ fn item_array(paths: &[String]) -> Result<IShellItemArray> {
 
 pub fn data_object(paths: &[String]) -> Result<IDataObject> {
     unsafe { item_array(paths)?.BindToHandler(None, &BHID_DataObject) }
+}
+
+fn data_object_of(pidls: &[Pidl]) -> Result<IDataObject> {
+    let raw: Vec<*const ITEMIDLIST> = pidls.iter().map(|p| p.0 as *const _).collect();
+    unsafe { SHCreateShellItemArrayFromIDLists(&raw)?.BindToHandler(None, &BHID_DataObject) }
 }
 
 // ---------------------------------------------------------------- 檔案作業
@@ -919,24 +953,28 @@ pub fn properties(hwnd: HWND, paths: &[String]) {
 
 // ---------------------------------------------------------------- 拖放
 
-/// 從程式拖出檔案（模態，直到放開滑鼠）
-pub fn drag_out(hwnd: HWND, paths: &[String]) -> Result<DROPEFFECT> {
-    // COM 規定拖曳來源必須在視窗所屬的 UI 執行緒
-    let _allow = guard::allow_io("拖曳來源受 COM 限制必須在 UI 執行緒");
-    let obj = data_object(paths)?;
+/// 冒煙測試：拖出的項目數（不真的開始拖曳：SHDoDragDrop 看的是真實的滑鼠，會放在使用者的游標下）
+pub static TEST_DRAG_OUT: Mutex<Option<usize>> = Mutex::new(None);
+
+/// 從程式拖出檔案（模態，直到放開滑鼠）。路徑已解析成 PIDL（`parse_local`／`parse_pidls`）
+pub fn drag_out(hwnd: HWND, pidls: &[Pidl]) -> Result<DROPEFFECT> {
+    if crate::smoke::running() {
+        *TEST_DRAG_OUT.lock().unwrap() = Some(pidls.len());
+        return Ok(DROPEFFECT_NONE);
+    }
+    // COM 規定拖曳來源必須在視窗所屬的 UI 執行緒；從 PIDL 建立資料物件不讀磁碟
+    let obj = data_object_of(pidls)?;
     unsafe { SHDoDragDrop(Some(hwnd), &obj, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK) }
 }
 
 /// 解析過幾次放置目標（冒煙測試用來確認每次拖曳的快取）
 pub static DROP_RESOLVES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// 取得某資料夾在 Shell 中的放置目標，讓拖放行為與檔案總管完全一致
-fn shell_drop_target(hwnd: HWND, folder: &str) -> Option<IDropTarget> {
+/// 取得某資料夾在 Shell 中的放置目標，讓拖放行為與檔案總管完全一致。
+/// 放置目標的回呼由 COM 在 UI 執行緒呼叫，物件必須在這裡建立；路徑已解析好，這裡不讀磁碟
+fn shell_drop_target(hwnd: HWND, pidl: &Pidl) -> Option<IDropTarget> {
     DROP_RESOLVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    // 放置目標的回呼由 COM 在 UI 執行緒呼叫，無法移到背景；每次拖曳已快取
-    let _allow = guard::allow_io("放置目標受 COM 限制必須在 UI 執行緒");
     unsafe {
-        let pidl = Pidl::parse(folder).ok()?;
         let mut last = std::ptr::null_mut();
         let parent: IShellFolder = SHBindToParent(pidl.0, Some(&mut last)).ok()?;
         parent.GetUIObjectOf(hwnd, &[last as *const _], None).ok()
@@ -966,8 +1004,20 @@ struct DropState {
     helper: Option<IDropTargetHelper>,
     /// 這次拖曳已解析過的放置目標：游標來回移動時不重複解析路徑
     cache: std::collections::HashMap<String, Option<IDropTarget>>,
+    /// 在背景解析中的資料夾（網路磁碟等）與解析好的結果；每次拖曳換一份，晚到的結果寫進舊的
+    parsing: std::collections::HashSet<String>,
+    parsed: Arc<Mutex<std::collections::HashMap<String, Option<Pidl>>>>,
     /// 右鍵拖曳：放下時由 Shell 顯示選單
     right_button: bool,
+}
+
+impl DropState {
+    /// 拖曳開始或結束：丟掉這次拖曳的快取
+    fn forget(&mut self) {
+        self.cache.clear();
+        self.parsing.clear();
+        self.parsed = Arc::default();
+    }
 }
 
 impl DropTarget {
@@ -987,22 +1037,48 @@ impl DropTarget {
                     let _ = inner.DragLeave();
                 }
             }
-            st.folder = folder.clone();
-            st.inner = folder.and_then(|f| {
-                let hwnd = self.hwnd;
-                st.cache.entry(f).or_insert_with_key(|f| shell_drop_target(hwnd, f)).clone()
-            });
-            if let (Some(inner), Some(data)) = (&st.inner, &st.data) {
-                unsafe { inner.DragEnter(data, keys, *pt, effect)? };
-            } else {
-                unsafe { *effect = DROPEFFECT_NONE };
-            }
+            st.folder = folder;
         } else if let Some(inner) = &st.inner {
             unsafe { inner.DragOver(keys, *pt, effect)? };
+            return Ok(());
+        }
+        // 換了資料夾，或同一個資料夾還在背景解析：解析好之前不能放（COM 在拖曳中一直呼叫 DragOver，好了就進入）
+        st.inner = st.folder.clone().and_then(|f| self.target_for(&mut st, f));
+        if let (Some(inner), Some(data)) = (&st.inner, &st.data) {
+            unsafe { inner.DragEnter(data, keys, *pt, effect)? };
         } else {
             unsafe { *effect = DROPEFFECT_NONE };
         }
         Ok(())
+    }
+
+    /// 資料夾的放置目標：本機固定磁碟立即解析；其他的在背景解析，還沒好時回傳 None
+    fn target_for(&self, st: &mut DropState, folder: String) -> Option<IDropTarget> {
+        if let Some(t) = st.cache.get(&folder) {
+            return t.clone();
+        }
+        let pidl = if !parse_in_background(&folder) {
+            parse_local(std::slice::from_ref(&folder)).and_then(|mut v| v.pop())
+        } else {
+            // 背景執行緒只在寫入時拿鎖；拿不到就當作還沒好，下一次 DragOver 再看
+            match st.parsed.try_lock().ok().and_then(|mut m| m.remove(&folder)) {
+                Some(pidl) => pidl,
+                None => {
+                    if st.parsing.insert(folder.clone()) {
+                        let (parsed, key) = (st.parsed.clone(), folder.clone());
+                        parse_pidls(vec![folder], move |r| {
+                            if let Ok(mut m) = parsed.lock() {
+                                m.insert(key, r.and_then(|mut v| v.pop()));
+                            }
+                        });
+                    }
+                    return None;
+                }
+            }
+        };
+        let t = pidl.and_then(|p| shell_drop_target(self.hwnd, &p));
+        st.cache.insert(folder, t.clone());
+        t
     }
 }
 
@@ -1013,7 +1089,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
             st.data = data.cloned();
             st.folder = None;
             st.inner = None;
-            st.cache.clear();
+            st.forget();
             st.right_button = keys.0 & MK_RBUTTON.0 != 0;
             if let (Some(h), Some(d)) = (&st.helper, &st.data) {
                 unsafe {
@@ -1051,7 +1127,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
         }
         st.data = None;
         st.folder = None;
-        st.cache.clear();
+        st.forget();
         drop(st);
         (self.hover)(None);
         Ok(())
@@ -1069,7 +1145,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
         let folder = st.folder.take();
         let right_button = st.right_button;
         st.data = None;
-        st.cache.clear();
+        st.forget();
         drop(st);
         (self.hover)(None);
         match (inner, data.as_ref()) {

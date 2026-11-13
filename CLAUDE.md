@@ -150,6 +150,11 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   這台電腦會放進第一層的項目與耗時：`cargo test --release -p zing-app ext_items_here -- --ignored --nocapture`。
 - `ShellHost` 的視窗必須是 message-only，執行緒上不可留下頂層視窗：系統啟用視窗時會同步送 WM_ACTIVATEAPP 給程序內所有頂層視窗，主機卡住會連帶卡住 UI。選單的擁有者視窗只在選單顯示期間存在。
 - 拖曳出去與放置目標受 COM 限制必須在 UI 執行緒，透過 `App::modal` 在釋放 App 借用後執行；放置目標每次拖曳只解析一次路徑（快取）。
+  會讀磁碟的只有把路徑解析成 PIDL（`SHParseDisplayName`）：本機固定磁碟在 UI 執行緒解析（很快），網路磁碟、UNC、隨身碟、光碟
+  （`shell::parse_in_background`）在背景執行緒解析（`shell::parse_pidls`），UI 執行緒只從 PIDL 建立 COM 物件。
+  放置目標解析中時回報不能放，COM 在拖曳中一直呼叫 DragOver，好了就進入；拖出時按住超過拖曳距離先 `Press::DragOut`，
+  解析好（`Msg::DragPidls`）還按著才開始拖曳，放開就取消。冒煙測試以 `shell::TEST_PARSE_IN_BACKGROUND` 把本機路徑當成網路路徑，
+  拖出時不真的開始拖曳（`SHDoDragDrop` 看的是真實的滑鼠），改記在 `shell::TEST_DRAG_OUT`。
 - 測試卡住的 Shell 擴充功能：debug build 設定 `ZING_TEST_SHELL_DELAY_MS=8000`，第一個右鍵選單會延遲；UI 必須仍可操作，3 秒後再按右鍵會改用新主機。
 - 新增相依套件前，評估對執行檔大小與啟動時間的影響。
 - 介面文字（含錯誤訊息、命令面板標題、Lua API 說明、zing-index 的命令列輸出）一律經 `tr!`（`zing_core::i18n`，原文為繁體中文）；
@@ -275,8 +280,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 
 ### 已知的效能缺口（待處理）
 
-- 拖放（拖出的資料物件、放置目標）仍在 UI 執行緒解析路徑，這是 COM 的限制；網路路徑在拖曳經過時可能短暫延遲。
-  放置目標每次拖曳只解析一次（冒煙測試確認：來回經過 12 次只解析 2 次，DragOver 約 1.5 ms）。
+- 拖放：路徑在背景解析，但放置目標（Shell 的 IDropTarget）與拖出的資料物件仍在 UI 執行緒從 PIDL 建立（COM 的限制）；
+  這一步一般不讀磁碟，網路位置的 Shell 擴充功能若在這裡讀取仍會短暫延遲。放置目標每次拖曳只建立一次
+  （冒煙測試確認：來回經過 12 次只建立 2 次，DragOver 約 1.5 ms）。
 - 放下：一般檔案（CF_HDROP）的複製／移動交給 `FileOps` 在背景執行，`Drop` 約 1 ms 返回；效果沿用 Shell 在最後一次
   DragOver 決定的（與檔案總管規則相同），移動時以「最佳化移動」回報來源（回傳 DROPEFFECT_NONE、設定 Performed DropEffect）。
   右鍵拖曳、建立捷徑、虛擬檔案（非 CF_HDROP）、資源回收筒內的項目仍交給 Shell 的 `Drop`，會在 UI 執行緒同步執行
