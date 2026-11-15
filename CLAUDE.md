@@ -66,9 +66,10 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   只做一次的事（檢查更新、索引服務的版本、修正預設的檔案總管、歡迎畫面、還原其他視窗）只在 `WinInfo::primary` 的視窗做。
   檔案作業：每個視窗一組作業執行緒，經 `hub::Route` 回報——進度送給每個視窗（作業佇列介面每個視窗都有全部的作業，
   `Shared::JobAdded`），完成（`FileOpDone`）送給送出的視窗，它已關閉就送給其他視窗；所以關閉不是最後一個的視窗不取消作業。
-  作業前 `Route::pause_others` 經 Hub 暫停其他視窗在 `vacated` 之下的監看並等它們回報（最多 500 ms），結束後恢復；
-  改名成功時恢復的訊息帶著新舊路徑（`Route::resume_others`），其他視窗先換掉分頁的路徑再恢復監看，不等送出的視窗轉送
-  （它忙碌時，其他視窗的樹狀列監看會先以為資料夾不見了而把分頁移到上層）；改名只走這一條，`Shared::FilesChanged` 不帶改名。
+  作業開始時（不是送出時，排隊中的作業不影響監看）`Route::pause_all` 經 Hub 暫停每個視窗（包括送出的視窗）在 `vacated`
+  之下的監看並等它們回報（最多 500 ms），結束後 `Route::resume_all` 恢復；改名成功時恢復的訊息帶著新舊路徑，每個視窗先換掉
+  分頁的路徑再恢復監看，不等送出的視窗轉送（它忙碌時，其他視窗的樹狀列監看會先以為資料夾不見了而把分頁移到上層）。
+  恢復的訊息比 `FileOpDone` 先到；改名只走這一條，`FileOpDone` 只換我的最愛，`Shared::FilesChanged` 不帶改名。
   復原與重做的堆疊每個視窗一份相同的（`UndoEvent` 轉送；新視窗以 `hub::Inherit` 接手）。
   資料夾大小與檢視設定的快取檔只由 Hub 寫（`hub::save_sizes` 與檔案合併、`hub::folder_view` 同時轉送給其他視窗）。
   程序層級的狀態（`static`）會被所有視窗共用：新增時想清楚是否該依視窗（例：`shellwin` 的狀態依視窗、`guard` 的 UI 執行緒依執行緒）。
@@ -126,7 +127,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   （暫停與恢復監看、作業中「資料夾不見了」的誤報、改名時換掉分頁的路徑、要確認哪些分頁還在、分頁移到上層）。
   它只做路徑的判斷、回傳 `Effect`，由 `App::apply_vacate` 執行；這些規則改在那裡、單元測試也寫在那裡，App 不再自己判斷。
 - 資料夾底下有開啟中的監看（分頁、樹狀列）時，Windows 拒絕改名、移動、刪除到資源回收筒（監看它自己不影響）。
-  `App::submit_op` 送出前暫停 `FileOp::vacated` 之下的監看（`pause_watches`），`Msg::FileOpDone` 的 `vacated` 恢復；
+  作業開始時暫停 `FileOp::vacated` 之下的監看、結束時恢復（`Msg::PauseWatches`／`ResumeWatches`，見上面的多視窗）；
   新增會移走項目的作業時同步更新 `vacated`。
 - 分頁開著的資料夾被刪除或改名（資料夾監看看不到自己被刪除）：上層的子資料夾變更（樹狀列監看）、檔案作業完成時，
   在背景確認它下面的分頁（`Vacating::check_under` → `services::check_gone`）；重新整理時找不到也一樣（`Msg::ListingError` 的 `gone`）。

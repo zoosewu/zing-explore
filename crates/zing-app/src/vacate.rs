@@ -66,8 +66,7 @@ impl Vacating {
         out
     }
 
-    /// 作業結束（成功、失敗或取消）：先把改名的分頁換成新路徑，再恢復 `vacated` 之下的監看。
-    /// `vacated` 為空表示這個視窗的監看不是這裡暫停的（只套用改名）
+    /// 作業結束（成功、失敗或取消）：先把改名的分頁換成新路徑，再恢復 `vacated` 之下的監看（為空時只套用改名）
     pub fn finish(&mut self, vacated: &[String], renamed: Option<(&str, &str)>, tabs: &[TabSpot]) -> Vec<Effect> {
         let mut out = Vec::new();
         let mut moved: Vec<At> = Vec::new();

@@ -733,8 +733,8 @@ impl App {
         }
     }
 
-    /// 檔案作業送出前：暫停 `vacated` 之下的分頁與樹狀列監看（Windows 拒絕移走底下有開啟中監看的資料夾）
-    pub fn pause_watches(&mut self, vacated: Vec<String>) {
+    /// 檔案作業開始：暫停 `vacated` 之下的分頁與樹狀列監看（Windows 拒絕移走底下有開啟中監看的資料夾）
+    fn pause_watches(&mut self, vacated: Vec<String>) {
         let effects = self.vacating.pause(vacated, &spots(&self.panes));
         self.apply_vacate(effects);
     }
@@ -1204,17 +1204,15 @@ impl App {
                     }
                 }
             }
-            Msg::FileOpDone { dirs, error, select, renamed, vacated, origin, undo, win } => {
+            Msg::FileOpDone { dirs, error, select, renamed, origin, undo } => {
                 if let Some(e) = error {
                     self.set_status(e, true);
                 }
                 self.record_undo(origin, undo.map(|u| *u));
+                // 分頁的路徑與監看已由 `Msg::ResumeWatches` 處理
                 if let Some((old, new)) = &renamed {
                     self.rename_favorites(old, new);
                 }
-                // 送出作業的視窗已關閉時，這個視窗收到它的結果：這裡的監看是經 Hub 暫停、恢復的，只套用改名
-                let vacated: &[String] = if win == self.win.id { &vacated } else { &[] };
-                self.finish_vacating(vacated, renamed.as_ref());
                 self.broadcast(crate::hub::Shared::FilesChanged { dirs: dirs.clone() });
                 self.on_dirs_changed(&dirs, select.as_ref());
             }

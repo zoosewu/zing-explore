@@ -151,7 +151,7 @@ pub enum FileOp {
 impl FileOp {
     /// 可能耗時、要顯示在作業佇列的作業
     /// 作業會移走（改名、移動、刪除）的項目。底下有開啟中的監看時 Windows 拒絕移走資料夾，
-    /// 所以送出前先暫停它們的監看（`App::submit_op`），完成時（`Msg::FileOpDone` 的 `vacated`）恢復
+    /// 所以作業開始時暫停每個視窗在它們之下的監看（`Route::pause_all`），結束時恢復（`Route::resume_all`）
     pub fn vacated(&self) -> Vec<String> {
         match self {
             FileOp::Rename { path, .. } => vec![path.clone()],
@@ -215,16 +215,8 @@ fn spawn_worker(name: &str, n: Route, use_index: bool) -> Sender<Queued> {
                 {
                     // 排隊中就取消了
                     n.job(*id, JobEvent::Finished { error: None, cancelled: true });
-                    n.done(Msg::FileOpDone {
-                        dirs: Vec::new(),
-                        error: None,
-                        select: None,
-                        renamed: None,
-                        vacated: op.vacated(),
-                        origin,
-                        undo: None,
-                        win: n.win,
-                    });
+                    // 還沒開始就沒有暫停監看
+                    n.done(Msg::FileOpDone { dirs: Vec::new(), error: None, select: None, renamed: None, origin, undo: None });
                     continue;
                 }
                 // 進度回呼記下的（原本的路徑, 新的項目），完成後用來產生復原（undo.rs）
@@ -248,13 +240,13 @@ fn spawn_worker(name: &str, n: Route, use_index: bool) -> Sender<Queued> {
                         }
                     }
                 }
-                // 其他視窗開著要移走的資料夾也要暫停監看（送出的視窗已在送出時暫停）
-                n.pause_others(&vacated);
+                // 每個視窗（包括送出的視窗）暫停要移走的資料夾之下的監看
+                n.pause_all(&vacated);
                 let result = perform(n.hwnd(), op, sink.as_ref());
-                // 改名成功時其他視窗先換掉分頁的路徑再恢復監看（取消、失敗都是 Err），
-                // 不經送出的視窗（它忙碌時，其他視窗的樹狀列監看會先以為資料夾不見了，把分頁移到上層）
+                // 改名成功時每個視窗先換掉分頁的路徑再恢復監看（取消、失敗都是 Err），
+                // 不經送出的視窗轉送（它忙碌時，其他視窗的樹狀列監看會先以為資料夾不見了，把分頁移到上層）
                 let renamed = rename.filter(|_| result.is_ok());
-                n.resume_others(&vacated, renamed.clone());
+                n.resume_all(&vacated, renamed.clone());
                 // 使用者取消時 Shell 回傳的錯誤碼不一定（ERROR_CANCELLED、E_ABORT、COPYENGINE_E_USER_CANCELLED）
                 let user_cancelled = job.as_ref().is_some_and(|(_, ctl)| ctl.cancel.load(Ordering::Relaxed));
                 let cancelled = matches!(&result, Err(e) if user_cancelled || is_cancel_code(e.code()));
@@ -273,7 +265,7 @@ fn spawn_worker(name: &str, n: Route, use_index: bool) -> Sender<Queued> {
                 }
                 // 作業佇列介面會顯示錯誤，狀態列不再重複
                 let error = if job.is_some() { None } else { error };
-                n.done(Msg::FileOpDone { dirs, error, select, renamed, vacated, origin, undo: undo.map(Box::new), win: n.win });
+                n.done(Msg::FileOpDone { dirs, error, select, renamed, origin, undo: undo.map(Box::new) });
             }
         })
         .expect("無法建立檔案作業執行緒");

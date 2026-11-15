@@ -119,8 +119,8 @@ enum HubMsg {
     ToWindow(u32, Box<Msg>),
     /// 送給這個 HWND 的視窗（拖曳分頁）；它已關閉時丟掉，放過去的分頁改開新視窗
     ToHwnd(isize, Box<Msg>),
-    PauseOthers { from: u32, paths: Vec<String>, ack: Sender<PauseAck> },
-    ResumeOthers { from: u32, paths: Vec<String>, renamed: Option<(String, String)> },
+    PauseAll { paths: Vec<String>, ack: Sender<PauseAck> },
+    ResumeAll { paths: Vec<String>, renamed: Option<(String, String)> },
     /// 資料夾大小快取：視窗目前的全部記錄（Hub 與檔案合併後寫入）
     SaveSizes(Vec<zing_core::dirsize::CacheLine>),
     /// 資料夾的檢視設定改變；`persist` 為 false（隔離模式）時只轉送、不寫檔
@@ -237,15 +237,14 @@ impl Hub {
                 }),
                 (None, _) => {}
             },
-            HubMsg::PauseOthers { from, paths, ack } => {
-                let others: Vec<&Notifier> = self.notifiers.iter().filter(|(i, _)| *i != from).map(|(_, n)| n).collect();
-                let _ = ack.send(PauseAck::Expect(others.len()));
-                for n in others {
+            HubMsg::PauseAll { paths, ack } => {
+                let _ = ack.send(PauseAck::Expect(self.notifiers.len()));
+                for (_, n) in &self.notifiers {
                     n.send(Msg::PauseWatches { paths: paths.clone(), ack: ack.clone() });
                 }
             }
-            HubMsg::ResumeOthers { from, paths, renamed } => {
-                for (_, n) in self.notifiers.iter().filter(|(i, _)| *i != from) {
+            HubMsg::ResumeAll { paths, renamed } => {
+                for (_, n) in &self.notifiers {
                     n.send(Msg::ResumeWatches { paths: paths.clone(), renamed: renamed.clone() });
                 }
             }
@@ -419,14 +418,20 @@ impl Route {
         self.n.hwnd()
     }
 
-    /// 作業開始前暫停其他視窗在 `paths` 之下的監看（Windows 拒絕移走有監看的資料夾）；
-    /// 在作業執行緒等各視窗回報，最多 500 ms（某個視窗卡住也不會一直等）
-    pub fn pause_others(&self, paths: &[String]) {
-        if paths.is_empty() || HUB.get().is_none() {
+    /// 作業開始前暫停每個視窗（包括送出的視窗）在 `paths` 之下的監看（Windows 拒絕移走有監看的資料夾）；
+    /// 在作業執行緒等各視窗回報，最多 500 ms（某個視窗卡住也不會一直等）。排隊中的作業不暫停，那些分頁照樣自動更新
+    pub fn pause_all(&self, paths: &[String]) {
+        if paths.is_empty() {
             return;
         }
         let (tx, rx) = channel();
-        send(HubMsg::PauseOthers { from: self.win, paths: paths.to_vec(), ack: tx });
+        match HUB.get() {
+            Some(_) => send(HubMsg::PauseAll { paths: paths.to_vec(), ack: tx }),
+            None => {
+                let _ = tx.send(PauseAck::Expect(1));
+                self.n.send(Msg::PauseWatches { paths: paths.to_vec(), ack: tx });
+            }
+        }
         // Hub 先送 Expect（之後各視窗才收到要求），所以第一個一定是它
         let deadline = Instant::now() + Duration::from_millis(500);
         let mut waiting = None;
@@ -440,10 +445,15 @@ impl Route {
         }
     }
 
-    /// 作業結束：恢復其他視窗的監看；`renamed`（改名成功的資料夾）先換掉它們分頁的路徑
-    pub fn resume_others(&self, paths: &[String], renamed: Option<(String, String)>) {
-        if (!paths.is_empty() || renamed.is_some()) && HUB.get().is_some() {
-            send(HubMsg::ResumeOthers { from: self.win, paths: paths.to_vec(), renamed });
+    /// 作業結束：恢復每個視窗的監看；`renamed`（改名成功的資料夾）先換掉分頁的路徑。在 `done` 之前送，
+    /// 送出的視窗收到 `FileOpDone` 時分頁已經換好
+    pub fn resume_all(&self, paths: &[String], renamed: Option<(String, String)>) {
+        if paths.is_empty() && renamed.is_none() {
+            return;
+        }
+        match HUB.get() {
+            Some(_) => send(HubMsg::ResumeAll { paths: paths.to_vec(), renamed }),
+            None => self.n.send(Msg::ResumeWatches { paths: paths.to_vec(), renamed }),
         }
     }
 }

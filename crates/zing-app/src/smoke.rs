@@ -3719,7 +3719,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                     return Err("磁碟上的名稱沒有改變".into());
                 }
                 expect("分頁", a.tab().path.as_str(), path::join(&ren_new, "內層").as_str())?;
-                // 送出時暫停的監看已恢復
+                // 作業時暫停的監看已恢復
                 expect("分頁的監看", a.tab().watcher.is_some(), true)?;
                 expect("節點", a.tree.find(&ren_new).is_some(), true)
             }

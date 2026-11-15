@@ -49,17 +49,15 @@ pub enum Msg {
     DirChanged { tab: TabId, generation: u64 },
     /// 縮圖檢視：這些子資料夾（名稱；None 是全部，變更太多時）裡的項目改變了，它們的封面要重新取得
     CoversChanged { tab: TabId, generation: u64, folders: Option<Vec<String>> },
-    /// `renamed`：成功改名的項目（舊的完整路徑, 新的完整路徑）；`vacated`：送出時暫停監看的項目（`FileOp::vacated`）
+    /// 送給送出作業的視窗（它已關閉時送給其他視窗）。`renamed`：成功改名的項目（舊的完整路徑, 新的完整路徑）；
+    /// 分頁的路徑與監看已由先送到的 `ResumeWatches` 處理
     FileOpDone {
         dirs: Vec<String>,
         error: Option<String>,
         select: Option<Select>,
         renamed: Option<(String, String)>,
-        vacated: Vec<String>,
         origin: crate::shell::Origin,
         undo: Option<Box<crate::undo::Undo>>,
-        /// 送出作業的視窗（它已關閉時這個訊息送給其他視窗）
-        win: u32,
     },
     /// 其他視窗的檔案作業要移走這些項目：暫停它們之下的監看，完成後回報（hub.rs）
     PauseWatches { paths: Vec<String>, ack: std::sync::mpsc::Sender<crate::hub::PauseAck> },
