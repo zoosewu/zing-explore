@@ -1268,12 +1268,13 @@ impl App {
                     self.set_status(e, true);
                 }
                 self.record_undo(origin, undo.map(|u| *u));
+                // 先換掉改名的分頁的路徑再恢復監看：否則會在已不存在的舊路徑上開始監看（與 `ResumeWatches` 同順序）
+                if let Some((old, new)) = &renamed {
+                    self.on_renamed(old, new, true);
+                }
                 // 送出作業的視窗已關閉時，這個視窗收到它的結果：這裡的監看是經 Hub 暫停、恢復的
                 if win == self.win.id {
                     self.resume_watches(&vacated);
-                }
-                if let Some((old, new)) = &renamed {
-                    self.on_renamed(old, new, true);
                 }
                 self.broadcast(crate::hub::Shared::FilesChanged { dirs: dirs.clone(), renamed });
                 self.on_dirs_changed(&dirs, select.as_ref());
