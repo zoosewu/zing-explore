@@ -78,7 +78,8 @@ impl App {
     /// 進入資料夾（列舉完成）時：有索引就查詢，否則依設定逐資料夾計算
     pub fn folder_sizes_on_enter(&mut self, p: usize, t: usize) {
         let path = self.panes[p].tabs[t].path.clone();
-        if path.is_empty() || t != self.panes[p].active {
+        // 壓縮檔裡的資料夾不是真的資料夾，不計算大小
+        if path.is_empty() || t != self.panes[p].active || zing_core::archive::is_inside(&path) {
             return;
         }
         if self.isolated {

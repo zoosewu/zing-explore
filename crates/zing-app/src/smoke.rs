@@ -3679,6 +3679,187 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             expect("列舉完成", a.tab().shown(), true)
         }
     }));
+    // 壓縮檔當資料夾瀏覽（zip 讀中央目錄、7z 經 Shell 列出；唯讀）。壓縮檔以系統的 tar.exe 建立（名稱用 ASCII：tar 以 ANSI 字碼頁讀參數）
+    let arc_src = path::join(&d, "arc-src");
+    let (arc_zip, arc_7z, arc_out) = (path::join(&d, "arc-test.zip"), path::join(&d, "arc-test.7z"), path::join(&d, "arc-out"));
+    v.push(
+        step(
+            "壓縮檔：建立測試用的 zip 與 7z",
+            {
+                let (d, arc_src) = (d.clone(), arc_src.clone());
+                move |_| {
+                    harness_io(|| {
+                        let _ = std::fs::create_dir_all(path::join(&arc_src, "sub"));
+                        let _ = std::fs::write(path::join(&arc_src, "readme.txt"), "zing");
+                        let _ = std::fs::write(path::join(&arc_src, r"sub\a.txt"), "a");
+                        let tar = std::path::Path::new(&std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())).join(r"System32\tar.exe");
+                        for name in ["arc-test.zip", "arc-test.7z"] {
+                            let _ = crate::services::shell_command(&format!("\"{}\" -a -cf ..\\{name} readme.txt sub", tar.display()), Some(&arc_src)).status();
+                        }
+                    });
+                    with_app(|a| {
+                        let p = a.active_pane;
+                        a.navigate(p, d.clone(), false);
+                    });
+                }
+            },
+            {
+                let d = d.clone();
+                move |_, a| {
+                    at(a, &d)?;
+                    let n = names(a);
+                    expect("zip", n.iter().any(|x| x == "arc-test.zip"), true)?;
+                    expect("7z", n.iter().any(|x| x == "arc-test.7z"), true)
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(step(
+        "壓縮檔：開啟 zip 像資料夾一樣進入",
+        |_| {
+            with_app(|a| {
+                let tab = a.tab_mut();
+                if let Some(i) = tab.find_view("arc-test.zip") {
+                    tab.select_only(i);
+                }
+                a.focus = Focus::List;
+                a.open_focused();
+            });
+        },
+        {
+            let arc_zip = arc_zip.clone();
+            move |_, a| {
+                at(a, &arc_zip)?;
+                let mut n = names(a);
+                n.sort();
+                expect("內容", n, vec!["readme.txt".to_string(), "sub".to_string()])?;
+                let t = a.tab();
+                let sub = t.view.iter().map(|&e| e as usize).find(|&e| t.listing.name_string(e) == "sub");
+                expect("sub 是資料夾", sub.map(|e| t.listing.entries[e].is_dir()), Some(true))?;
+                expect("不監看", t.watcher.is_none(), true)
+            }
+        },
+    ));
+    v.push(step(
+        "壓縮檔：進入 zip 裡的資料夾",
+        {
+            let arc_zip = arc_zip.clone();
+            move |_| {
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, path::join(&arc_zip, "sub"), true);
+                });
+            }
+        },
+        {
+            let arc_zip = arc_zip.clone();
+            move |_, a| {
+                at(a, &path::join(&arc_zip, "sub"))?;
+                expect("內容", names(a), vec!["a.txt".to_string()])
+            }
+        },
+    ));
+    v.push(
+        step(
+        "壓縮檔：唯讀，刪除的按鈕停用、作業不送出",
+        {
+            let arc_zip = arc_zip.clone();
+            move |_| {
+                with_app(|a| {
+                    a.tab_mut().select_only(0);
+                    a.submit_op(crate::shell::FileOp::Delete { paths: vec![path::join(&arc_zip, r"sub\a.txt")], permanent: false });
+                });
+            }
+        },
+        |_, a| {
+            expect("刪除停用", a.cmd_disabled("file.delete").is_some(), true)?;
+            expect("新資料夾停用", a.cmd_disabled("file.newfolder").is_some(), true)?;
+            expect("複製可以", a.cmd_disabled("file.copy"), None)?;
+            let status = a.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+            expect("狀態列", status.contains("唯讀"), true)?;
+            expect("作業", a.jobs.list.iter().any(|j| j.title.contains("a.txt")), false)
+        },
+    )
+    .expect_error());
+    v.push(step(
+        "壓縮檔：上一層兩次回到壓縮檔所在的資料夾並選取它",
+        |_| {
+            with_app(|a| {
+                a.go_up();
+                a.go_up();
+            });
+        },
+        {
+            let d = d.clone();
+            move |_, a| {
+                at(a, &d)?;
+                let t = a.tab();
+                expect("焦點", t.focused_entry().map(|e| t.listing.name_string(e)), Some("arc-test.zip".to_string()))
+            }
+        },
+    ));
+    v.push(
+        step(
+            "壓縮檔：7z 經 Shell 列出",
+            {
+                let arc_7z = arc_7z.clone();
+                move |_| {
+                    with_app(|a| {
+                        let p = a.active_pane;
+                        a.navigate(p, arc_7z.clone(), true);
+                    });
+                }
+            },
+            {
+                let arc_7z = arc_7z.clone();
+                move |_, a| {
+                    at(a, &arc_7z)?;
+                    let mut n = names(a);
+                    n.sort();
+                    expect("內容", n, vec!["readme.txt".to_string(), "sub".to_string()])
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "壓縮檔：從 zip 複製出來",
+            {
+                let (arc_zip, arc_out) = (arc_zip.clone(), arc_out.clone());
+                move |_| {
+                    let _ = harness_io(|| std::fs::create_dir_all(&arc_out));
+                    with_app(|a| {
+                        a.submit_op(crate::shell::FileOp::Transfer { sources: vec![path::join(&arc_zip, "readme.txt")], dest: arc_out.clone(), mov: false })
+                    });
+                }
+            },
+            {
+                let arc_out = arc_out.clone();
+                move |_, _| {
+                    let out = path::join(&arc_out, "readme.txt");
+                    match harness_io(|| std::fs::read_to_string(&out)) {
+                        Ok(t) => expect("內容", t.as_str(), "zing"),
+                        Err(_) => Err("還沒複製出來".into()),
+                    }
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(step("壓縮檔：回到測試資料夾", {
+        let d = d.clone();
+        move |_| {
+            with_app(|a| {
+                let p = a.active_pane;
+                a.navigate(p, d.clone(), true);
+            });
+        }
+    }, {
+        let d = d.clone();
+        move |_, a| at(a, &d)
+    }));
     // 樹狀列就地重新命名：開在它裡面的分頁跟著換路徑
     let (ren_old, ren_new) = (path::join(&d, "樹狀列改名"), path::join(&d, "樹狀列改名後"));
     let ren_inner = path::join(&ren_old, "內層");

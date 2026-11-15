@@ -52,12 +52,14 @@ impl App {
                 if (x - x0).abs() > DRAG_THRESHOLD || (y - y0).abs() > DRAG_THRESHOLD {
                     let tab = self.panes[pane].tab();
                     let paths = if tab.path.is_empty() { Vec::new() } else { tab.target_paths() };
+                    // 壓縮檔是唯讀的：從裡面拖出只能複製
+                    let copy_only = zing_core::archive::is_inside(&tab.path);
                     self.press = None;
                     if !paths.is_empty() && paths.iter().any(|p| crate::shell::parse_in_background(p)) {
                         // 網路磁碟等：路徑在背景解析，好了還按著才開始拖曳（仍擷取滑鼠，放開就取消）
                         static DRAG_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                         let id = DRAG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        self.press = Some(Press::DragOut { id });
+                        self.press = Some(Press::DragOut { id, copy_only });
                         let n = self.notifier.clone();
                         crate::shell::parse_pidls(paths, move |pidls| n.send(crate::services::Msg::DragPidls { id, pidls }));
                         return;
@@ -66,7 +68,7 @@ impl App {
                         let _ = ReleaseCapture();
                     }
                     if let Some(pidls) = crate::shell::parse_local(&paths).filter(|p| !p.is_empty()) {
-                        self.modal = Some(Modal::DragOut { pidls });
+                        self.modal = Some(Modal::DragOut { pidls, copy_only });
                     }
                 }
             }
@@ -825,7 +827,8 @@ impl App {
             Hit::Crumb(p) => (None, Some(p)),
             _ => (None, None),
         };
-        let folder = folder.filter(|f| !f.is_empty());
+        // 壓縮檔是唯讀的：不能放進去
+        let folder = folder.filter(|f| !f.is_empty() && !zing_core::archive::is_inside(f));
         let hover = if folder.is_some() { hover } else { None };
         let tab = tab.filter(|_| folder.is_some());
         if hover != self.drop_hover || tab != self.drop_tab {

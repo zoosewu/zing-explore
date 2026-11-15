@@ -102,7 +102,7 @@ pub enum Press {
     /// 自訂命令列面板：拖曳按鈕調整順序（`item` 是命令列的第幾個按鈕）
     BarEditDrag { item: usize },
     /// 拖出網路磁碟等的項目：路徑在背景解析，好了（`Msg::DragPidls`）還按著才開始拖曳，放開就取消
-    DragOut { id: u32 },
+    DragOut { id: u32, copy_only: bool },
 }
 
 /// 關閉的分頁：重新開啟時回到原本的位置與上一頁／下一頁
@@ -118,7 +118,7 @@ const CLOSED_TABS_MAX: usize = 20;
 /// 有自己訊息迴圈的動作：必須在釋放 App 借用後才執行（見 window.rs）
 pub enum Modal {
     /// 路徑已解析成 PIDL（網路磁碟等在背景解析，見 `Press::DragOut`）
-    DragOut { pidls: Vec<crate::shell::Pidl> },
+    DragOut { pidls: Vec<crate::shell::Pidl>, copy_only: bool },
     /// 主題編輯器：選色對話框
     PickColor { target: crate::themepanel::Target, initial: String },
     ImportTheme,
@@ -861,7 +861,9 @@ impl App {
         }
         let tab = self.tab();
         let Some(e) = tab.focused_entry() else { return };
-        if tab.listing.entries[e].is_dir() {
+        // 壓縮檔像資料夾一樣進入（壓縮檔裡的壓縮檔交給 Shell 開啟）
+        let archive = !zing_core::archive::is_inside(&tab.path) && zing_core::archive::is_archive_name(&tab.listing.name_string(e));
+        if tab.listing.entries[e].is_dir() || archive {
             let p = self.active_pane;
             let target = tab.full_path(e);
             self.navigate(p, target, true);
@@ -1227,13 +1229,15 @@ impl App {
             Msg::Icon { id, pixels } => self.icons.store(id, pixels),
             Msg::MenuRename => self.start_rename(),
             Msg::DragPidls { id, pidls } => {
-                if matches!(self.press, Some(Press::DragOut { id: d }) if d == id) {
+                if let Some(Press::DragOut { id: d, copy_only }) = self.press
+                    && d == id
+                {
                     self.press = None;
                     unsafe {
                         let _ = windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
                     }
                     if let Some(pidls) = pidls {
-                        self.modal = Some(Modal::DragOut { pidls });
+                        self.modal = Some(Modal::DragOut { pidls, copy_only });
                     }
                 }
             }

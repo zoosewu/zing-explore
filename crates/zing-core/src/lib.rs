@@ -4,6 +4,7 @@
 #[macro_use]
 pub mod i18n;
 
+pub mod archive;
 pub mod batchrename;
 pub mod builtin;
 pub mod cmdbar;

@@ -287,7 +287,12 @@ impl Tab {
     pub fn watch(&mut self, n: &Notifier) {
         self.nav_generation += 1;
         self.watch_covers = self.mode == ViewMode::Thumbnails;
-        self.watcher = services::watch(&self.path, n, self.id, self.nav_generation, self.watch_covers);
+        // 壓縮檔裡不是真的資料夾，不能監看（唯讀，內容不會在瀏覽時改變）
+        self.watcher = if zing_core::archive::is_inside(&self.path) {
+            None
+        } else {
+            services::watch(&self.path, n, self.id, self.nav_generation, self.watch_covers)
+        };
     }
 
     /// 停止監看；之後舊監看送來的通知都丟棄

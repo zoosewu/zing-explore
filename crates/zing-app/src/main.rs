@@ -2,6 +2,7 @@
 //! zing-explore：Windows 11 檔案總管（執行檔 zing.exe）。
 
 mod app;
+mod archive;
 mod batch;
 mod cmdbar;
 mod cmdbaredit;

@@ -132,6 +132,11 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 分頁開著的資料夾被刪除或改名（資料夾監看看不到自己被刪除）：上層的子資料夾變更（樹狀列監看）、檔案作業完成時，
   在背景確認它下面的分頁（`Vacating::check_under` → `services::check_gone`）；重新整理時找不到也一樣（`Msg::ListingError` 的 `gone`）。
   不在了就移到仍存在的上層（`App::on_folder_gone`）。只限列舉成功過的路徑（`Tab::shown`），輸入錯的路徑照樣顯示錯誤。
+- 壓縮檔當資料夾瀏覽（`zing_core::archive`、zing-app 的 `archive.rs`）：路徑寫成 `D:\下載\專案.zip\src`（與檔案總管相同，
+  Shell 也認得），清單一律經 `archive::list_folder`（zip 讀中央目錄、快取最近一個；7z、rar、tar… 經 Shell 的命名空間）。
+  開啟、複製、拖出、右鍵選單交給 Shell（開啟以 PIDL 執行，`services::start`）。唯讀：會改變壓縮檔內容的作業在
+  `submit_op_from` 擋下（`archive::op_writes_archive`），按鈕停用（`cmd_disabled`）、不能放進去、拖出只能複製、不監看、
+  不算資料夾大小。判斷「在壓縮檔裡」只看名稱（`archive::is_inside`）：名稱像壓縮檔的資料夾也算（列舉時才確認是檔案）。
 - 網址列每一層後面的「›」（完整路徑樣式是分隔的「\」，`Layout::crumb_menus`）在背景列出那一層的子資料夾
   （`services::crumb_folders`），回來時「›」還在才開啟選單，目前路徑經過的打勾。
 - 分頁：移動一律經 `App::move_tab`（拖曳、`tab.moveleft`／`moveright`；移到別的窗格時移走唯一分頁的窗格關閉），

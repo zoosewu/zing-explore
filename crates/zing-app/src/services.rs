@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 
-use zing_core::enumerate::{EnumError, enumerate};
+use zing_core::enumerate::EnumError;
 use zing_core::listing::Listing;
 use zing_core::sort::{SortSpec, sorted_order};
 use zing_core::text::{natural_cmp, wide_z};
@@ -22,7 +22,7 @@ use windows::Win32::System::Threading::{
     THREAD_MODE_BACKGROUND_BEGIN, WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows::Win32::UI::Shell::{
-    SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, SHGFI_EXETYPE, SHGetFileInfoW, ShellExecuteExW,
+    SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, SHGFI_EXETYPE, SHGetFileInfoW, ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, SW_SHOWNORMAL, WM_APP};
 use windows::core::PCWSTR;
@@ -264,7 +264,7 @@ pub fn load_dir(
 ) {
     let n = n.clone();
     pool.spawn(move || {
-        let result = enumerate(&path, false, &cancel, |partial| {
+        let result = crate::archive::list_folder(&path, false, &cancel, |partial| {
             let listing = Arc::new(partial.clone());
             let sorted = sorted_order(&listing, spec);
             n.send(Msg::Listing { tab, generation, listing, sorted, done: false });
@@ -355,7 +355,7 @@ fn subdirs(path: &str, show_hidden: bool, use_index: bool, probe: bool) -> Optio
         return None;
     }
     let never = AtomicBool::new(false);
-    let names: Vec<String> = match enumerate(path, true, &never, |_| {}) {
+    let names: Vec<String> = match crate::archive::list_folder(path, true, &never, |_| {}) {
         Ok(l) => {
             let mut idx: Vec<usize> =
                 (0..l.len()).filter(|&i| l.entries[i].is_dir() && (show_hidden || !l.entries[i].is_hidden())).collect();
@@ -739,6 +739,10 @@ pub fn start(file: &str, params: Option<&str>, dir: Option<&str>, verb: Option<&
     {
         return spawn_hidden(&exe, params, dir).map(Started::Child).map_err(|e| e.to_string());
     }
+    // 壓縮檔裡的項目不是真的檔案：交給 Shell 以 PIDL 開啟（解壓縮到暫存資料夾再開，與檔案總管相同）
+    let in_archive = verb.is_none() && zing_core::archive::is_inside(file) && !std::path::Path::new(&zing_core::path::long_form(file)).exists();
+    let pidl = if in_archive { Some(crate::shell::Pidl::parse(file).map_err(|e| e.message())?) } else { None };
+    let dir = dir.filter(|_| pidl.is_none());
     let file_w = wide_z(file);
     let params_w = params.map(wide_z);
     let dir_w = dir.map(wide_z);
@@ -749,10 +753,12 @@ pub fn start(file: &str, params: Option<&str>, dir: Option<&str>, verb: Option<&
         // run（HideConsole）找不到程式時只回報錯誤，不跳出 Shell 的對話方塊；開啟檔案時保留「選擇開啟方式」等對話方塊
         fMask: SEE_MASK_NOASYNC
             | SEE_MASK_NOCLOSEPROCESS
-            | if how == Show::HideConsole { SEE_MASK_FLAG_NO_UI } else { Default::default() },
+            | if how == Show::HideConsole { SEE_MASK_FLAG_NO_UI } else { Default::default() }
+            | if pidl.is_some() { SEE_MASK_INVOKEIDLIST } else { Default::default() },
         hwnd,
         lpVerb: ptr(&verb_w),
-        lpFile: PCWSTR(file_w.as_ptr()),
+        lpFile: if pidl.is_some() { PCWSTR::null() } else { PCWSTR(file_w.as_ptr()) },
+        lpIDList: pidl.as_ref().map_or(std::ptr::null_mut(), |p| p.0 as *mut _),
         lpParameters: ptr(&params_w),
         lpDirectory: ptr(&dir_w),
         nShow: SW_SHOWNORMAL.0,

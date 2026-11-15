@@ -198,6 +198,10 @@ impl App {
 
     /// 送出作業；`origin` 決定完成時是否記進復原的堆疊（undo.rs）
     pub fn submit_op_from(&mut self, op: FileOp, origin: crate::shell::Origin) {
+        if crate::archive::op_writes_archive(&op) {
+            self.set_status(tr!("壓縮檔是唯讀的：先複製出來再修改"), true);
+            return;
+        }
         let (title, glyph) = describe(&op);
         if let Some((id, ctl)) = self.fileops.submit(op, origin) {
             let info = JobInfo { id, title, glyph, ctl };

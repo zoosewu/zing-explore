@@ -102,9 +102,16 @@ impl App {
             Some(t) => t.is_some(),
             None => tab.selection_count().0 > 0,
         };
+        let in_archive = tree.is_none() && zing_core::archive::is_inside(&tab.path);
         let tree_kind = tree.flatten().map(|(k, _)| k);
         use crate::model::NodeKind;
         match cmd {
+            "file.cut" | "file.delete" | "file.delete --permanent" | "file.rename" | "file.batchrename" | "file.paste" | "file.newfolder"
+            | "file.newfile" | "thumb.set" | "thumb.clear"
+                if in_archive =>
+            {
+                Some(tr!("壓縮檔是唯讀的"))
+            }
             "file.delete" | "file.delete --permanent" if tree_kind == Some(NodeKind::Drive) => Some(tr!("磁碟機不能刪除")),
             "file.rename" | "file.batchrename" | "thumb.set" | "thumb.clear" | "file.delete --permanent"
                 if tree_kind.is_some_and(|k| k != NodeKind::Folder) =>

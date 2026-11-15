@@ -984,3 +984,6 @@
 "新增視窗" = "New window"
 "把分頁移到新視窗" = "Move the tab to a new window"
 "移到新視窗" = "Move to new window"
+"壓縮檔損毀或不是 zip 格式" = "The archive is damaged or is not a zip file"
+"壓縮檔是唯讀的：先複製出來再修改" = "Archives are read-only: copy the items out before changing them"
+"壓縮檔是唯讀的" = "Archives are read-only"

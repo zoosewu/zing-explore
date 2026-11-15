@@ -83,7 +83,8 @@ pub static TEST_PARSE_IN_BACKGROUND: AtomicBool = AtomicBool::new(false);
 /// 解析成 PIDL 要不要放到背景：SHParseDisplayName 會讀項目的屬性，網路磁碟、UNC、隨身碟、光碟可能停很久；
 /// 本機固定磁碟很快，照樣在 UI 執行緒解析（拖曳、放置目標不必等一個來回）
 pub fn parse_in_background(p: &str) -> bool {
-    TEST_PARSE_IN_BACKGROUND.load(Ordering::Relaxed) || !crate::services::is_fixed_drive(p)
+    // 壓縮檔裡的路徑：Shell 解析時要打開壓縮檔
+    TEST_PARSE_IN_BACKGROUND.load(Ordering::Relaxed) || !crate::services::is_fixed_drive(p) || zing_core::archive::is_inside(p)
 }
 
 /// 在背景解析 PIDL，全部成功才回傳。每次一條執行緒：某個網路位置卡住時不影響其他的
@@ -949,14 +950,16 @@ pub fn properties(hwnd: HWND, paths: &[String]) {
 pub static TEST_DRAG_OUT: Mutex<Option<usize>> = Mutex::new(None);
 
 /// 從程式拖出檔案（模態，直到放開滑鼠）。路徑已解析成 PIDL（`parse_local`／`parse_pidls`）
-pub fn drag_out(hwnd: HWND, pidls: &[Pidl]) -> Result<DROPEFFECT> {
+/// `copy_only`：來源是唯讀的（壓縮檔裡），不允許移動
+pub fn drag_out(hwnd: HWND, pidls: &[Pidl], copy_only: bool) -> Result<DROPEFFECT> {
     if crate::smoke::running() {
         *TEST_DRAG_OUT.lock().unwrap() = Some(pidls.len());
         return Ok(DROPEFFECT_NONE);
     }
     // COM 規定拖曳來源必須在視窗所屬的 UI 執行緒；從 PIDL 建立資料物件不讀磁碟
     let obj = data_object_of(pidls)?;
-    unsafe { SHDoDragDrop(Some(hwnd), &obj, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK) }
+    let effects = if copy_only { DROPEFFECT_COPY } else { DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK };
+    unsafe { SHDoDragDrop(Some(hwnd), &obj, None::<&IDropSource>, effects) }
 }
 
 /// 解析過幾次放置目標（冒煙測試用來確認每次拖曳的快取）
