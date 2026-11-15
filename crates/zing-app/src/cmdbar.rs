@@ -136,6 +136,7 @@ impl App {
             "nav.back" if tab.back.is_empty() => Some(tr!("沒有上一頁")),
             "nav.forward" if tab.forward.is_empty() => Some(tr!("沒有下一頁")),
             "nav.up" if in_pc => Some(tr!("已在最上層")),
+            "folder.compare" => self.compare_disabled(),
             _ => None,
         }
     }

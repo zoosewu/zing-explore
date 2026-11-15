@@ -1217,6 +1217,7 @@ impl App {
                 }
                 self.broadcast(crate::hub::Shared::FilesChanged { dirs: dirs.clone() });
                 self.on_dirs_changed(&dirs, select.as_ref());
+                self.compare_after_op(&dirs);
             }
             Msg::PauseWatches { paths, ack } => {
                 self.pause_watches(paths);
@@ -1228,6 +1229,9 @@ impl App {
             Msg::Status { text, error } => self.set_status(text, error),
             Msg::Icon { id, pixels } => self.icons.store(id, pixels),
             Msg::MenuRename => self.start_rename(),
+            Msg::CompareProgress { generation, scanned } => self.on_compare_progress(generation, scanned),
+            Msg::CompareDone { generation, result } => self.on_compare_done(generation, result),
+            Msg::CompareContent { generation, same } => self.on_compare_content(generation, same),
             Msg::DragPidls { id, pidls } => {
                 if let Some(Press::DragOut { id: d, copy_only }) = self.press
                     && d == id
@@ -1483,6 +1487,7 @@ impl App {
             Cmd::PaletteOpen => self.open_palette(),
             Cmd::SearchOpen => self.open_search(),
             Cmd::KeysEdit => self.open_keys_panel(),
+            Cmd::FolderCompare => self.open_compare(),
             Cmd::SettingsOpen => self.open_settings(),
             Cmd::CmdbarEdit => self.open_cmdbar_editor(),
             Cmd::CmdbarHide => {

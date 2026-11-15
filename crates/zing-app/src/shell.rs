@@ -147,6 +147,9 @@ pub enum FileOp {
     NewFile { dir: String },
     /// 同一個資料夾內批次改名：(舊名稱, 新名稱)
     BatchRename { dir: String, pairs: Vec<(String, String)> },
+    /// 資料夾同步（compare.rs）：先把 `removes` 送進資源回收筒（被覆蓋的舊檔、鏡像時多出的項目），
+    /// 再把每個（來源, 目的資料夾）複製過去；覆蓋不詢問
+    Sync { copies: Vec<(String, String)>, removes: Vec<String> },
 }
 
 impl FileOp {
@@ -158,6 +161,7 @@ impl FileOp {
             FileOp::Rename { path, .. } => vec![path.clone()],
             FileOp::Delete { paths, .. } => paths.clone(),
             FileOp::Transfer { sources, mov: true, .. } => sources.clone(),
+            FileOp::Sync { removes, .. } => removes.clone(),
             FileOp::Transfer { .. }
             | FileOp::Restore { .. }
             | FileOp::NewFolder { .. }
@@ -167,7 +171,7 @@ impl FileOp {
     }
 
     pub fn is_long(&self) -> bool {
-        matches!(self, FileOp::Transfer { .. } | FileOp::Delete { .. } | FileOp::BatchRename { .. } | FileOp::Restore { .. })
+        matches!(self, FileOp::Transfer { .. } | FileOp::Delete { .. } | FileOp::BatchRename { .. } | FileOp::Restore { .. } | FileOp::Sync { .. })
     }
 }
 
@@ -503,6 +507,12 @@ fn affected(op: &FileOp) -> (Vec<String>, Option<Select>) {
             (vec![dir.clone()], Some(Select { dir: dir.clone(), name: String::new(), rename: true }))
         }
         FileOp::BatchRename { dir, .. } => (vec![dir.clone()], None),
+        FileOp::Sync { copies, removes } => {
+            let mut dirs: Vec<String> = copies.iter().map(|(_, dest)| dest.clone()).chain(removes.iter().map(parent)).collect();
+            dirs.sort_by_key(|d| d.to_lowercase());
+            dirs.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+            (dirs, None)
+        }
     }
 }
 
@@ -621,6 +631,16 @@ fn perform(hwnd: isize, op: FileOp, sink: Option<&IFileOperationProgressSink>) -
                 let name_w = wide_z(&name);
                 fo.NewItem(&shell_item(&dir)?, windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL.0, PCWSTR(name_w.as_ptr()), PCWSTR::null(), none_sink)?;
                 created = Some(name);
+            }
+            FileOp::Sync { copies, removes } => {
+                // 被覆蓋的舊檔先送進資源回收筒（復原時找得回來），所以複製時不會有衝突
+                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_NOCONFIRMATION | FOFX_RECYCLEONDELETE | silent)?;
+                for p in &removes {
+                    fo.DeleteItem(&shell_item(p)?, none_sink)?;
+                }
+                for (src, dest) in &copies {
+                    fo.CopyItem(&shell_item(src)?, &shell_item(dest)?, PCWSTR::null(), none_sink)?;
+                }
             }
             FileOp::BatchRename { .. } => unreachable!("在函式開頭處理"),
         }

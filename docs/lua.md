@@ -917,6 +917,14 @@ file.newfile()
 settings.open()
 ```
 
+### `folder.compare()`
+
+比對兩個窗格的資料夾（含子資料夾），列出差異並可同步
+
+```lua
+folder.compare()
+```
+
 ### `keys.edit()`
 
 開啟快速鍵編輯器（結果存在程式旁的 keys.toml）

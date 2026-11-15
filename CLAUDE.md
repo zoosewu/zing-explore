@@ -137,6 +137,11 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   開啟、複製、拖出、右鍵選單交給 Shell（開啟以 PIDL 執行，`services::start`）。唯讀：會改變壓縮檔內容的作業在
   `submit_op_from` 擋下（`archive::op_writes_archive`），按鈕停用（`cmd_disabled`）、不能放進去、拖出只能複製、不監看、
   不算資料夾大小。判斷「在壓縮檔裡」只看名稱（`archive::is_inside`）：名稱像壓縮檔的資料夾也算（列舉時才確認是檔案）。
+- 資料夾比對與同步（`folder.compare`，compare.rs；比對與同步計畫在 `zing_core::foldercompare`，可單元測試）：比對左右兩個窗格
+  目前的資料夾（含子資料夾），在視窗中央的對話框（`SidePanel::Compare`，與設定同樣是 `side_is_dialog`）列出差異。比對在自己的
+  執行緒、列舉經 `archive::list_folder`，以 generation 丟棄過時的結果；「比對內容」在背景逐位元組比對大小相同、時間不同的檔案。
+  同步經 `App::confirm` 確認後送出一個 `FileOp::Sync`：先把被覆蓋的舊檔與鏡像時多出的項目送進資源回收筒，再複製（覆蓋不詢問），
+  所以可以復原（`undo_of`）；作業完成動到比對的資料夾就重新比對（`compare_after_op`）。
 - 網址列每一層後面的「›」（完整路徑樣式是分隔的「\」，`Layout::crumb_menus`）在背景列出那一層的子資料夾
   （`services::crumb_folders`），回來時「›」還在才開啟選單，目前路徑經過的打勾。
 - 分頁：移動一律經 `App::move_tab`（拖曳、`tab.moveleft`／`moveright`；移到別的窗格時移走唯一分頁的窗格關閉），

@@ -145,6 +145,10 @@ pub enum Msg {
     ScriptsChanged,
     /// 網址列「›」：那一層的子資料夾名稱
     CrumbFolders { folder: String, names: Vec<String> },
+    /// 資料夾比對（compare.rs）：進度、結果、比對內容後相同的項目
+    CompareProgress { generation: u64, scanned: usize },
+    CompareDone { generation: u64, result: Result<Vec<zing_core::foldercompare::Diff>, String> },
+    CompareContent { generation: u64, same: Vec<String> },
     /// 檢查新版本的結果：最新版的標籤（沒有任何 Release 時為 None）、略過的版本；`manual` 為 update.check 命令
     UpdateChecked { latest: Result<Option<String>, String>, skipped: Option<zing_core::update::Version>, manual: bool },
     /// 下載更新的進度（0–100）

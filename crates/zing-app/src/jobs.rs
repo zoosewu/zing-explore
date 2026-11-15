@@ -177,6 +177,7 @@ fn describe(op: &FileOp) -> (String, &'static str) {
         FileOp::Delete { paths, permanent: true } => (tr!("永久刪除{what}", what = what(paths)), "\u{E74D}"),
         FileOp::BatchRename { pairs, .. } => (tr!("重新命名 {n} 個項目", n = pairs.len()), "\u{E8AC}"),
         FileOp::Restore { items } => (tr!("從資源回收筒還原 {n} 個項目", n = items.len()), "\u{E7A7}"),
+        FileOp::Sync { copies, removes } => (tr!("同步資料夾（複製 {copy} 個、移除 {remove} 個項目）", copy = copies.len(), remove = removes.len()), "\u{E895}"),
         _ => (String::new(), glyph::FILE),
     }
 }

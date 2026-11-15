@@ -1141,7 +1141,7 @@ fn check_side_targets(a: &mut App) -> Result<(), String> {
         Hit::BarEditPart(k, p) => p == crate::cmdbaredit::PART_DRAG && matches!(bar_rows.get(k), Some(crate::cmdbaredit::Row::Item(_))),
         _ => false,
     };
-    let panel_hit = |h: &Hit| matches!(h, Hit::None | Hit::SettingsPanel | Hit::ThemePanel | Hit::BarEditPanel | Hit::KeysPanel);
+    let panel_hit = |h: &Hit| matches!(h, Hit::None | Hit::SettingsPanel | Hit::ThemePanel | Hit::BarEditPanel | Hit::KeysPanel | Hit::ComparePanel);
     for line in a.side_lines() {
         let row = match line {
             Line::Row(k) => a.side_reveal(k),
@@ -3848,9 +3848,15 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         )
         .slow(),
     );
-    v.push(step("壓縮檔：回到測試資料夾", {
+    v.push(step("壓縮檔：回到測試資料夾（清除這幾步建的檔案）", {
         let d = d.clone();
+        let made = [arc_src.clone(), arc_out.clone(), arc_zip.clone(), arc_7z.clone()];
         move |_| {
+            harness_io(|| {
+                for p in &made {
+                    let _ = std::fs::remove_dir_all(p).or_else(|_| std::fs::remove_file(p));
+                }
+            });
             with_app(|a| {
                 let p = a.active_pane;
                 a.navigate(p, d.clone(), true);
@@ -3860,6 +3866,161 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         let d = d.clone();
         move |_, a| at(a, &d)
     }));
+    // 資料夾比對與同步（compare.rs）：左右兩個窗格。同步只測「只在右邊 → 左邊」的複製（覆蓋、刪除會用到資源回收筒，
+    // 計畫的規則由 zing_core::foldercompare 的單元測試涵蓋）
+    let (cmp_l, cmp_r) = (path::join(&d, "cmp-left"), path::join(&d, "cmp-right"));
+    v.push(
+        step(
+            "比對：兩個窗格分別開著要比對的資料夾",
+            {
+                let (cmp_l, cmp_r) = (cmp_l.clone(), cmp_r.clone());
+                move |_| {
+                    harness_io(|| {
+                        let now = std::time::SystemTime::now();
+                        let old = now - Duration::from_secs(3600);
+                        let put = |dir: &str, rel: &str, text: &str, at: std::time::SystemTime| {
+                            let p = path::join(dir, rel);
+                            let _ = std::fs::create_dir_all(path::parent(&p).unwrap_or_default());
+                            let _ = std::fs::write(&p, text);
+                            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&p) {
+                                let _ = f.set_modified(at);
+                            }
+                        };
+                        put(&cmp_l, "same.txt", "same", old);
+                        put(&cmp_r, "same.txt", "same", old);
+                        put(&cmp_l, "new.txt", "newer and longer", now);
+                        put(&cmp_r, "new.txt", "older", old);
+                        put(&cmp_l, "same-content.txt", "identical", now);
+                        put(&cmp_r, "same-content.txt", "identical", old);
+                        put(&cmp_l, "only-left.txt", "l", now);
+                        put(&cmp_r, "only-right.txt", "r", now);
+                        put(&cmp_l, r"sub\a.txt", "a2", now);
+                        put(&cmp_r, r"sub\a.txt", "a1", old);
+                    });
+                    with_app(|a| {
+                        if a.panes.len() < 2 {
+                            a.exec("pane.split");
+                        }
+                        a.navigate(0, cmp_l.clone(), true);
+                        a.navigate(1, cmp_r.clone(), true);
+                    });
+                }
+            },
+            {
+                let (cmp_l, cmp_r) = (cmp_l.clone(), cmp_r.clone());
+                move |_, a| {
+                    expect("窗格數", a.panes.len(), 2)?;
+                    expect("左", a.panes[0].tab().path.as_str(), cmp_l.as_str())?;
+                    expect("右", a.panes[1].tab().path.as_str(), cmp_r.as_str())?;
+                    expect("可以比對", a.cmd_disabled("folder.compare"), None)
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "比對：列出差異（含子資料夾），相同的不列",
+            |_| {
+                with_app(|a| a.exec("folder.compare"));
+            },
+            |_, a| {
+                let cp = a.compare_panel().ok_or("比對的對話框沒有開")?;
+                if cp.state != crate::compare::State::Done {
+                    return Err(format!("{:?}", cp.state));
+                }
+                use zing_core::foldercompare::Kind;
+                let got: Vec<(String, Kind)> = cp.diffs.iter().map(|d| (d.rel.clone(), d.kind)).collect();
+                expect(
+                    "差異",
+                    got,
+                    vec![
+                        ("new.txt".to_string(), Kind::LeftNewer),
+                        ("only-left.txt".to_string(), Kind::OnlyLeft),
+                        ("only-right.txt".to_string(), Kind::OnlyRight),
+                        ("same-content.txt".to_string(), Kind::LeftNewer),
+                        (r"sub\a.txt".to_string(), Kind::LeftNewer),
+                    ],
+                )?;
+                expect("在視窗中央的對話框", a.layout.side_dialog, true)?;
+                check_side_targets(a)
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "比對：比對內容，內容相同的從清單拿掉",
+            |_| {
+                with_app(|a| a.compare_click(crate::view::Hit::ComparePart(crate::compare::PART_CONTENT)));
+            },
+            |_, a| {
+                let cp = a.compare_panel().ok_or("比對的對話框沒有開")?;
+                if cp.checking {
+                    return Err("比對內容中".into());
+                }
+                expect("same-content.txt", cp.diffs.iter().any(|d| d.rel == "same-content.txt"), false)?;
+                expect("其他差異", cp.diffs.len(), 4)
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "比對：方向選「左 ← 右」後同步，只在右邊的複製到左邊，完成後重新比對",
+            |_| {
+                with_app(|a| {
+                    a.set_compare_direction(zing_core::foldercompare::Direction::RightToLeft);
+                    a.compare_click(crate::view::Hit::CompareButton(0));
+                    // 確認的卡片：Enter 是「同步」
+                    a.confirm_key(0x0D);
+                });
+            },
+            {
+                let cmp_l = cmp_l.clone();
+                move |_, a| {
+                    if !harness_io(|| std::path::Path::new(&path::join(&cmp_l, "only-right.txt")).exists()) {
+                        return Err("還沒複製過去".into());
+                    }
+                    let cp = a.compare_panel().ok_or("比對的對話框沒有開")?;
+                    if cp.state != crate::compare::State::Done {
+                        return Err("重新比對中".into());
+                    }
+                    expect("only-right.txt", cp.diffs.iter().any(|d| d.rel == "only-right.txt"), false)?;
+                    expect("復原", a.undo_label().map(String::from), Some("同步資料夾".to_string()))
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(step(
+        "比對：關閉對話框、回到一個窗格（清除這幾步建的資料夾）",
+        {
+            let d = d.clone();
+            let made = [cmp_l.clone(), cmp_r.clone()];
+            move |_| {
+                harness_io(|| {
+                    for p in &made {
+                        let _ = std::fs::remove_dir_all(p);
+                    }
+                });
+                with_app(|a| {
+                    a.compare_click(crate::view::Hit::CompareButton(1));
+                    a.active_pane = 1;
+                    a.exec("pane.close");
+                    a.navigate(0, d.clone(), true);
+                });
+            }
+        },
+        {
+            let d = d.clone();
+            move |_, a| {
+                expect("對話框", a.compare_panel().is_none(), true)?;
+                expect("窗格數", a.panes.len(), 1)?;
+                at(a, &d)
+            }
+        },
+    ));
     // 樹狀列就地重新命名：開在它裡面的分頁跟著換路徑
     let (ren_old, ren_new) = (path::join(&d, "樹狀列改名"), path::join(&d, "樹狀列改名後"));
     let ren_inner = path::join(&ren_old, "內層");

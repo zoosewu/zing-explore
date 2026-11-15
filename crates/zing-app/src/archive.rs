@@ -114,6 +114,7 @@ pub fn op_writes_archive(op: &FileOp) -> bool {
         FileOp::Delete { paths, .. } => paths.iter().any(inside),
         FileOp::Rename { path, .. } => inside(path),
         FileOp::NewFolder { dir } | FileOp::NewFile { dir } | FileOp::BatchRename { dir, .. } => zing_core::archive::is_inside(dir),
+        FileOp::Sync { copies, removes } => copies.iter().any(|(_, dest)| zing_core::archive::is_inside(dest)) || removes.iter().any(inside),
         FileOp::Restore { .. } => false,
     }
 }

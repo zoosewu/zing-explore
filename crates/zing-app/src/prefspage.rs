@@ -29,8 +29,8 @@ use crate::window;
 /// 「指定的分頁」的按鈕
 const USE_CURRENT_TABS: &str = tr_key!("使用目前的分頁");
 /// 對話框的大小（視窗太小時縮小）
-const DIALOG_W: f32 = 680.0;
-const DIALOG_H: f32 = 620.0;
+pub const DIALOG_W: f32 = 680.0;
+pub const DIALOG_H: f32 = 620.0;
 
 #[derive(Default)]
 pub struct SettingsPage {
@@ -147,13 +147,6 @@ impl App {
     /// 開著的是設定對話框（對話框外點不到底下的元件、按鍵不往下傳）
     pub fn settings_dialog(&self) -> bool {
         self.settings_page().is_some()
-    }
-
-    /// 對話框的位置：視窗中央
-    pub fn settings_dialog_rect(&self, w: f32, h: f32) -> Rect {
-        let (dw, dh) = (DIALOG_W.min(w - 48.0).max(320.0), DIALOG_H.min(h - 48.0).max(240.0));
-        let (l, t) = (((w - dw) / 2.0).round(), ((h - dh) / 2.0).max(8.0).round());
-        Rect::new(l, t, l + dw, t + dh)
     }
 
     fn end_pref_edit(&mut self) {

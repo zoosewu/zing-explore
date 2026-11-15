@@ -77,6 +77,27 @@ pub fn undo_of(op: &FileOp, created: Option<&str>, log: &[(String, String)]) -> 
             }
             (tr!("刪除 {n} 個項目", n = paths.len()), vec![FileOp::Restore { items }])
         }
+        FileOp::Sync { copies, removes } => {
+            // 複製過去的刪掉（送進資源回收筒），再把被覆蓋、刪除的從資源回收筒還原（只取最上層的項目）
+            let created: Vec<String> =
+                log.iter().filter(|(old, _)| copies.iter().any(|(s, _)| s.eq_ignore_ascii_case(old))).map(|(_, new)| new.clone()).collect();
+            let items: Vec<(String, String, String)> = log
+                .iter()
+                .filter(|(old, _)| removes.iter().any(|r| r.eq_ignore_ascii_case(old)))
+                .map(|(old, recycled)| (recycled.clone(), parent(old), name(old)))
+                .collect();
+            let mut ops = Vec::new();
+            if !created.is_empty() {
+                ops.push(FileOp::Delete { paths: created, permanent: false });
+            }
+            if !items.is_empty() {
+                ops.push(FileOp::Restore { items });
+            }
+            if ops.is_empty() {
+                return None;
+            }
+            (tr!("同步資料夾").to_string(), ops)
+        }
         // 永久刪除不能復原；還原本身由重做處理（再刪一次）
         FileOp::Delete { permanent: true, .. } | FileOp::Restore { .. } => return None,
     };

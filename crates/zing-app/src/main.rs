@@ -6,6 +6,7 @@ mod archive;
 mod batch;
 mod cmdbar;
 mod cmdbaredit;
+mod compare;
 mod confirm;
 mod ctxmenu;
 mod defaultapp;

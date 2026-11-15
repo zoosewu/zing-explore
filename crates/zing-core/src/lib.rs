@@ -12,6 +12,7 @@ pub mod command;
 pub mod config;
 pub mod dirsize;
 pub mod enumerate;
+pub mod foldercompare;
 pub mod folderview;
 pub mod format;
 pub mod grid;

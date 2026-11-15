@@ -11,6 +11,7 @@
 
 use crate::app::{App, Focus};
 use crate::cmdbaredit::CmdBarEditor;
+use crate::compare::ComparePanel;
 use crate::gfx::{Font, Rect};
 use crate::keyspanel::KeysPanel;
 use crate::prefspage::SettingsPage;
@@ -23,6 +24,7 @@ pub enum SidePanel {
     Theme(ThemeEditor),
     BarEdit(CmdBarEditor),
     Keys(KeysPanel),
+    Compare(ComparePanel),
 }
 
 /// 開著的是哪一個面板（不借用 `App::side`）
@@ -32,6 +34,7 @@ pub enum SideKind {
     Theme,
     BarEdit,
     Keys,
+    Compare,
 }
 
 /// 鍵盤焦點所在的一行：清單上方的固定行（例如搜尋框）、清單的第 k 列、清單下方的固定行（底部按鈕）
@@ -106,6 +109,9 @@ impl Hit {
                 | Hit::KeysPart(..)
                 | Hit::KeysButton(_)
                 | Hit::KeysPanel
+                | Hit::ComparePart(_)
+                | Hit::CompareButton(_)
+                | Hit::ComparePanel
         )
     }
 
@@ -124,6 +130,8 @@ impl Hit {
             | Hit::BarEditPart(k, _)
             | Hit::KeysRow(k)
             | Hit::KeysPart(k, _) => Some(k),
+            // 比對的選項在第 0 列
+            Hit::ComparePart(_) => Some(0),
             _ => None,
         }
     }
@@ -136,7 +144,24 @@ impl App {
             SidePanel::Theme(_) => SideKind::Theme,
             SidePanel::BarEdit(_) => SideKind::BarEdit,
             SidePanel::Keys(_) => SideKind::Keys,
+            SidePanel::Compare(_) => SideKind::Compare,
         })
+    }
+
+    /// 面板是視窗中央的對話框（設定、比對資料夾）：對話框外點不到、按鍵不往下傳
+    pub fn side_is_dialog(&self) -> bool {
+        matches!(self.side_kind(), Some(SideKind::Settings | SideKind::Compare))
+    }
+
+    /// 對話框的位置：視窗中央
+    pub fn side_dialog_rect(&self, w: f32, h: f32) -> Rect {
+        let (dw, dh) = match self.side_kind() {
+            Some(SideKind::Compare) => (crate::compare::DIALOG_W, crate::compare::DIALOG_H),
+            _ => (crate::prefspage::DIALOG_W, crate::prefspage::DIALOG_H),
+        };
+        let (dw, dh) = (dw.min(w - 48.0).max(320.0), dh.min(h - 48.0).max(240.0));
+        let (l, t) = (((w - dw) / 2.0).round(), ((h - dh) / 2.0).max(8.0).round());
+        Rect::new(l, t, l + dw, t + dh)
     }
 
     pub fn settings_page(&self) -> Option<&SettingsPage> {
@@ -201,6 +226,7 @@ impl App {
             SidePanel::Theme(p) => &mut p.scroll,
             SidePanel::BarEdit(p) => &mut p.scroll,
             SidePanel::Keys(p) => &mut p.scroll,
+            SidePanel::Compare(p) => &mut p.scroll,
         })
     }
 
@@ -210,6 +236,7 @@ impl App {
             Some(SidePanel::Theme(p)) => p.scroll,
             Some(SidePanel::BarEdit(p)) => p.scroll,
             Some(SidePanel::Keys(p)) => p.scroll,
+            Some(SidePanel::Compare(p)) => p.scroll,
             None => 0.0,
         }
     }
@@ -254,7 +281,7 @@ impl App {
         Some(match self.side_kind()? {
             SideKind::Theme => crate::themepanel::PANEL_W.min(avail * 0.5),
             // 設定是視窗中央的對話框，不佔窗格的寬度（`compute_layout` 另外放）
-            SideKind::Settings => return None,
+            SideKind::Settings | SideKind::Compare => return None,
             SideKind::BarEdit => crate::cmdbaredit::PANEL_W.min(avail * 0.6),
             SideKind::Keys => crate::keyspanel::PANEL_W.min(avail * 0.6),
         })
@@ -282,6 +309,10 @@ impl App {
             // 搜尋列固定在最上方
             SideKind::Keys => {
                 ListGeometry { list: self.keys_layout(panel).1, row_h: rh + 6.0, rows: self.keys_rows().len(), pinned: 1 }
+            }
+            // 選項列固定在最上方
+            SideKind::Compare => {
+                ListGeometry { list: self.compare_layout(panel).2, row_h: self.compare_row_h(), rows: self.compare_rows(), pinned: 1 }
             }
         })
     }
@@ -311,7 +342,7 @@ impl App {
         match self.side_kind() {
             Some(SideKind::Settings | SideKind::BarEdit) => (1, 1),
             Some(SideKind::Theme) => (0, 2),
-            Some(SideKind::Keys) => (0, 1),
+            Some(SideKind::Keys | SideKind::Compare) => (0, 1),
             None => (0, 0),
         }
     }
@@ -332,6 +363,7 @@ impl App {
             Some(SideKind::Theme) => self.theme_targets(panel, line),
             Some(SideKind::BarEdit) => self.cmdbar_edit_targets(panel, line),
             Some(SideKind::Keys) => self.keys_targets(panel, line),
+            Some(SideKind::Compare) => self.compare_targets(panel, line),
             None => Vec::new(),
         };
         v.sort_by(|a, b| a.1.l.total_cmp(&b.1.l));
@@ -459,6 +491,7 @@ impl App {
             Some(SideKind::Theme) => self.theme_hit(panel, x, y),
             Some(SideKind::BarEdit) => self.cmdbar_edit_hit(panel, x, y),
             Some(SideKind::Keys) => self.keys_hit(panel, x, y),
+            Some(SideKind::Compare) => self.compare_hit(panel, x, y),
             None => Hit::None,
         }
     }
@@ -470,6 +503,7 @@ impl App {
             Some(SideKind::Theme) => self.theme_click(hit, x),
             Some(SideKind::BarEdit) => self.cmdbar_edit_click(hit, y),
             Some(SideKind::Keys) => self.keys_click(hit),
+            Some(SideKind::Compare) => self.compare_click(hit),
             None => {}
         }
     }
@@ -502,6 +536,10 @@ impl App {
                 self.leave_side_editor();
                 true
             }
+            Some(SideKind::Compare) => {
+                self.close_side_panels();
+                true
+            }
             None => false,
         }
     }
@@ -524,10 +562,11 @@ impl App {
             Some(SideKind::Theme) => self.paint_theme_editor(r),
             Some(SideKind::BarEdit) => self.paint_cmdbar_editor(r),
             Some(SideKind::Keys) => self.paint_keys_panel(r),
+            Some(SideKind::Compare) => self.paint_compare(r),
             None => return,
         }
         self.paint_side_focus();
-        if !self.settings_dialog() {
+        if !self.side_is_dialog() {
             self.gfx.vline(r.l - 1.0, r.t, r.b, self.theme.color.border);
         }
     }

@@ -577,7 +577,7 @@ impl App {
     }
 
     pub fn on_mbutton_up(&mut self, x: f32, y: f32) {
-        if self.batch.is_some() || self.welcome.is_some() || self.confirm.is_some() || self.settings_dialog() {
+        if self.batch.is_some() || self.welcome.is_some() || self.confirm.is_some() || self.side_is_dialog() {
             return;
         }
         match self.fresh_hit(x, y) {
@@ -627,7 +627,7 @@ impl App {
             return;
         }
         // 設定對話框外：底下的元件不捲動
-        if self.settings_dialog() {
+        if self.side_is_dialog() {
             return;
         }
         // 滾輪的快速鍵（Ctrl+WheelUp 放大縮圖…）：游標所在的清單（先成為作用中的窗格）、樹狀列或全域
@@ -771,7 +771,7 @@ impl App {
         }
 
         // 設定對話框：面板沒有處理的按鍵不往下傳（快速鍵不作用在背後的清單），Esc 關閉
-        if self.settings_dialog() {
+        if self.side_is_dialog() {
             if plain && vk == VK_ESCAPE.0 {
                 self.side_escape();
             }

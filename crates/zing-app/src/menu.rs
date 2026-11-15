@@ -31,6 +31,8 @@ pub enum Action {
     Go(String),
     /// 主題編輯面板的選項（風格、深淺色、字型…）選了這個值
     ThemePick(crate::themepanel::Target, String),
+    /// 比對資料夾的同步方向（compare.rs）
+    CompareDirection(zing_core::foldercompare::Direction),
 }
 
 #[derive(Clone, Debug)]
@@ -247,6 +249,7 @@ impl App {
             Action::Update(c) => self.update_choice(c),
             Action::Pref(i, value) => self.set_pref(i, value),
             Action::ThemePick(t, value) => self.pick_option(t, value),
+            Action::CompareDirection(d) => self.set_compare_direction(d),
             Action::Go(path) => self.navigate(self.active_pane, path, true),
         }
     }

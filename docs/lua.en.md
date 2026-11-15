@@ -917,6 +917,14 @@ Open the settings page (changes are written back to the matching line of config.
 settings.open()
 ```
 
+### `folder.compare()`
+
+Compare the folders of the two panes (including subfolders), list the differences, and sync them
+
+```lua
+folder.compare()
+```
+
 ### `keys.edit()`
 
 Open the keyboard shortcut editor (saved in keys.toml next to the program)

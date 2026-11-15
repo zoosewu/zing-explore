@@ -145,6 +145,10 @@ pub enum Hit {
     KeysPart(usize, usize),
     KeysButton(usize),
     KeysPanel,
+    /// 比對資料夾（compare.rs）：選項列的部分、底部按鈕、面板空白處
+    ComparePart(usize),
+    CompareButton(usize),
+    ComparePanel,
     SettingsButton(usize),
     SettingsPanel,
     Tab(usize, usize),
@@ -290,8 +294,8 @@ impl App {
             let l = panes_area.r - w;
             lay.side_panel = Some(Rect::new(l, body.t, panes_area.r, body.b));
             panes_area.r = l - 1.0;
-        } else if self.settings_dialog() {
-            lay.side_panel = Some(self.settings_dialog_rect(w, h));
+        } else if self.side_is_dialog() {
+            lay.side_panel = Some(self.side_dialog_rect(w, h));
             lay.side_dialog = true;
         }
         if self.preview.visible {

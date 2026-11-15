@@ -917,6 +917,14 @@ file.newfile()
 settings.open()
 ```
 
+### `folder.compare()`
+
+2 つのペインのフォルダーを（サブフォルダーも含めて）比較し、違いを一覧して同期できます
+
+```lua
+folder.compare()
+```
+
 ### `keys.edit()`
 
 ショートカットキーのエディターを開く（結果はプログラムの隣の keys.toml に保存）
