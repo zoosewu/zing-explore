@@ -54,6 +54,11 @@ auto = true
 # | none（不做事，字元鍵全部留給快速鍵；可把 filter.start 綁到某個按鍵來開始篩選）
 typing = "filter"
 
+[terminal]
+# 內建終端機（terminal.toggle，Ctrl+`）的殼層：auto（有 PowerShell 7 就用它，否則 Windows PowerShell）、
+# pwsh、powershell、cmd
+shell = "auto"
+
 [update]
 # 啟動時檢查新版本：距上次檢查超過 24 小時才連線到 GitHub（每天最多一次），
 # 只在有功能更新（主版號或次版號較新）時於狀態列提示，可下載並安裝
@@ -182,6 +187,9 @@ cmd = "pane.focusnext"
 [[key]]
 key = "Ctrl+B"
 cmd = "tree.toggle"
+[[key]]
+key = "Ctrl+Backtick"
+cmd = "terminal.toggle"
 
 # ---- 檢視 ----
 [[key]]

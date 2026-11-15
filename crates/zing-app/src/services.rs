@@ -149,6 +149,12 @@ pub enum Msg {
     CompareProgress { generation: u64, scanned: usize },
     CompareDone { generation: u64, result: Result<Vec<zing_core::foldercompare::Diff>, String> },
     CompareContent { generation: u64, same: Vec<String> },
+    /// 內建終端機（terminal.rs）：殼層啟動好了、有新的輸出、結束、啟動失敗；剪貼簿的文字（貼上）
+    TerminalReady { generation: u64, started: Box<crate::terminal::Started> },
+    TerminalOutput { generation: u64 },
+    TerminalExited { generation: u64 },
+    TerminalFailed { generation: u64, error: String },
+    TerminalPaste(String),
     /// 檢查新版本的結果：最新版的標籤（沒有任何 Release 時為 None）、略過的版本；`manual` 為 update.check 命令
     UpdateChecked { latest: Result<Option<String>, String>, skipped: Option<zing_core::update::Version>, manual: bool },
     /// 下載更新的進度（0–100）

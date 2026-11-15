@@ -917,6 +917,38 @@ Open the settings page (changes are written back to the matching line of config.
 settings.open()
 ```
 
+### `terminal.toggle()`
+
+Open, switch to, or close the built-in terminal (opens in the current folder)
+
+```lua
+terminal.toggle()
+```
+
+### `terminal.cd()`
+
+Switch the built-in terminal to the current folder
+
+```lua
+terminal.cd()
+```
+
+### `terminal.copy()`
+
+Copy the text selected in the built-in terminal
+
+```lua
+terminal.copy()
+```
+
+### `terminal.paste()`
+
+Paste the clipboard text into the built-in terminal
+
+```lua
+terminal.paste()
+```
+
 ### `folder.compare()`
 
 Compare the folders of the two panes (including subfolders), list the differences, and sync them

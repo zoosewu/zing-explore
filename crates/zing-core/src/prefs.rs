@@ -44,6 +44,12 @@ pub struct Pref {
 
 const LANGUAGES: &[(&str, &str)] =
     &[("auto", tr_key!("跟隨 Windows")), ("zh-TW", "繁體中文"), ("en", "English"), ("ja", "日本語")];
+const SHELLS: &[(&str, &str)] = &[
+    ("auto", tr_key!("自動（有 PowerShell 7 就用它）")),
+    ("pwsh", "PowerShell 7 (pwsh)"),
+    ("powershell", "Windows PowerShell"),
+    ("cmd", tr_key!("命令提示字元 (cmd)")),
+];
 const TREE_SIDES: &[(&str, &str)] = &[("left", tr_key!("左側")), ("right", tr_key!("右側")), ("hidden", tr_key!("隱藏"))];
 const MENU_STYLES: &[(&str, &str)] =
     &[("compact", tr_key!("精簡（先顯示常用項目）")), ("full", tr_key!("完整的 Windows 選單"))];
@@ -126,6 +132,14 @@ pub const PREFS: &[Pref] = &[
         kind: Kind::SlowList,
     },
     Pref { key: "", group: GENERAL, section: tr_key!("快速鍵"), label: tr_key!("編輯快速鍵…"), hint: "", kind: Kind::Action("keys.edit") },
+    Pref {
+        key: "terminal.shell",
+        group: GENERAL,
+        section: tr_key!("內建終端機"),
+        label: tr_key!("殼層"),
+        hint: tr_key!("下次開啟終端機時生效"),
+        kind: Kind::Choice(SHELLS),
+    },
     Pref {
         key: "update.check",
         group: GENERAL,
@@ -265,6 +279,7 @@ impl Config {
             "context_menu.allow_slow" => self.context_menu.allow_slow.join(","),
             "update.check" => self.update.check.to_string(),
             "list.typing" => typing_code(self.list.typing).into(),
+            "terminal.shell" => self.terminal.shell.clone(),
             _ => String::new(),
         }
     }
@@ -294,6 +309,7 @@ impl Config {
             }
             "update.check" => self.update.check = value.parse().map_err(|_| bad())?,
             "list.typing" => self.list.typing = toml_enum(value).ok_or_else(bad)?,
+            "terminal.shell" if SHELLS.iter().any(|(v, _)| v.eq_ignore_ascii_case(value)) => self.terminal.shell = value.to_ascii_lowercase(),
             _ => return Err(bad()),
         }
         Ok(())

@@ -917,6 +917,38 @@ file.newfile()
 settings.open()
 ```
 
+### `terminal.toggle()`
+
+開啟、切換到或關閉內建終端機（開啟時位於目前的資料夾）
+
+```lua
+terminal.toggle()
+```
+
+### `terminal.cd()`
+
+內建終端機切換到目前的資料夾
+
+```lua
+terminal.cd()
+```
+
+### `terminal.copy()`
+
+複製內建終端機中選取的文字
+
+```lua
+terminal.copy()
+```
+
+### `terminal.paste()`
+
+把剪貼簿的文字貼到內建終端機
+
+```lua
+terminal.paste()
+```
+
 ### `folder.compare()`
 
 比對兩個窗格的資料夾（含子資料夾），列出差異並可同步

@@ -1018,6 +1018,16 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             Some(LRESULT(0))
         }
         WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT => {
+            let vertical = with_app(|a| {
+                a.hover == crate::view::Hit::TerminalSplitter || matches!(a.press, Some(crate::app::Press::TermSplit { .. }))
+            })
+            .unwrap_or(false);
+            if vertical {
+                unsafe {
+                    SetCursor(LoadCursorW(None, windows::Win32::UI::WindowsAndMessaging::IDC_SIZENS).ok());
+                }
+                return Some(LRESULT(1));
+            }
             let resize = with_app(|a| {
                 matches!(
                     a.hover,

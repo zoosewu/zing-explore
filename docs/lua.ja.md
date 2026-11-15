@@ -917,6 +917,38 @@ file.newfile()
 settings.open()
 ```
 
+### `terminal.toggle()`
+
+内蔵ターミナルを開く・切り替える・閉じる（開くときは現在のフォルダー）
+
+```lua
+terminal.toggle()
+```
+
+### `terminal.cd()`
+
+内蔵ターミナルを現在のフォルダーに移動
+
+```lua
+terminal.cd()
+```
+
+### `terminal.copy()`
+
+内蔵ターミナルで選択したテキストをコピー
+
+```lua
+terminal.copy()
+```
+
+### `terminal.paste()`
+
+クリップボードのテキストを内蔵ターミナルに貼り付け
+
+```lua
+terminal.paste()
+```
+
 ### `folder.compare()`
 
 2 つのペインのフォルダーを（サブフォルダーも含めて）比較し、違いを一覧して同期できます

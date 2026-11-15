@@ -95,6 +95,20 @@ pub enum Startup {
     Tabs,
 }
 
+/// 內建終端機
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalConfig {
+    /// 殼層：auto（有 PowerShell 7 就用它，否則 Windows PowerShell）、pwsh、powershell、cmd
+    pub shell: String,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        TerminalConfig { shell: "auto".into() }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateConfig {
@@ -206,6 +220,7 @@ pub struct RawConfig {
     pub command_bar: Option<CommandBarConfig>,
     pub context_menu: Option<ContextMenuConfig>,
     pub update: Option<UpdateConfig>,
+    pub terminal: Option<TerminalConfig>,
     pub list: Option<ListConfig>,
     pub key: Vec<KeyBinding>,
     pub button: Option<Vec<Button>>,
@@ -236,6 +251,7 @@ pub struct Config {
     pub command_bar: CommandBarConfig,
     pub context_menu: ContextMenuConfig,
     pub update: UpdateConfig,
+    pub terminal: TerminalConfig,
     pub list: ListConfig,
     /// 命令列的按鈕（toolbar.toml，沒有時為預設＋舊版的 [[button]]）
     pub cmdbar: Vec<crate::cmdbar::Item>,
@@ -332,6 +348,7 @@ impl Config {
             command_bar: user.command_bar.or(base.command_bar).unwrap_or_default(),
             context_menu: user.context_menu.or(base.context_menu).unwrap_or_default(),
             update: user.update.or(base.update).unwrap_or_default(),
+            terminal: user.terminal.or(base.terminal).unwrap_or_default(),
             list: user.list.or(base.list).unwrap_or_default(),
             cmdbar: Vec::new(),
             buttons: user.button.or(base.button).unwrap_or_default(),

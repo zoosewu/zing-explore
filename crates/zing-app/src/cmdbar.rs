@@ -137,6 +137,9 @@ impl App {
             "nav.forward" if tab.forward.is_empty() => Some(tr!("沒有下一頁")),
             "nav.up" if in_pc => Some(tr!("已在最上層")),
             "folder.compare" => self.compare_disabled(),
+            "terminal.cd" if in_pc || zing_core::archive::is_inside(&tab.path) => Some(tr!("這個位置不是資料夾")),
+            "terminal.copy" if self.terminal.as_ref().and_then(|t| t.selected_text()).is_none() => Some(tr!("請先在終端機中選取文字")),
+            "terminal.paste" if self.terminal.is_none() => Some(tr!("終端機沒有開啟")),
             _ => None,
         }
     }

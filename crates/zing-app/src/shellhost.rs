@@ -60,6 +60,8 @@ pub enum ShellJob {
     /// `status` 為空時不顯示訊息；`reply` 收到是否成功（Lua 的 clipboard()）
     SetText { text: String, status: String, reply: Option<SyncSender<bool>> },
     Paste { dest: String },
+    /// 讀剪貼簿的文字，以 `Msg::TerminalPaste` 送回（內建終端機的貼上）
+    PasteText,
     Properties { paths: Vec<String> },
     /// 結束前把剪貼簿資料實際寫入，關閉程式後仍可貼上
     Flush(SyncSender<()>),
@@ -448,6 +450,10 @@ fn run_job(job: ShellJob) {
                 n.send(Msg::Paste { sources, dest, cut });
             }
             None => n.status(tr!("剪貼簿上沒有檔案"), true),
+        },
+        ShellJob::PasteText => match crate::window::clipboard_text() {
+            Some(text) if !text.is_empty() => n.send(Msg::TerminalPaste(text)),
+            _ => n.status(tr!("剪貼簿上沒有文字"), true),
         },
         ShellJob::Properties { paths } => shell::properties(host, &paths),
         ShellJob::Flush(ack) => {

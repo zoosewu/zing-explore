@@ -81,6 +81,8 @@ pub enum Focus {
     Tree,
     /// 右側面板（`sidepanel.rs`）
     Side,
+    /// 內建終端機（`terminal.rs`）：按鍵送給殼層
+    Terminal,
 }
 
 /// 滑鼠按下後的拖曳狀態
@@ -97,6 +99,10 @@ pub enum Press {
     ColResize { col: usize, start_x: f32, start_w: f32 },
     TreeSplit { start_x: f32, start_w: f32 },
     PreviewSplit { start_x: f32, start_w: f32 },
+    /// 終端機上緣的分隔線：往上拖變高
+    TermSplit { start_y: f32, start_h: f32 },
+    /// 在終端機中拖曳選取文字
+    TermSelect,
     /// 主題編輯面板：拖曳數字欄位的滑桿（`row` 是面板中的列）
     ThemeSlider { field: usize, row: usize },
     /// 自訂命令列面板：拖曳按鈕調整順序（`item` 是命令列的第幾個按鈕）
@@ -160,6 +166,9 @@ pub struct App {
     pub tree_watch: Option<services::TreeWatch>,
     /// 檔案作業正要移走的資料夾與因此對分頁、監看的決定（vacate.rs）
     vacating: Vacating,
+    /// 內建終端機（`terminal.rs`；關閉時為 None）與上次的高度
+    pub terminal: Option<crate::terminal::Terminal>,
+    pub terminal_last_height: f32,
     /// 有變更、等著重新載入的樹狀列節點
     pub tree_dirty: Vec<String>,
     pub tree_visible: bool,
@@ -370,6 +379,8 @@ impl App {
             probes_enabled: false,
             tree_watch: None,
             vacating: Vacating::default(),
+            terminal: None,
+            terminal_last_height: crate::terminal::DEFAULT_HEIGHT,
             tree_dirty: Vec::new(),
             focus: Focus::List,
             favorites,
@@ -1230,6 +1241,11 @@ impl App {
             Msg::Icon { id, pixels } => self.icons.store(id, pixels),
             Msg::MenuRename => self.start_rename(),
             Msg::CompareProgress { generation, scanned } => self.on_compare_progress(generation, scanned),
+            Msg::TerminalReady { generation, started } => self.on_terminal_ready(generation, *started),
+            Msg::TerminalOutput { generation } => self.on_terminal_output(generation),
+            Msg::TerminalExited { generation } => self.on_terminal_exited(generation),
+            Msg::TerminalFailed { generation, error } => self.on_terminal_failed(generation, error),
+            Msg::TerminalPaste(text) => self.terminal_send_text(&text),
             Msg::CompareDone { generation, result } => self.on_compare_done(generation, result),
             Msg::CompareContent { generation, same } => self.on_compare_content(generation, same),
             Msg::DragPidls { id, pidls } => {
@@ -1488,6 +1504,12 @@ impl App {
             Cmd::SearchOpen => self.open_search(),
             Cmd::KeysEdit => self.open_keys_panel(),
             Cmd::FolderCompare => self.open_compare(),
+            Cmd::TerminalToggle => self.toggle_terminal(),
+            Cmd::TerminalCd => self.terminal_cd(),
+            Cmd::TerminalCopy => {
+                self.terminal_copy();
+            }
+            Cmd::TerminalPaste => self.terminal_paste(),
             Cmd::SettingsOpen => self.open_settings(),
             Cmd::CmdbarEdit => self.open_cmdbar_editor(),
             Cmd::CmdbarHide => {
@@ -1698,7 +1720,7 @@ impl App {
                         self.side_cursor.visible = true;
                         self.side_settle();
                     }
-                    Focus::List | Focus::Tree | Focus::Side => {
+                    Focus::List | Focus::Tree | Focus::Side | Focus::Terminal => {
                         self.focus = Focus::List;
                         self.active_pane = 0;
                     }

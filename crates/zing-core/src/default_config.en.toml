@@ -54,6 +54,11 @@ auto = true
 # | none (do nothing; leave character keys to shortcuts; bind filter.start to a key to start filtering)
 typing = "filter"
 
+[terminal]
+# Shell of the built-in terminal (terminal.toggle, Ctrl+`): auto (PowerShell 7 when installed, otherwise Windows PowerShell),
+# pwsh, powershell, cmd
+shell = "auto"
+
 [update]
 # Check for a new version at startup: connects to GitHub only when more than 24 hours have passed since the last check (at most once a day),
 # and shows a notice on the status bar only for feature releases (a newer major or minor version), which can be downloaded and installed
@@ -182,6 +187,9 @@ cmd = "pane.focusnext"
 [[key]]
 key = "Ctrl+B"
 cmd = "tree.toggle"
+[[key]]
+key = "Ctrl+Backtick"
+cmd = "terminal.toggle"
 
 # ---- View ----
 [[key]]

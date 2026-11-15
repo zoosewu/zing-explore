@@ -2799,8 +2799,8 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("圖示", it.icon.as_str(), &format!("glyph:{}", zing_core::cmdbar::GLYPHS[2].0))
     }));
     v.push(step("截圖：自訂命令列", |_| {}, |c, _| screenshot(c, "20-自訂命令列")));
-    v.push(step("自訂命令列：搜尋「終端機」後點結果加入", |c| {
-        with_app(|a| a.bar_query("終端機".into()));
+    v.push(step("自訂命令列：搜尋「在終端機開啟」後點結果加入", |c| {
+        with_app(|a| a.bar_query("在終端機開啟".into()));
         let rows = with_app(|a| a.cmdbar_edit_rows()).unwrap_or_default();
         let only = rows.iter().filter(|r| matches!(r, crate::cmdbaredit::Row::Avail(..))).count();
         c.notes.push(("bar_search_count", only.to_string()));
@@ -4017,6 +4017,104 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             move |_, a| {
                 expect("對話框", a.compare_panel().is_none(), true)?;
                 expect("窗格數", a.panes.len(), 1)?;
+                at(a, &d)
+            }
+        },
+    ));
+    // 內建終端機（terminal.rs）：以 cmd 執行（啟動快、輸出固定）
+    // 檢查時 App 已借用，直接讀傳進來的
+    let term_text = |a: &App| a.terminal.as_ref().map(|t| t.screen.text()).unwrap_or_default();
+    v.push(
+        step(
+            "終端機：開啟，位於目前的資料夾",
+            |_| {
+                with_app(|a| {
+                    a.config.terminal.shell = "cmd".into();
+                    a.exec("terminal.toggle");
+                });
+            },
+            {
+                let d = d.clone();
+                move |_, a| {
+                    expect("焦點", a.focus, Focus::Terminal)?;
+                    expect("窗格", a.layout.terminal.is_some(), true)?;
+                    let text = a.terminal.as_ref().map(|t| t.screen.text()).unwrap_or_default();
+                    if text.contains(&format!("{d}>")) { Ok(()) } else { Err(format!("還沒有提示字元：{text:?}")) }
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "終端機：輸入命令，輸出顯示在窗格",
+            |_| {
+                with_app(|a| a.terminal_send_text("echo zing-terminal-ok\r"));
+            },
+            move |_, a| {
+                let n = term_text(a).matches("zing-terminal-ok").count();
+                if n >= 2 { Ok(()) } else { Err(format!("出現 {n} 次")) }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "終端機：↑、Enter 送給殼層（叫回上一個命令再執行）",
+            |c| {
+                key(c, "", VK_UP);
+                key(c, "", VK_RETURN);
+            },
+            move |_, a| {
+                expect("檔案清單的焦點沒動", a.focus, Focus::Terminal)?;
+                let n = term_text(a).matches("zing-terminal-ok").count();
+                if n >= 4 { Ok(()) } else { Err(format!("出現 {n} 次")) }
+            },
+        )
+        .slow(),
+    );
+    v.push(
+        step(
+            "終端機：terminal.cd 切到目前的資料夾",
+            {
+                let dir_a = dir_a.clone();
+                move |_| {
+                    with_app(|a| {
+                        let p = a.active_pane;
+                        a.navigate(p, dir_a.clone(), true);
+                        a.exec("terminal.cd");
+                    });
+                }
+            },
+            {
+                let dir_a = dir_a.clone();
+                move |_, a| {
+                    let text = term_text(a);
+                    if text.contains(&format!("{dir_a}>")) { Ok(()) } else { Err(format!("提示字元沒有換：{text:?}")) }
+                }
+            },
+        )
+        .slow(),
+    );
+    v.push(step("截圖：終端機", |_| {}, |c, _| screenshot(c, "34-終端機")));
+    v.push(step(
+        "終端機：Ctrl+` 關閉、回到測試資料夾",
+        {
+            let d = d.clone();
+            move |c| {
+                key(c, "c", VIRTUAL_KEY(0xC0));
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, d.clone(), true);
+                });
+            }
+        },
+        {
+            let d = d.clone();
+            move |_, a| {
+                expect("終端機", a.terminal.is_none(), true)?;
+                expect("窗格", a.layout.terminal.is_none(), true)?;
+                expect("焦點", a.focus, Focus::List)?;
                 at(a, &d)
             }
         },

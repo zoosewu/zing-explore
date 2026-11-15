@@ -70,6 +70,9 @@ pub struct Layout {
     /// 預覽窗格（窗格區域右側）
     pub preview: Option<Rect>,
     pub preview_splitter: Option<Rect>,
+    /// 內建終端機（窗格下方、整個視窗寬）與它上緣的分隔線
+    pub terminal: Option<Rect>,
+    pub terminal_splitter: Option<Rect>,
     pub panes: Vec<PaneLayout>,
     /// 檔案作業面板（狀態列上方）
     pub jobs: Option<Rect>,
@@ -105,6 +108,9 @@ pub enum Hit {
     Batch,
     Preview,
     PreviewSplitter,
+    /// 內建終端機與它上緣的分隔線
+    Terminal,
+    TerminalSplitter,
     /// 主題編輯面板（索引是 `ThemeEditor::rows` 的列）：整列、色碼或樣式文字、色票（列, 第幾個）、還原、
     /// 數字的 −／＋、滑桿、刪除檔案顏色、底部按鈕、進階連結、面板其他位置
     ThemeRow(usize),
@@ -275,7 +281,14 @@ impl App {
         if bar_h > 0.0 {
             lay.cmdbar = Some(self.layout_cmdbar(Rect::new(0.0, tb.b, w, tb.b + bar_h)));
         }
-        let body = Rect::new(0.0, tb.b + bar_h, w, lay.status.t - jobs_h);
+        let mut body_b = lay.status.t - jobs_h;
+        if let Some(th) = self.terminal_height(body_b - tb.b - bar_h - 120.0) {
+            let top = body_b - th;
+            lay.terminal = Some(Rect::new(0.0, top, w, body_b));
+            lay.terminal_splitter = Some(Rect::new(0.0, top - SPLITTER_W / 2.0, w, top + SPLITTER_W / 2.0));
+            body_b = top - 1.0;
+        }
+        let body = Rect::new(0.0, tb.b + bar_h, w, body_b);
         let mut panes_area = body;
         let tree_visible = self.tree_visible && self.tree_side != TreeSide::Hidden;
         if tree_visible {
@@ -487,6 +500,12 @@ impl App {
                 .position(|(i, r, _)| r.contains(x, y) && self.config.cmdbar.get(*i).is_some_and(|it| !it.is_separator()))
                 .map_or(Hit::CmdBar, Hit::CmdButton);
         }
+        if lay.terminal_splitter.is_some_and(|r| r.contains(x, y)) {
+            return Hit::TerminalSplitter;
+        }
+        if lay.terminal.is_some_and(|r| r.contains(x, y)) {
+            return Hit::Terminal;
+        }
         if lay.preview_splitter.is_some_and(|r| r.contains(x, y)) {
             return Hit::PreviewSplitter;
         }
@@ -590,6 +609,9 @@ impl App {
     /// 只繪製（效能測試量的就是這一段）；平常經 `frame`
     pub fn render(&mut self) {
         let lay = self.compute_layout();
+        if let Some(r) = lay.terminal {
+            self.sync_terminal_size(r);
+        }
         let c = self.theme.color.clone();
         if self.icons.take_evicted() {
             self.gfx.clear_icons();
@@ -628,6 +650,9 @@ impl App {
         }
         self.thumbs.end_frame();
         self.paint_rename_frame();
+        if let Some(r) = lay.terminal {
+            self.paint_terminal(r);
+        }
         self.paint_jobs(&lay);
         self.paint_status(&lay);
         self.paint_palette();

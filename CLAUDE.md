@@ -142,6 +142,11 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   執行緒、列舉經 `archive::list_folder`，以 generation 丟棄過時的結果；「比對內容」在背景逐位元組比對大小相同、時間不同的檔案。
   同步經 `App::confirm` 確認後送出一個 `FileOp::Sync`：先把被覆蓋的舊檔與鏡像時多出的項目送進資源回收筒，再複製（覆蓋不詢問），
   所以可以復原（`undo_of`）；作業完成動到比對的資料夾就重新比對（`compare_after_op`）。
+- 內建終端機（`terminal.toggle`，Ctrl+`；zing-app 的 terminal.rs，畫面與控制碼解析在 `zing_core::terminal`，可單元測試）：
+  視窗底部、窗格下方，殼層以 ConPTY 執行（設定 `terminal.shell`）。UI 執行緒不等待：啟動與關閉（`ClosePseudoConsole` 會等主控台結束）
+  在背景執行緒，讀取輸出一條執行緒（經 channel，佇列從空變成有資料時才送 `Msg::TerminalOutput`，UI 每次最多解析 256 KB）、
+  寫入一條執行緒。焦點在終端機（`Focus::Terminal`）時按鍵送給殼層，只有 `terminal.*` 的快速鍵照樣作用；字元走 WM_CHAR。
+  換資料夾不自動 cd（會打斷執行中的程式），`terminal.cd` 手動切換；殼層結束時窗格關閉。貼上的文字經 ShellHost（`ShellJob::PasteText`）。
 - 網址列每一層後面的「›」（完整路徑樣式是分隔的「\」，`Layout::crumb_menus`）在背景列出那一層的子資料夾
   （`services::crumb_folders`），回來時「›」還在才開啟選單，目前路徑經過的打勾。
 - 分頁：移動一律經 `App::move_tab`（拖曳、`tab.moveleft`／`moveright`；移到別的窗格時移走唯一分頁的窗格關閉），

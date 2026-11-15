@@ -40,6 +40,7 @@ mod script;
 mod search;
 mod sizes;
 mod tabmove;
+mod terminal;
 mod themeedit;
 mod themepanel;
 mod thumbs;

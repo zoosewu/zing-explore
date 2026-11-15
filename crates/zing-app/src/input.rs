@@ -108,6 +108,22 @@ impl App {
                 self.invalidate();
             }
             Some(Press::ThemeSlider { .. }) => self.theme_slide(x),
+            Some(Press::TermSplit { start_y, start_h }) => {
+                // 終端機在下方：往上拖變高
+                if let Some(t) = &mut self.terminal {
+                    t.height = (start_h - (y - start_y)).clamp(80.0, 2000.0);
+                }
+                self.invalidate();
+            }
+            Some(Press::TermSelect) => {
+                if let Some(p) = self.terminal_pos(x, y)
+                    && let Some(t) = &mut self.terminal
+                    && let Some(sel) = &mut t.selection
+                {
+                    sel.1 = p;
+                }
+                self.invalidate();
+            }
             Some(Press::PreviewSplit { start_x, start_w }) => {
                 // 預覽窗格在右側：往左拖變寬
                 self.preview.width = (start_w - (x - start_x)).clamp(200.0, 900.0);
@@ -314,6 +330,18 @@ impl App {
             Hit::PreviewSplitter => {
                 self.press = Some(Press::PreviewSplit { start_x: x, start_w: self.preview.width });
             }
+            Hit::TerminalSplitter => {
+                let h = self.layout.terminal.map_or(crate::terminal::DEFAULT_HEIGHT, |r| r.h());
+                self.press = Some(Press::TermSplit { start_y: y, start_h: h });
+            }
+            Hit::Terminal => {
+                self.focus = Focus::Terminal;
+                let p = self.terminal_pos(x, y);
+                if let (Some(t), Some(p)) = (&mut self.terminal, p) {
+                    t.selection = Some((p, p));
+                    self.press = Some(Press::TermSelect);
+                }
+            }
             Hit::TreeSplitter => {
                 self.press = Some(Press::TreeSplit { start_x: x, start_w: self.tree_width });
             }
@@ -476,6 +504,7 @@ impl App {
             return;
         }
         match hit {
+            Hit::Terminal => self.terminal_menu(x, y),
             Hit::CmdButton(k) => {
                 let i = self.layout.cmdbar.as_ref().and_then(|b| b.buttons.get(k)).map(|b| b.0);
                 self.cmdbar_right_click(i, x, y);
@@ -630,6 +659,10 @@ impl App {
         if self.side_is_dialog() {
             return;
         }
+        if self.layout.terminal.is_some_and(|r| r.contains(x, y)) {
+            self.terminal_wheel(delta);
+            return;
+        }
         // 滾輪的快速鍵（Ctrl+WheelUp 放大縮圖…）：游標所在的清單（先成為作用中的窗格）、樹狀列或全域
         // Ctrl 以滾輪訊息帶的旗標為準（MK_CONTROL），Shift、Alt 讀鍵盤狀態
         let mods = Mods { ctrl, ..Mods::current() };
@@ -778,6 +811,20 @@ impl App {
             self.suppress_char = true;
             return true;
         }
+        // 鍵盤焦點在終端機：按鍵交給殼層；只有終端機自己的命令（terminal.*，例如 Ctrl+` 關閉）照樣作用
+        if self.focus == Focus::Terminal && self.terminal.is_some() {
+            if let Some(cmd) = self.config.command_in(Scope::Global, chord).filter(|c| c.starts_with("terminal.")).map(str::to_string) {
+                self.exec(&cmd);
+                self.suppress_char = true;
+                return true;
+            }
+            if self.terminal_key(vk, mods) {
+                self.suppress_char = true;
+                return true;
+            }
+            // 字元由 WM_CHAR 送
+            return false;
+        }
         let scope = self.key_scope();
         // 篩選中：沒有 Ctrl、Alt 的字元鍵是篩選文字（WM_CHAR）；filter 情境自己綁定的按鍵除外
         if scope == Scope::Filter && chord.is_printable() && self.config.command_for(chord.in_scope(Scope::Filter)).is_none() {
@@ -793,6 +840,10 @@ impl App {
 
     pub fn on_char(&mut self, ch: u16) {
         if std::mem::take(&mut self.suppress_char) {
+            return;
+        }
+        if self.focus == Focus::Terminal && self.terminal.is_some() {
+            self.terminal_char(ch);
             return;
         }
         if self.focus != Focus::List || ch < 0x20 || ch == 0x7F || (0xD800..0xE000).contains(&ch) {

@@ -149,6 +149,10 @@ builtins! {
     CmdbarHide, OTHER, None => spec("cmdbar.hide", &[], tr_key!("隱藏命令列（寫回 config.toml 的 command_bar.visible）"), "cmdbar.hide()");
     FileNewfile, FILE, Some("document") => spec("file.newfile", &[], tr_key!("在目前的資料夾新增文字文件並進入重新命名"), "file.newfile()");
     SettingsOpen, OTHER, Some("settings") => spec("settings.open", &[], tr_key!("開啟設定頁（修改會寫回 config.toml 的對應行，保留註解）"), "settings.open()");
+    TerminalToggle, TOOLS, None => spec("terminal.toggle", &[], tr_key!("開啟、切換到或關閉內建終端機（開啟時位於目前的資料夾）"), "terminal.toggle()");
+    TerminalCd, TOOLS, None => spec("terminal.cd", &[], tr_key!("內建終端機切換到目前的資料夾"), "terminal.cd()");
+    TerminalCopy, TOOLS, None => spec("terminal.copy", &[], tr_key!("複製內建終端機中選取的文字"), "terminal.copy()");
+    TerminalPaste, TOOLS, None => spec("terminal.paste", &[], tr_key!("把剪貼簿的文字貼到內建終端機"), "terminal.paste()");
     FolderCompare, TOOLS, None => spec("folder.compare", &[], tr_key!("比對兩個窗格的資料夾（含子資料夾），列出差異並可同步"), "folder.compare()");
     KeysEdit, OTHER, Some("settings") => spec("keys.edit", &[], tr_key!("開啟快速鍵編輯器（結果存在程式旁的 keys.toml）"), "keys.edit()");
     ViewPreview, VIEW, Some("preview") => spec("view.preview", &[], tr_key!("顯示／隱藏預覽窗格"), "view.preview()");
@@ -300,6 +304,10 @@ pub const PRESETS: &[Preset] = &[
     titled("index.uninstall", tr_key!("移除 NTFS 索引服務")),
     titled("index.status", tr_key!("NTFS 索引服務狀態")),
     titled_short("search.open", tr_key!("全磁碟搜尋（NTFS 索引）"), tr_key!("全磁碟搜尋")),
+    titled_short("terminal.toggle", tr_key!("內建終端機"), tr_key!("終端機窗格")),
+    titled("terminal.cd", tr_key!("終端機：切換到目前的資料夾")),
+    titled("terminal.copy", tr_key!("終端機：複製")),
+    titled("terminal.paste", tr_key!("終端機：貼上")),
     titled_short("folder.compare", tr_key!("比對兩個窗格的資料夾並同步"), tr_key!("比對資料夾")),
     titled("filter.clear", tr_key!("清除篩選")),
     titled_short("jobs.toggle", tr_key!("顯示／隱藏檔案作業"), tr_key!("檔案作業")),

@@ -191,7 +191,7 @@ pub const MORE_MENU: &[Entry] = &[
     Sub(tr_key!("我的最愛"), &[Cmd("favorites.add"), Cmd("favorites.remove")]),
     Sub(
         tr_key!("工具"),
-        &[Cmd("search.open"), Cmd("view.foldersizes"), Cmd("folder.compare"), Sep, Cmd("jobs.toggle"), Cmd("jobs.clear")],
+        &[Cmd("search.open"), Cmd("view.foldersizes"), Cmd("folder.compare"), Sep, Cmd("terminal.toggle"), Cmd("terminal.cd"), Sep, Cmd("jobs.toggle"), Cmd("jobs.clear")],
     ),
     Sub(tr_key!("外觀"), &[Cmd("theme.toggle"), Cmd("theme.edit"), Sep, Cmd("theme.import"), Cmd("theme.export")]),
     Sep,

@@ -109,7 +109,7 @@ impl App {
             Focus::List if !self.tab().filter.is_empty() || self.filter_armed => Scope::Filter,
             Focus::List => Scope::List,
             Focus::Tree => Scope::Tree,
-            Focus::Side => Scope::Global,
+            Focus::Side | Focus::Terminal => Scope::Global,
         }
     }
 
