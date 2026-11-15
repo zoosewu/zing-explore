@@ -916,7 +916,7 @@ impl App {
         if tab.view.is_empty() {
             let msg = if let Some(e) = &tab.error {
                 Some((e.clone(), c.error))
-            } else if tab.loading {
+            } else if tab.is_loading() {
                 Some((tr!("正在載入…").to_string(), c.text_secondary))
             } else if !tab.filter.is_empty() {
                 Some((tr!("沒有符合「{filter}」的項目（Esc 清除篩選）", filter = tab.filter), c.text_secondary))
@@ -1105,7 +1105,7 @@ impl App {
                 left.push_str(&tr!("（{size}）", size = format::size_short(bytes)));
             }
         }
-        if tab.loading {
+        if tab.is_loading() {
             left.push_str(tr!("　載入中…"));
         }
         if self.sizes.pending > 0 {

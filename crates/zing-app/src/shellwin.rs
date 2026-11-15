@@ -130,11 +130,7 @@ impl crate::app::App {
         let name = if zing_core::path::is_root(&target) { target.clone() } else { zing_core::path::file_name(&target).to_string() };
         self.open_folder(folder);
         let p = self.active_pane;
-        let tab = self.tab_mut();
-        if tab.loading {
-            tab.pending_select = Some((name, rename));
-        } else if let Some(i) = tab.find_view(&name) {
-            tab.select_only(i);
+        if self.tab_mut().select_name(name, rename) {
             self.ensure_visible(p);
             if rename {
                 self.start_rename();

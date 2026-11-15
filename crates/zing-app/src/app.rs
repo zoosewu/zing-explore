@@ -1,7 +1,5 @@
 //! App：整個視窗的狀態、背景結果處理、導覽與命令執行。
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
@@ -22,7 +20,7 @@ use crate::gfx::Gfx;
 use crate::icons::Icons;
 use crate::menu::{Action, MenuItem};
 use crate::jobs::Jobs;
-use crate::model::{Children, Expand, MenuTarget, NodeKind, Pane, Reveal, Tab, Tree};
+use crate::model::{Children, Expand, Failed, Listed, MenuTarget, NodeKind, Pane, Reveal, Tab, Tree};
 use crate::palette::Palette;
 use crate::perf::Perf;
 use crate::services::{TreeLoad, self, Msg, Notifier, Pool, TabId};
@@ -589,7 +587,7 @@ impl App {
                 }
                 if let Some(s) = select
                     && s.dir.eq_ignore_ascii_case(&tp) && p == self.active_pane && t == self.panes[p].active {
-                        self.panes[p].tabs[t].pending_select = Some((s.name.clone(), s.rename));
+                        self.panes[p].tabs[t].select_after_load(s.name.clone(), s.rename);
                     }
                 self.refresh(p, t);
             }
@@ -715,15 +713,14 @@ impl App {
         let notifier = self.notifier.clone();
         let paused = self.vacating.blocks_watch(&self.panes[p].tabs[t].path);
         let tab = &mut self.panes[p].tabs[t];
-        tab.cancel.store(true, Ordering::Relaxed);
-        tab.cancel = Arc::new(AtomicBool::new(false));
-        tab.generation += 1;
-        tab.loading = true;
-        tab.error = None;
-        services::load_dir(&self.pool, &notifier, tab.id, tab.generation, tab.path.clone(), tab.spec, tab.cancel.clone());
-        if !tab.refreshing {
-            tab.nav_generation += 1;
-            tab.watcher = if paused { None } else { start_watch(tab, &notifier) };
+        let load = tab.begin_load();
+        services::load_dir(&self.pool, &notifier, tab.id, load.generation, tab.path.clone(), tab.spec, load.cancel);
+        if load.restart_watch {
+            if paused {
+                tab.unwatch();
+            } else {
+                tab.watch(&notifier);
+            }
         }
     }
 
@@ -731,9 +728,8 @@ impl App {
     pub fn sync_cover_watch(&mut self, p: usize, t: usize) {
         let notifier = self.notifier.clone();
         let tab = &mut self.panes[p].tabs[t];
-        if tab.watcher.is_some() && tab.watch_covers != (tab.mode == zing_core::folderview::ViewMode::Thumbnails) {
-            tab.nav_generation += 1;
-            tab.watcher = start_watch(tab, &notifier);
+        if tab.watch_kind_stale() {
+            tab.watch(&notifier);
         }
     }
 
@@ -754,13 +750,12 @@ impl App {
     fn apply_vacate(&mut self, effects: Vec<Effect>) {
         for e in effects {
             match e {
-                Effect::Unwatch((p, t)) => self.panes[p].tabs[t].watcher = None,
+                Effect::Unwatch((p, t)) => self.panes[p].tabs[t].unwatch(),
                 Effect::Watch((p, t)) => {
                     let notifier = self.notifier.clone();
                     let tab = &mut self.panes[p].tabs[t];
                     if tab.watcher.is_none() {
-                        tab.nav_generation += 1;
-                        tab.watcher = start_watch(tab, &notifier);
+                        tab.watch(&notifier);
                     }
                 }
                 Effect::Renamed { at: (p, t), path } => {
@@ -821,13 +816,9 @@ impl App {
     }
 
     fn refresh(&mut self, p: usize, t: usize) {
-        let tab = &mut self.panes[p].tabs[t];
-        tab.refresh_due = false;
-        if tab.loading && !tab.refreshing {
-            return;
+        if self.panes[p].tabs[t].begin_refresh() {
+            self.load(p, t);
         }
-        tab.refreshing = !tab.listing.is_empty();
-        self.load(p, t);
     }
 
     pub fn go_back(&mut self) {
@@ -837,7 +828,7 @@ impl App {
             let cur = std::mem::take(&mut tab.path);
             tab.forward.push(cur.clone());
             self.navigate(p, prev, false);
-            self.tab_mut().pending_select = Some((path::file_name(&cur).to_string(), false));
+            self.tab_mut().select_after_load(path::file_name(&cur).to_string(), false);
         }
     }
 
@@ -858,7 +849,7 @@ impl App {
             self.navigate(p, parent, true);
             // 回到上一層時選取剛剛所在的資料夾
             let name = if path::is_root(&cur) { cur.clone() } else { path::file_name(&cur).to_string() };
-            self.tab_mut().pending_select = Some((name, false));
+            self.tab_mut().select_after_load(name, false);
         }
     }
 
@@ -1095,7 +1086,7 @@ impl App {
             tab.sorted = sorted_order(&tab.listing, tab.spec);
             tab.rebuild_view(show_hidden);
         } else {
-            let (id, generation, listing, spec) = (tab.id, tab.generation, tab.listing.clone(), tab.spec);
+            let (id, generation, listing, spec) = (tab.id, tab.generation(), tab.listing.clone(), tab.spec);
             services::sort_job(&self.pool, &self.notifier, id, generation, listing, spec);
         }
         self.invalidate();
@@ -1128,35 +1119,26 @@ impl App {
                 let Some((p, t)) = self.find_tab(tab) else { return };
                 let show_hidden = self.show_hidden;
                 let is_active = p == self.active_pane && t == self.panes[p].active;
-                let tab = &mut self.panes[p].tabs[t];
-                if generation != tab.generation || (tab.refreshing && !done) {
+                let listed = self.panes[p].tabs[t].accept_listing(generation, listing, sorted, done, show_hidden);
+                if listed == Listed::Ignored {
                     return;
                 }
-                tab.apply_listing(listing, sorted, show_hidden);
-                tab.refreshing = false;
-                if done {
-                    tab.loading = false;
-                    tab.shown = true;
+                if let Listed::Done { selected, refresh } = listed {
                     // 已知的資料夾大小寫進新清單；設定為自動時計算
-                    let path_key = crate::sizes::key(&tab.path);
+                    let path_key = crate::sizes::key(&self.panes[p].tabs[t].path);
                     if self.sizes.has_parent(&path_key) {
                         self.sizes_dirty(path_key);
                     }
                     self.folder_sizes_on_enter(p, t);
-                    let tab = &mut self.panes[p].tabs[t];
-                    if let Some((name, rename)) = tab.pending_select.take() {
-                        match tab.find_view(&name) {
-                            Some(i) => {
-                                tab.select_only(i);
-                                self.ensure_visible(p);
-                                if rename && is_active {
-                                    self.start_rename();
-                                }
-                            }
-                            None if !rename => {}
-                            // 新資料夾可能比通知早一步列舉完成；保留給下一次重新整理
-                            None => self.panes[p].tabs[t].pending_select = Some((name, rename)),
+                    if let Some(rename) = selected {
+                        self.ensure_visible(p);
+                        if rename && is_active {
+                            self.start_rename();
                         }
+                    }
+                    // 初次載入途中資料夾有變更：再重新整理一次
+                    if refresh {
+                        self.refresh(p, t);
                     }
                 }
                 if is_active
@@ -1165,30 +1147,18 @@ impl App {
                     }
             }
             Msg::ListingError { tab, generation, error, gone } => {
-                if let Some((p, t)) = self.find_tab(tab) {
-                    let tab = &mut self.panes[p].tabs[t];
-                    if generation == tab.generation {
-                        tab.loading = false;
-                        tab.refreshing = false;
-                        match gone {
-                            Some(existing) if tab.shown => {
-                                let path = tab.path.clone();
-                                self.on_folder_gone(&path, existing);
-                            }
-                            _ => tab.error = Some(error),
-                        }
-                    }
+                if let Some((p, t)) = self.find_tab(tab)
+                    && let Failed::Gone(existing) = self.panes[p].tabs[t].listing_failed(generation, error, gone)
+                {
+                    let path = self.panes[p].tabs[t].path.clone();
+                    self.on_folder_gone(&path, existing);
                 }
             }
             Msg::FolderGone { path, existing } => self.on_folder_gone(&path, existing),
             Msg::Sorted { tab, generation, spec, sorted } => {
                 if let Some((p, t)) = self.find_tab(tab) {
                     let show_hidden = self.show_hidden;
-                    let tab = &mut self.panes[p].tabs[t];
-                    if generation == tab.generation && spec == tab.spec {
-                        tab.sorted = sorted;
-                        tab.rebuild_view(show_hidden);
-                    }
+                    self.panes[p].tabs[t].accept_sorted(generation, spec, sorted, show_hidden);
                 }
             }
             Msg::TreeDirChanged(path) => self.on_tree_dir_changed(path),
@@ -1213,9 +1183,8 @@ impl App {
             Msg::DirChanged { tab, generation } => {
                 if let Some((p, t)) = self.find_tab(tab) {
                     let tab = &mut self.panes[p].tabs[t];
-                    if generation == tab.nav_generation {
+                    if tab.dir_changed(generation) {
                         self.sizes.mark_stale(&tab.path);
-                        tab.refresh_due = true;
                         // 合併短時間內的大量變更
                         unsafe { SetTimer(Some(self.hwnd), TIMER_REFRESH, 250, None) };
                     }
@@ -1224,7 +1193,7 @@ impl App {
             Msg::CoversChanged { tab, generation, folders } => {
                 if let Some((p, t)) = self.find_tab(tab) {
                     let tab = &self.panes[p].tabs[t];
-                    if generation == tab.nav_generation {
+                    if tab.is_current_watch(generation) {
                         let folders = folders.unwrap_or_else(|| {
                             (0..tab.listing.len()).filter(|&e| tab.listing.entries[e].is_dir()).map(|e| tab.listing.name_string(e)).collect()
                         });
@@ -1367,7 +1336,7 @@ impl App {
         }
         for p in 0..self.panes.len() {
             for t in 0..self.panes[p].tabs.len() {
-                if self.panes[p].tabs[t].refresh_due {
+                if self.panes[p].tabs[t].refresh_due() {
                     self.refresh(p, t);
                 }
             }
@@ -2140,7 +2109,7 @@ impl App {
             return;
         }
         let mut tab = self.take_tab(p, t);
-        tab.cancel.store(true, Ordering::Relaxed);
+        tab.cancel_load();
         if self.closed_tabs.len() >= CLOSED_TABS_MAX {
             self.closed_tabs.remove(0);
         }
@@ -2228,11 +2197,6 @@ fn spots(panes: &[Pane]) -> Vec<TabSpot<'_>> {
         .enumerate()
         .flat_map(|(p, pane)| pane.tabs.iter().enumerate().map(move |(t, tab)| TabSpot { at: (p, t), path: &tab.path, watching: tab.watcher.is_some() }))
         .collect()
-}
-
-fn start_watch(tab: &mut Tab, n: &Notifier) -> Option<services::Watcher> {
-    tab.watch_covers = tab.mode == zing_core::folderview::ViewMode::Thumbnails;
-    services::watch(&tab.path, n, tab.id, tab.nav_generation, tab.watch_covers)
 }
 
 pub fn apply_window_theme(hwnd: HWND, theme: &Theme) {

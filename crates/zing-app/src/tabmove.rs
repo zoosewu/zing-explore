@@ -116,7 +116,7 @@ impl App {
             self.active_pane = self.active_pane.min(self.panes.len() - 1);
             pane.tabs.into_iter().next()?
         };
-        tab.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        tab.cancel_load();
         self.sync_tree();
         self.invalidate();
         Some(drop)

@@ -75,6 +75,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 會阻塞的操作開頭呼叫 `zing_core::guard::io("說明")`。debug build 在 UI 執行緒呼叫時，狀態列會顯示錯誤與程式位置；確有必要的例外用 `let _allow = guard::allow_io("原因")` 包住並寫明原因。debug build 另有卡頓監看：UI 訊息處理超過 100 ms 會回報。
 - 不必模擬輸入也能測命令：`zing --perf-out=結果.json --perf-dir=資料夾 --perf-idle-ms=2000 --perf-exec="命令"`，debug build 的防呆回報會寫進結果的 `guard_violations`（應為空陣列）。注意 `--perf-exec` 會真的執行命令，不要拿有外部副作用的命令（如 `config.edit`、檔案作業）在真實資料上測。
 - 所有背景任務都必須可取消（換資料夾時中止舊任務），結果分批送回 UI；以 generation 丟棄過時結果。
+- 分頁的載入與監看流程只在 `Tab`（model.rs）：載入與監看的世代、重新整理（初次載入中的變更記著、完成後再重新整理）、
+  列舉完成後要選取的項目（`select_after_load`／`select_name`：找不到就再等一次列舉完成，還是沒有就放棄）、
+  找不到時算錯誤還是資料夾不見了（`shown`）。App 依 `Listed`／`Failed` 執行，不直接改這些欄位；規則的單元測試在 model.rs 的 `load_tests`。
 - 檔案作業一律經 `App::submit_op`：複製／移動／刪除進作業佇列（依序執行、顯示進度，可暫停／取消），
   重新命名與新增資料夾走另一條執行緒，不會被大量複製擋住。UI 只透過 `JobCtl` 的 atomic 旗標控制工作，不等待鎖；
   暫停／取消在 Shell 的進度回呼（`shell.rs` 的 `Progress`）中生效。冒煙測試用 `shell::TEST_PROGRESS_DELAY_MS` 放慢複製。

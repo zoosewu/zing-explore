@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use zing_core::folderview::{FolderView, ViewMode};
@@ -11,7 +11,7 @@ use zing_core::path;
 use zing_core::sort::{SortSpec, filter_order};
 use zing_core::text::Pattern;
 
-use crate::services::{TabId, Watcher};
+use crate::services::{self, Notifier, TabId, Watcher};
 
 /// 右鍵選單的對象：項目（空白處為空）與所在的資料夾。預先準備的選單在項目、資料夾都相同時才會用上
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -46,26 +46,65 @@ pub struct Tab {
     /// 縮圖邊長（DIP）
     pub thumb: u16,
     /// 每次載入遞增，用來丟棄過時的背景結果
-    pub generation: u64,
-    /// 每次換資料夾遞增，用來丟棄過時的監看通知
-    pub nav_generation: u64,
-    pub loading: bool,
+    generation: u64,
+    /// 每次（重新）開始或停止監看遞增，用來丟棄過時的監看通知
+    nav_generation: u64,
+    loading: bool,
     /// 重新整理中：保留舊內容直到新結果完成，避免閃爍
-    pub refreshing: bool,
+    refreshing: bool,
     pub error: Option<String>,
     pub back: Vec<String>,
     pub forward: Vec<String>,
-    pub cancel: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
     /// 資料夾大小計算的取消旗標：只在換資料夾時更換（自動重新整理不取消）
     pub size_cancel: Arc<AtomicBool>,
     pub watcher: Option<Watcher>,
     /// 監看是否包含子資料夾的內容（縮圖檢視的封面，`services::watch` 的 `covers`）
-    pub watch_covers: bool,
-    /// 載入完成後要選取的項目（名稱、是否進入重新命名）
-    pub pending_select: Option<(String, bool)>,
-    pub refresh_due: bool,
+    watch_covers: bool,
+    /// 列舉完成後要選取的項目（`select_after_load`）
+    pending_select: Option<PendingSelect>,
+    /// 資料夾有變更、要重新整理（初次載入中的變更也記著，完成後再重新整理）
+    refresh_due: bool,
     /// 這個路徑列舉成功過：之後找不到就是被刪除或改名了，移到仍存在的上層（剛輸入的路徑找不到則只顯示錯誤）
-    pub shown: bool,
+    shown: bool,
+}
+
+/// 列舉完成後要選取的項目
+struct PendingSelect {
+    name: String,
+    /// 選取後進入重新命名
+    rename: bool,
+    /// 還能再等幾次列舉完成（找不到就減一，到 0 就放棄）
+    tries: u8,
+}
+
+/// `Tab::begin_load` 的結果：交給背景列舉的世代與取消旗標
+pub struct Load {
+    pub generation: u64,
+    pub cancel: Arc<AtomicBool>,
+    /// 換了資料夾（不是重新整理）：重新開始監看
+    pub restart_watch: bool,
+}
+
+/// `Tab::accept_listing` 的結果
+#[derive(Debug, PartialEq)]
+pub enum Listed {
+    /// 過時的結果，或重新整理中的部分結果
+    Ignored,
+    /// 初次載入的部分結果
+    Partial,
+    /// 列舉完成。`selected`：選取了等著的項目（值為是否進入重新命名）；`refresh`：載入途中資料夾有變更，再重新整理一次
+    Done { selected: Option<bool>, refresh: bool },
+}
+
+/// `Tab::listing_failed` 的結果
+#[derive(Debug, PartialEq)]
+pub enum Failed {
+    Ignored,
+    /// 顯示錯誤
+    Error,
+    /// 列舉成功過的資料夾不見了：移到仍存在的上層（值）
+    Gone(String),
 }
 
 impl Tab {
@@ -143,8 +182,157 @@ impl Tab {
         self.scroll = 0.0;
     }
 
+    // ------------------------------------------------------------ 載入與監看的流程
+
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    /// 這個路徑列舉成功過（冒煙測試檢查用）
+    #[cfg(any(test, feature = "smoke"))]
+    pub fn shown(&self) -> bool {
+        self.shown
+    }
+
+    /// 目前的載入世代（背景排序的結果以此丟棄過時的）
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn refresh_due(&self) -> bool {
+        self.refresh_due
+    }
+
+    /// 開始載入目前的路徑：取消上一次的載入
+    pub fn begin_load(&mut self) -> Load {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel = Arc::new(AtomicBool::new(false));
+        self.generation += 1;
+        self.loading = true;
+        self.error = None;
+        Load { generation: self.generation, cancel: self.cancel.clone(), restart_watch: !self.refreshing }
+    }
+
+    /// 關閉分頁：取消進行中的載入
+    pub fn cancel_load(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// 重新整理：回傳 true 表示要載入。初次載入還沒完成時不打斷它，記著、完成後再重新整理（`Listed::Done` 的 `refresh`）
+    pub fn begin_refresh(&mut self) -> bool {
+        if self.loading && !self.refreshing {
+            self.refresh_due = true;
+            return false;
+        }
+        self.refresh_due = false;
+        self.refreshing = !self.listing.is_empty();
+        true
+    }
+
+    /// 背景列舉的結果
+    pub fn accept_listing(&mut self, generation: u64, listing: Arc<Listing>, sorted: Vec<u32>, done: bool, show_hidden: bool) -> Listed {
+        if generation != self.generation || (self.refreshing && !done) {
+            return Listed::Ignored;
+        }
+        self.apply_listing(listing, sorted, show_hidden);
+        self.refreshing = false;
+        if !done {
+            return Listed::Partial;
+        }
+        self.loading = false;
+        self.shown = true;
+        let selected = self.take_pending_select();
+        Listed::Done { selected, refresh: self.refresh_due }
+    }
+
+    /// 列舉失敗：列舉成功過的路徑找不到就是被刪除或改名了（`gone`：仍存在的上層），否則顯示錯誤
+    pub fn listing_failed(&mut self, generation: u64, error: String, gone: Option<String>) -> Failed {
+        if generation != self.generation {
+            return Failed::Ignored;
+        }
+        self.loading = false;
+        self.refreshing = false;
+        match gone {
+            Some(existing) if self.shown => Failed::Gone(existing),
+            _ => {
+                self.error = Some(error);
+                Failed::Error
+            }
+        }
+    }
+
+    /// 背景排序的結果
+    pub fn accept_sorted(&mut self, generation: u64, spec: SortSpec, sorted: Vec<u32>, show_hidden: bool) {
+        if generation == self.generation && spec == self.spec {
+            self.sorted = sorted;
+            self.rebuild_view(show_hidden);
+        }
+    }
+
+    /// 監看的通知是目前的監看送的（不是換資料夾、停止之前的）
+    pub fn is_current_watch(&self, nav_generation: u64) -> bool {
+        nav_generation == self.nav_generation
+    }
+
+    /// 資料夾內容改變：記下要重新整理，回傳 false 表示是過時的通知（App 合併短時間內的變更再重新整理）
+    pub fn dir_changed(&mut self, nav_generation: u64) -> bool {
+        if !self.is_current_watch(nav_generation) {
+            return false;
+        }
+        self.refresh_due = true;
+        true
+    }
+
+    /// （重新）開始監看目前的路徑；縮圖檢視連子資料夾的內容一起看（封面）
+    pub fn watch(&mut self, n: &Notifier) {
+        self.nav_generation += 1;
+        self.watch_covers = self.mode == ViewMode::Thumbnails;
+        self.watcher = services::watch(&self.path, n, self.id, self.nav_generation, self.watch_covers);
+    }
+
+    /// 停止監看；之後舊監看送來的通知都丟棄
+    pub fn unwatch(&mut self) {
+        self.nav_generation += 1;
+        self.watcher = None;
+    }
+
+    /// 檢視模式改了，監看的種類（是否包含封面）不符
+    pub fn watch_kind_stale(&self) -> bool {
+        self.watcher.is_some() && self.watch_covers != (self.mode == ViewMode::Thumbnails)
+    }
+
+    /// 列舉完成後選取 `name`（`rename`：接著重新命名）。找不到就再等一次列舉完成（新項目可能比通知早一步列舉完成），還是沒有就放棄
+    pub fn select_after_load(&mut self, name: String, rename: bool) {
+        self.pending_select = Some(PendingSelect { name, rename, tries: 2 });
+    }
+
+    /// 選取 `name`：目前的清單中有就馬上選、回傳 true；載入中或還沒列出就等列舉完成（`select_after_load`）
+    pub fn select_name(&mut self, name: String, rename: bool) -> bool {
+        if !self.loading
+            && let Some(i) = self.find_view(&name)
+        {
+            self.select_only(i);
+            return true;
+        }
+        self.select_after_load(name, rename);
+        false
+    }
+
+    fn take_pending_select(&mut self) -> Option<bool> {
+        let mut p = self.pending_select.take()?;
+        if let Some(i) = self.find_view(&p.name) {
+            self.select_only(i);
+            return Some(p.rename);
+        }
+        p.tries -= 1;
+        if p.tries > 0 {
+            self.pending_select = Some(p);
+        }
+        None
+    }
+
     /// 套用新的列舉結果。重新整理時依名稱還原選取與焦點。
-    pub fn apply_listing(&mut self, listing: Arc<Listing>, sorted: Vec<u32>, show_hidden: bool) {
+    fn apply_listing(&mut self, listing: Arc<Listing>, sorted: Vec<u32>, show_hidden: bool) {
         if self.refreshing {
             let names: HashSet<Vec<u16>> =
                 self.selected_indices_all().into_iter().map(|i| self.listing.name(i).to_vec()).collect();
@@ -1055,5 +1243,136 @@ mod tests {
         tree.reconcile("C:\\", kids(&[]));
         assert!(!tree.nodes[c].expanded && !tree.nodes[c].arrow());
         assert_eq!(tree.focus, c);
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    fn listing(names: &[&str]) -> (Arc<Listing>, Vec<u32>) {
+        let mut l = Listing::default();
+        for n in names {
+            l.push_str(n, 0, 1, 0);
+        }
+        let sorted = zing_core::sort::sorted_order(&l, SortSpec::default());
+        (Arc::new(l), sorted)
+    }
+
+    fn done(t: &mut Tab, names: &[&str]) -> Listed {
+        let (l, s) = listing(names);
+        let g = t.generation();
+        t.accept_listing(g, l, s, true, true)
+    }
+
+    fn tab() -> Tab {
+        Tab::new(1, r"C:\x".into(), FolderView::default())
+    }
+
+    #[test]
+    fn stale_generation_is_ignored() {
+        let mut t = tab();
+        let old = t.begin_load();
+        let new = t.begin_load();
+        assert!(old.cancel.load(Ordering::Relaxed), "上一次的載入被取消");
+        let (l, s) = listing(&["a"]);
+        assert_eq!(t.accept_listing(old.generation, l.clone(), s.clone(), true, true), Listed::Ignored);
+        assert_eq!(t.listing_failed(old.generation, "x".into(), None), Failed::Ignored);
+        assert_eq!(t.accept_listing(new.generation, l, s, true, true), Listed::Done { selected: None, refresh: false });
+        assert!(!t.is_loading() && t.shown());
+    }
+
+    #[test]
+    fn refresh_keeps_old_contents_until_complete() {
+        let mut t = tab();
+        t.begin_load();
+        done(&mut t, &["a", "b"]);
+        assert!(t.begin_refresh());
+        let load = t.begin_load();
+        assert!(!load.restart_watch, "重新整理不重新開始監看");
+        let (l, s) = listing(&["a"]);
+        assert_eq!(t.accept_listing(load.generation, l.clone(), s.clone(), false, true), Listed::Ignored);
+        assert_eq!(t.view.len(), 2);
+        assert!(matches!(t.accept_listing(load.generation, l, s, true, true), Listed::Done { .. }));
+        assert_eq!(t.view.len(), 1);
+    }
+
+    #[test]
+    fn first_load_shows_partial_results() {
+        let mut t = tab();
+        let load = t.begin_load();
+        assert!(load.restart_watch);
+        let (l, s) = listing(&["a"]);
+        assert_eq!(t.accept_listing(load.generation, l, s, false, true), Listed::Partial);
+        assert_eq!(t.view.len(), 1);
+        assert!(t.is_loading());
+    }
+
+    #[test]
+    fn change_during_first_load_refreshes_after_it_completes() {
+        let mut t = tab();
+        t.begin_load();
+        assert!(!t.begin_refresh(), "不打斷初次載入");
+        assert!(t.refresh_due());
+        assert_eq!(done(&mut t, &["a"]), Listed::Done { selected: None, refresh: true });
+        assert!(t.begin_refresh());
+        assert!(!t.refresh_due());
+    }
+
+    #[test]
+    fn not_found_is_gone_only_after_shown() {
+        let mut t = tab();
+        let g = t.begin_load().generation;
+        assert_eq!(t.listing_failed(g, "找不到".into(), Some("C:\\".into())), Failed::Error);
+        assert_eq!(t.error.as_deref(), Some("找不到"));
+        t.begin_load();
+        done(&mut t, &["a"]);
+        let g = t.begin_load().generation;
+        assert_eq!(t.listing_failed(g, "找不到".into(), Some("C:\\".into())), Failed::Gone("C:\\".into()));
+        assert!(!t.is_loading());
+    }
+
+    #[test]
+    fn pending_select_waits_one_more_listing_then_gives_up() {
+        let mut t = tab();
+        t.begin_load();
+        t.select_after_load("新資料夾".into(), true);
+        assert_eq!(done(&mut t, &["a"]), Listed::Done { selected: None, refresh: false });
+        t.begin_refresh();
+        t.begin_load();
+        assert_eq!(done(&mut t, &["a", "新資料夾"]), Listed::Done { selected: Some(true), refresh: false });
+        assert_eq!(t.focused_entry().map(|e| t.listing.name_string(e)), Some("新資料夾".to_string()));
+        // 兩次都沒有就放棄：之後出現同名項目也不再選取
+        t.select_after_load("z".into(), false);
+        for _ in 0..2 {
+            t.begin_refresh();
+            t.begin_load();
+            done(&mut t, &["a"]);
+        }
+        t.begin_refresh();
+        t.begin_load();
+        assert_eq!(done(&mut t, &["a", "z"]), Listed::Done { selected: None, refresh: false });
+    }
+
+    #[test]
+    fn select_name_selects_now_or_waits() {
+        let mut t = tab();
+        t.begin_load();
+        done(&mut t, &["a", "b"]);
+        assert!(t.select_name("b".into(), false));
+        assert!(!t.select_name("c".into(), false), "還沒列出");
+        t.begin_refresh();
+        t.begin_load();
+        assert_eq!(done(&mut t, &["a", "b", "c"]), Listed::Done { selected: Some(false), refresh: false });
+    }
+
+    #[test]
+    fn stale_watch_notifications_are_dropped() {
+        let mut t = tab();
+        let g = t.nav_generation;
+        assert!(t.dir_changed(g));
+        t.unwatch();
+        assert!(!t.dir_changed(g));
+        assert!(!t.is_current_watch(g));
     }
 }

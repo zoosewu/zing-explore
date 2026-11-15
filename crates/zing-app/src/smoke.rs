@@ -1122,7 +1122,7 @@ fn at(a: &App, dir: &str) -> Result<(), String> {
     if !t.path.eq_ignore_ascii_case(dir) {
         return Err(format!("目前在「{}」", t.path));
     }
-    if t.loading || t.refreshing {
+    if t.is_loading() {
         return Err("仍在載入".into());
     }
     Ok(())
@@ -3593,7 +3593,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             let gone_inner = gone_inner.clone();
             move |_, a| {
                 expect("路徑", a.tab().path.as_str(), gone_inner.as_str())?;
-                expect("列舉完成", a.tab().shown, true)
+                expect("列舉完成", a.tab().shown(), true)
             }
         },
     ));
@@ -3628,7 +3628,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             let gone_top = gone_top.clone();
             move |_, a| {
                 expect("路徑", a.tab().path.as_str(), gone_top.as_str())?;
-                expect("列舉完成", a.tab().shown, true)
+                expect("列舉完成", a.tab().shown(), true)
             }
         },
     ));
@@ -3676,7 +3676,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         let d = d.clone();
         move |_, a| {
             expect("路徑", a.tab().path.as_str(), d.as_str())?;
-            expect("列舉完成", a.tab().shown, true)
+            expect("列舉完成", a.tab().shown(), true)
         }
     }));
     // 樹狀列就地重新命名：開在它裡面的分頁跟著換路徑
@@ -5686,7 +5686,7 @@ function smoke_auto() end
         },
         |c, a| {
             expect("資料夾", a.tab().path.as_str(), c.dir.as_str())?;
-            if a.tab().loading || a.tab().view.len() < 3 { Err("清單還沒載入".into()) } else { Ok(()) }
+            if a.tab().is_loading() || a.tab().view.len() < 3 { Err("清單還沒載入".into()) } else { Ok(()) }
         },
     ));
     v.push(step(

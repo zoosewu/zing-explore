@@ -212,7 +212,7 @@ impl App {
             Some(dir) => {
                 let name = path::file_name(&item.path).to_string();
                 self.navigate(p, dir, true);
-                self.tab_mut().pending_select = Some((name, false));
+                self.tab_mut().select_after_load(name, false);
             }
             None => self.navigate(p, item.path, true),
         }
