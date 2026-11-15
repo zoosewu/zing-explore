@@ -172,6 +172,15 @@ pub enum Hit {
     UpdateIndicator,
 }
 
+/// `App::frame` 怎麼畫
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FrameMode {
+    /// WM_PAINT：交換鏈還不能收新的一幀（上一幀還沒顯示）就延後，訊息迴圈等它好了再重畫，UI 執行緒不等垂直同步
+    Defer,
+    /// 現在就畫好整個視窗（改變大小、切換到硬體 GPU、開選單或輸入框前）：最多等一個更新週期
+    Now,
+}
+
 impl App {
     pub fn row_h(&self) -> f32 {
         self.theme.metrics.row_height
@@ -556,7 +565,26 @@ impl App {
         g.stroke_round(f, self.theme.metrics.radius, c.accent, 1.0);
     }
 
-    pub fn paint(&mut self) {
+    /// 畫一幀；一律經這裡，前後的工作才不會漏：樹狀列預先載入、預覽的目標與處理常式視窗、效能量測
+    pub fn frame(&mut self, mode: FrameMode) {
+        if mode == FrameMode::Defer && !self.gfx.ready_or_defer() {
+            return;
+        }
+        self.schedule_tree_probes();
+        self.update_preview_target();
+        self.render();
+        self.sync_preview_host();
+        if mode == FrameMode::Now {
+            // 已畫好整個視窗：等待中的 WM_PAINT 不必再處理（啟動時 WM_SIZE 的這一幀就是第一幀）
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::ValidateRect(Some(self.hwnd), None);
+            }
+        }
+        crate::perf::after_paint(self);
+    }
+
+    /// 只繪製（效能測試量的就是這一段）；平常經 `frame`
+    pub fn render(&mut self) {
         let lay = self.compute_layout();
         let c = self.theme.color.clone();
         if self.icons.take_evicted() {

@@ -917,16 +917,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
             unsafe {
                 BeginPaint(hwnd, &mut ps);
             }
-            with_app(|a| {
-                // 交換鏈還不能收新的一幀（上一幀還沒顯示）就不等，訊息迴圈等它好了再重畫
-                if a.gfx.ready_or_defer() {
-                    a.schedule_tree_probes();
-                    a.update_preview_target();
-                    a.paint();
-                    a.sync_preview_host();
-                    crate::perf::after_paint(a);
-                }
-            });
+            with_app(|a| a.frame(crate::view::FrameMode::Defer));
             unsafe {
                 let _ = EndPaint(hwnd, &ps);
             }
@@ -942,12 +933,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 }
                 a.palette = None;
                 a.close_batch();
-                a.paint();
-                // 已畫好整個視窗：不必再為同一次改變大小處理 WM_PAINT（第一次顯示時也是第一幀）
-                unsafe {
-                    let _ = windows::Win32::Graphics::Gdi::ValidateRect(Some(hwnd), None);
-                }
-                crate::perf::after_paint(a);
+                a.frame(crate::view::FrameMode::Now);
             });
             Some(LRESULT(0))
         }
@@ -1141,8 +1127,7 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         crate::gfx::WM_APP_GPU_READY => {
             with_app(|a| {
                 if a.gfx.adopt_hardware() {
-                    a.paint();
-                    crate::perf::after_paint(a);
+                    a.frame(crate::view::FrameMode::Now);
                 }
             });
             Some(LRESULT(0))

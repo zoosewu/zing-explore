@@ -486,7 +486,7 @@ impl App {
                 let tab = self.panes[p].tab_mut();
                 let target = tab.menu_target(at);
                 tab.select_for_menu(at);
-                self.paint();
+                self.frame(crate::view::FrameMode::Now);
                 self.open_context_menu(target.items, target.folder, x, y, screen);
             }
             Hit::TreeRow(i) | Hit::TreeArrow(i) => self.open_tree_menu(i, x, y, screen),

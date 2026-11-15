@@ -2181,7 +2181,7 @@ impl App {
             let (id, full) = (tab.id, tab.full_path(e));
             let p = self.active_pane;
             self.ensure_visible(p);
-            self.paint();
+            self.frame(crate::view::FrameMode::Now);
             window::begin_rename(self, id, full);
         }
     }

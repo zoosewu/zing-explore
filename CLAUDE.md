@@ -258,8 +258,10 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 第一幀用 WARP 繪製，硬體 GPU 裝置在第一幀呈現後於背景建立再切換；不要在第一幀前碰硬體裝置（驅動初始化約 130 ms，且會鎖住 DXGI）。
 - 交換鏈的呈現佇列最多一幀（frame latency waitable object，`gfx.rs`）：WM_PAINT 時交換鏈還不能收新的一幀就不畫
   （`Gfx::ready_or_defer`），訊息迴圈（main.rs）同時等交換鏈與訊息，好了再重畫，UI 執行緒不等垂直同步。
-  直接呼叫 `App::paint`（改變大小、開選單或輸入框前）會等交換鏈（最多一個更新週期），效能測試在計時前等。
-  WM_SIZE 畫好整個視窗後 `ValidateRect`，不再為同一次改變大小處理 WM_PAINT（啟動時的第一幀就是這一幀）。
+  繪製一律經 `App::frame`（view.rs），前後的工作（樹狀列預先載入、預覽的目標與處理常式視窗、效能量測）都在那裡，新增時只改一處：
+  `FrameMode::Defer` 給 WM_PAINT；`FrameMode::Now`（改變大小、切換到硬體 GPU、開選單或輸入框前）會等交換鏈（最多一個更新週期），
+  畫好整個視窗後 `ValidateRect`，不再為同一次改變處理 WM_PAINT（啟動時 WM_SIZE 的這一幀就是第一幀）。
+  效能測試只量繪製本身（`App::render`），在計時前等交換鏈。
 - 分析工具：`--perf-out` 模式的 `phase_*` 時間點、Windows Performance Recorder/Analyzer（ETW）、`criterion`；需要符號時用 `cargo build --profile profiling`。
 
 ### 介面準則

@@ -183,7 +183,7 @@ fn scroll_test(app: &mut App, frames: u32) {
         // 與一般使用相同：先等交換鏈能再收一幀（等垂直同步），不算在幀時間內
         app.gfx.wait_frame();
         let t = Instant::now();
-        app.paint();
+        app.render();
         let total = t.elapsed().as_secs_f64() * 1000.0;
         let (end, present) = app.gfx.last_end_ms;
         if total > worst.0 {
@@ -212,7 +212,7 @@ fn theme_test(app: &mut App) {
     let original = app.theme.clone();
     let t = Instant::now();
     app.apply_theme(other);
-    app.paint();
+    app.render();
     let ms = t.elapsed().as_secs_f64() * 1000.0;
     app.apply_theme(original);
     app.perf.as_mut().unwrap().record("theme_switch_ms", ms);
