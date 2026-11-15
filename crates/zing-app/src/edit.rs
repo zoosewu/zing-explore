@@ -136,7 +136,7 @@ impl App {
                         self.submit_op(FileOp::Rename { path: full, new_name });
                     }
                 }
-                // 改名後開在它裡面的分頁、我的最愛跟著換（`on_renamed`），節點由樹狀列的監看更新
+                // 改名後開在它裡面的分頁（`Vacating::finish`）、我的最愛（`rename_favorites`）跟著換，節點由樹狀列的監看更新
                 EditKind::TreeRename { path: full } => {
                     let new_name = text.trim().to_string();
                     if !new_name.is_empty() && new_name != path::file_name(&full) {

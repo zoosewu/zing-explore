@@ -69,8 +69,8 @@ pub enum Shared {
     Probe(Sender<Probe>),
     /// 其他視窗送出的檔案作業（作業佇列介面在每個視窗都顯示全部的作業）
     JobAdded(crate::jobs::JobInfo),
-    /// 檔案作業改變了這些資料夾（`renamed`：改名的資料夾，分頁與樹狀列跟著換）
-    FilesChanged { dirs: Vec<String>, renamed: Option<(String, String)> },
+    /// 檔案作業改變了這些資料夾（改名的資料夾已由 `Msg::ResumeWatches` 換掉分頁的路徑）
+    FilesChanged { dirs: Vec<String> },
     /// 復原與重做的堆疊（每個視窗一份相同的）
     Undo(crate::undo::UndoEvent),
     /// 資料夾的檢視設定（views.rs）

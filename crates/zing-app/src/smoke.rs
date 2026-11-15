@@ -3720,7 +3720,6 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                 }
                 expect("分頁", a.tab().path.as_str(), path::join(&ren_new, "內層").as_str())?;
                 // 送出時暫停的監看已恢復
-                expect("暫停的監看", a.watch_pause.len(), 0)?;
                 expect("分頁的監看", a.tab().watcher.is_some(), true)?;
                 expect("節點", a.tree.find(&ren_new).is_some(), true)
             }

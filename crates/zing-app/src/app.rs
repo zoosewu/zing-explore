@@ -28,6 +28,7 @@ use crate::perf::Perf;
 use crate::services::{TreeLoad, self, Msg, Notifier, Pool, TabId};
 use crate::settings::{self, Session};
 use crate::shell::{self, FileOp, FileOps};
+use crate::vacate::{Effect, TabSpot, Vacating};
 use crate::shellhost::{ShellHost, ShellJob};
 use crate::sizes::FolderSizes;
 use crate::view::{Hit, Layout};
@@ -159,8 +160,8 @@ pub struct App {
     pub probes_enabled: bool,
     /// 監看樹狀列展開中的節點；第一次有展開的節點時才建立
     pub tree_watch: Option<services::TreeWatch>,
-    /// 檔案作業正要移走的項目（`FileOp::vacated`，作業結束時移除）：它們之下的監看暫停
-    pub watch_pause: Vec<String>,
+    /// 檔案作業正要移走的資料夾與因此對分頁、監看的決定（vacate.rs）
+    vacating: Vacating,
     /// 有變更、等著重新載入的樹狀列節點
     pub tree_dirty: Vec<String>,
     pub tree_visible: bool,
@@ -370,7 +371,7 @@ impl App {
             tree_pool: None,
             probes_enabled: false,
             tree_watch: None,
-            watch_pause: Vec::new(),
+            vacating: Vacating::default(),
             tree_dirty: Vec::new(),
             focus: Focus::List,
             favorites,
@@ -579,7 +580,7 @@ impl App {
             }
         }
         // 開在被刪除、移走的資料夾（或它裡面）的分頁
-        self.check_tabs_under(dirs);
+        self.apply_vacate(Vacating::check_under(dirs, &spots(&self.panes)));
         for p in 0..self.panes.len() {
             for t in 0..self.panes[p].tabs.len() {
                 let tp = self.panes[p].tabs[t].path.clone();
@@ -620,12 +621,8 @@ impl App {
             }
             Shared::ConfigFiles => self.reload_config(false),
             Shared::JobAdded(info) => self.add_job(info),
-            Shared::FilesChanged { dirs, renamed } => {
-                if let Some((old, new)) = &renamed {
-                    self.on_renamed(old, new, false);
-                }
-                self.on_dirs_changed(&dirs, None);
-            }
+            // 改名的資料夾已經由 `Msg::ResumeWatches` 換掉分頁的路徑
+            Shared::FilesChanged { dirs } => self.on_dirs_changed(&dirs, None),
             Shared::Undo(event) => self.on_undo_event(event),
             Shared::FolderView { path, view, when } => self.folder_views.set(&path, view, when),
             #[cfg(feature = "smoke")]
@@ -716,7 +713,7 @@ impl App {
     /// 開始載入分頁目前的路徑（取消先前的載入）
     pub(crate) fn load(&mut self, p: usize, t: usize) {
         let notifier = self.notifier.clone();
-        let paused = self.watch_paused(&self.panes[p].tabs[t].path);
+        let paused = self.vacating.blocks_watch(&self.panes[p].tabs[t].path);
         let tab = &mut self.panes[p].tabs[t];
         tab.cancel.store(true, Ordering::Relaxed);
         tab.cancel = Arc::new(AtomicBool::new(false));
@@ -740,70 +737,63 @@ impl App {
         }
     }
 
-    /// `p` 在檔案作業正要移走的資料夾之下（不含它本身：監看資料夾自己不妨礙它被改名、移動）
-    fn watch_paused(&self, p: &str) -> bool {
-        self.watch_pause.iter().any(|v| !v.eq_ignore_ascii_case(p) && crate::model::within(p, v))
-    }
-
     /// 檔案作業送出前：暫停 `vacated` 之下的分頁與樹狀列監看（Windows 拒絕移走底下有開啟中監看的資料夾）
     pub fn pause_watches(&mut self, vacated: Vec<String>) {
-        if vacated.is_empty() {
-            return;
-        }
-        self.watch_pause.extend(vacated);
-        for p in 0..self.panes.len() {
-            for t in 0..self.panes[p].tabs.len() {
-                if self.watch_paused(&self.panes[p].tabs[t].path) {
-                    self.panes[p].tabs[t].watcher = None;
-                }
-            }
-        }
-        self.sync_tree_watch();
+        let effects = self.vacating.pause(vacated, &spots(&self.panes));
+        self.apply_vacate(effects);
     }
 
-    /// 檔案作業結束：恢復暫停的監看（作業失敗、取消時分頁仍在原處，要重新監看）
-    fn resume_watches(&mut self, vacated: &[String]) {
-        if vacated.is_empty() {
-            return;
-        }
-        for v in vacated {
-            if let Some(k) = self.watch_pause.iter().position(|w| w == v) {
-                self.watch_pause.swap_remove(k);
-            }
-        }
-        let notifier = self.notifier.clone();
-        for p in 0..self.panes.len() {
-            for t in 0..self.panes[p].tabs.len() {
-                let paused = self.watch_paused(&self.panes[p].tabs[t].path);
-                let tab = &mut self.panes[p].tabs[t];
-                if tab.watcher.is_none() && !tab.path.is_empty() && !paused {
-                    tab.nav_generation += 1;
-                    tab.watcher = start_watch(tab, &notifier);
+    /// 檔案作業結束：先換掉改名的分頁的路徑，再恢復 `vacated` 之下的監看（作業失敗、取消時分頁仍在原處，要重新監看）
+    fn finish_vacating(&mut self, vacated: &[String], renamed: Option<&(String, String)>) {
+        let renamed = renamed.map(|(old, new)| (old.as_str(), new.as_str()));
+        let effects = self.vacating.finish(vacated, renamed, &spots(&self.panes));
+        self.apply_vacate(effects);
+    }
+
+    /// 執行 `Vacating` 的決定
+    fn apply_vacate(&mut self, effects: Vec<Effect>) {
+        for e in effects {
+            match e {
+                Effect::Unwatch((p, t)) => self.panes[p].tabs[t].watcher = None,
+                Effect::Watch((p, t)) => {
+                    let notifier = self.notifier.clone();
+                    let tab = &mut self.panes[p].tabs[t];
+                    if tab.watcher.is_none() {
+                        tab.nav_generation += 1;
+                        tab.watcher = start_watch(tab, &notifier);
+                    }
                 }
+                Effect::Renamed { at: (p, t), path } => {
+                    // 同一個資料夾換了名字：保留內容與選取
+                    self.panes[p].tabs[t].path = path;
+                    if p == self.active_pane && t == self.panes[p].active {
+                        self.sync_tree();
+                    }
+                    self.load(p, t);
+                }
+                Effect::Gone { at: (p, t), path } => {
+                    if t == self.panes[p].active {
+                        self.navigate(p, path, false);
+                    } else {
+                        self.retarget_tab(p, t, path);
+                    }
+                }
+                Effect::Check(path) => services::check_gone(&self.pool, &self.notifier, path),
+                Effect::SyncTreeWatch => self.sync_tree_watch(),
             }
         }
-        self.sync_tree_watch();
     }
 
     pub fn navigate(&mut self, p: usize, target: String, record: bool) {
         let target = path::normalize(&target);
-        let view = self.folder_views.get(&target);
         let tab = self.panes[p].tab_mut();
         if record && !target.eq_ignore_ascii_case(&tab.path) {
             let old = std::mem::take(&mut tab.path);
             tab.back.push(old);
             tab.forward.clear();
         }
-        // 套用這個資料夾記住的排序方式
-        tab.spec = view.sort;
-        tab.mode = view.mode;
-        tab.thumb = view.thumb;
-        tab.path = target;
-        tab.reset_contents();
-        tab.watcher = None;
-        tab.size_cancel = crate::sizes::new_cancel(&tab.size_cancel);
         let t = self.panes[p].active;
-        self.load(p, t);
+        self.retarget_tab(p, t, target);
         if p == self.active_pane {
             self.sync_tree();
         }
@@ -813,6 +803,21 @@ impl App {
             self.scripts.navigate(&n, &path, ctx);
         }
         self.invalidate();
+    }
+
+    /// 分頁換到另一個資料夾（不記進上一頁）：套用那個資料夾記住的檢視、清空內容、重新載入
+    fn retarget_tab(&mut self, p: usize, t: usize, target: String) {
+        let view = self.folder_views.get(&target);
+        let tab = &mut self.panes[p].tabs[t];
+        // 套用這個資料夾記住的排序方式
+        tab.spec = view.sort;
+        tab.mode = view.mode;
+        tab.thumb = view.thumb;
+        tab.path = target;
+        tab.reset_contents();
+        tab.watcher = None;
+        tab.size_cancel = crate::sizes::new_cancel(&tab.size_cancel);
+        self.load(p, t);
     }
 
     fn refresh(&mut self, p: usize, t: usize) {
@@ -974,7 +979,7 @@ impl App {
             .tree
             .nodes
             .iter()
-            .filter(|n| n.expanded && !n.path.is_empty() && !self.watch_paused(&n.path))
+            .filter(|n| n.expanded && !n.path.is_empty() && !self.vacating.blocks_watch(&n.path))
             .map(|n| n.path.as_str())
             .collect();
         if dirs.is_empty() && self.tree_watch.is_none() {
@@ -1001,7 +1006,7 @@ impl App {
         }
         let dirty = std::mem::take(&mut self.tree_dirty);
         // 子資料夾有刪除或改名：開在它們裡面的分頁可能已不存在（資料夾監看看不到自己被刪除或改名）
-        self.check_tabs_under(&dirty);
+        self.apply_vacate(Vacating::check_under(&dirty, &spots(&self.panes)));
         for path in dirty {
             if self.tree.nodes.iter().any(|n| n.expanded && n.path.eq_ignore_ascii_case(&path)) {
                 self.load_tree(path, TreeLoad::Refresh);
@@ -1009,44 +1014,11 @@ impl App {
         }
     }
 
-    /// 開在 `dirs` 之下（不含 `dirs` 本身）的分頁：在背景確認資料夾還在（`services::check_gone`）
-    fn check_tabs_under(&self, dirs: &[String]) {
-        let mut seen: Vec<&str> = Vec::new();
-        for tab in self.panes.iter().flat_map(|p| p.tabs.iter()) {
-            let under = dirs.iter().any(|d| !d.eq_ignore_ascii_case(&tab.path) && crate::model::within(&tab.path, d));
-            if under && !seen.iter().any(|s| s.eq_ignore_ascii_case(&tab.path)) {
-                seen.push(&tab.path);
-                services::check_gone(&self.pool, &self.notifier, tab.path.clone());
-            }
-        }
-    }
-
-    /// 分頁的資料夾已不存在：開在它（或它裡面）的分頁都移到仍存在的上層
+    /// 分頁的資料夾已不存在：開在它（或它裡面）的分頁都移到仍存在的上層（檔案作業還在移走它時不理會，見 vacate.rs）
     fn on_folder_gone(&mut self, gone: &str, existing: String) {
-        // 檔案作業正在移走它（或它的上層）：Shell 的作業在磁碟上改好名稱之後還要一段時間才結束，
-        // 期間樹狀列監看的確認會以為資料夾不見了。作業結束時改名的分頁跟著換（`on_renamed`），
-        // 刪除、移動則由完成後的確認（`check_tabs_under`）處理
-        if self.watch_pause.iter().any(|v| crate::model::within(gone, v)) {
-            return;
-        }
-        let mut moved = false;
-        for p in 0..self.panes.len() {
-            for t in 0..self.panes[p].tabs.len() {
-                if !crate::model::within(&self.panes[p].tabs[t].path, gone) {
-                    continue;
-                }
-                moved = true;
-                if t == self.panes[p].active {
-                    self.navigate(p, existing.clone(), false);
-                } else {
-                    let tab = &mut self.panes[p].tabs[t];
-                    tab.path = existing.clone();
-                    tab.reset_contents();
-                    tab.watcher = None;
-                    self.load(p, t);
-                }
-            }
-        }
+        let effects = self.vacating.folder_gone(gone, &existing, &spots(&self.panes));
+        let moved = !effects.is_empty();
+        self.apply_vacate(effects);
         if moved {
             let up = if existing.is_empty() { tr!("此電腦").to_string() } else { existing };
             self.set_status(tr!("資料夾已不存在，移到 {up}：{gone}", up, gone), false);
@@ -1268,27 +1240,20 @@ impl App {
                     self.set_status(e, true);
                 }
                 self.record_undo(origin, undo.map(|u| *u));
-                // 先換掉改名的分頁的路徑再恢復監看：否則會在已不存在的舊路徑上開始監看（與 `ResumeWatches` 同順序）
                 if let Some((old, new)) = &renamed {
-                    self.on_renamed(old, new, true);
+                    self.rename_favorites(old, new);
                 }
-                // 送出作業的視窗已關閉時，這個視窗收到它的結果：這裡的監看是經 Hub 暫停、恢復的
-                if win == self.win.id {
-                    self.resume_watches(&vacated);
-                }
-                self.broadcast(crate::hub::Shared::FilesChanged { dirs: dirs.clone(), renamed });
+                // 送出作業的視窗已關閉時，這個視窗收到它的結果：這裡的監看是經 Hub 暫停、恢復的，只套用改名
+                let vacated: &[String] = if win == self.win.id { &vacated } else { &[] };
+                self.finish_vacating(vacated, renamed.as_ref());
+                self.broadcast(crate::hub::Shared::FilesChanged { dirs: dirs.clone() });
                 self.on_dirs_changed(&dirs, select.as_ref());
             }
             Msg::PauseWatches { paths, ack } => {
                 self.pause_watches(paths);
                 let _ = ack.send(crate::hub::PauseAck::Paused);
             }
-            Msg::ResumeWatches { paths, renamed } => {
-                if let Some((old, new)) = &renamed {
-                    self.on_renamed(old, new, false);
-                }
-                self.resume_watches(&paths);
-            }
+            Msg::ResumeWatches { paths, renamed } => self.finish_vacating(&paths, renamed.as_ref()),
             Msg::TabHover(screen) => self.on_tab_hover(screen),
             Msg::TabDrop(drop) => self.on_tab_drop(*drop),
             Msg::Status { text, error } => self.set_status(text, error),
@@ -2026,8 +1991,9 @@ impl App {
         self.invalidate();
     }
 
-    /// 資料夾改名後：我的最愛、分頁中的舊路徑換成新路徑（`favorites`：其他視窗轉送來的不改我的最愛，那會另外送來）
-    fn on_renamed(&mut self, old: &str, new: &str, favorites: bool) {
+    /// 資料夾改名後：我的最愛中的舊路徑換成新路徑（送出作業的視窗；其他視窗由 `Shared` 的我的最愛收到）。
+    /// 分頁的路徑由 `Vacating::finish` 換
+    fn rename_favorites(&mut self, old: &str, new: &str) {
         let replace = |v: &mut Vec<String>| {
             let mut changed = false;
             for f in v.iter_mut() {
@@ -2038,23 +2004,11 @@ impl App {
             }
             changed
         };
-        let fav = favorites && replace(&mut self.favorites);
-        if fav {
+        if replace(&mut self.favorites) {
             replace(&mut self.session.favorites);
             replace(&mut self.session.favorite_order);
             self.favorites_changed();
             self.rebuild_tree();
-        }
-        for p in 0..self.panes.len() {
-            for t in 0..self.panes[p].tabs.len() {
-                if let Some(np) = crate::model::replace_prefix(&self.panes[p].tabs[t].path, old, new) {
-                    self.panes[p].tabs[t].path = np;
-                    if p == self.active_pane && t == self.panes[p].active {
-                        self.sync_tree();
-                    }
-                    self.load(p, t);
-                }
-            }
         }
     }
 
@@ -2267,6 +2221,15 @@ impl App {
 }
 
 /// 分頁的資料夾監看：縮圖檢視時連子資料夾的內容一起看（封面）
+/// 給 `Vacating` 的分頁現況
+fn spots(panes: &[Pane]) -> Vec<TabSpot<'_>> {
+    panes
+        .iter()
+        .enumerate()
+        .flat_map(|(p, pane)| pane.tabs.iter().enumerate().map(move |(t, tab)| TabSpot { at: (p, t), path: &tab.path, watching: tab.watcher.is_some() }))
+        .collect()
+}
+
 fn start_watch(tab: &mut Tab, n: &Notifier) -> Option<services::Watcher> {
     tab.watch_covers = tab.mode == zing_core::folderview::ViewMode::Thumbnails;
     services::watch(&tab.path, n, tab.id, tab.nav_generation, tab.watch_covers)

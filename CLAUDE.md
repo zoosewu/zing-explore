@@ -68,7 +68,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   `Shared::JobAdded`），完成（`FileOpDone`）送給送出的視窗，它已關閉就送給其他視窗；所以關閉不是最後一個的視窗不取消作業。
   作業前 `Route::pause_others` 經 Hub 暫停其他視窗在 `vacated` 之下的監看並等它們回報（最多 500 ms），結束後恢復；
   改名成功時恢復的訊息帶著新舊路徑（`Route::resume_others`），其他視窗先換掉分頁的路徑再恢復監看，不等送出的視窗轉送
-  （它忙碌時，其他視窗的樹狀列監看會先以為資料夾不見了而把分頁移到上層）。
+  （它忙碌時，其他視窗的樹狀列監看會先以為資料夾不見了而把分頁移到上層）；改名只走這一條，`Shared::FilesChanged` 不帶改名。
   復原與重做的堆疊每個視窗一份相同的（`UndoEvent` 轉送；新視窗以 `hub::Inherit` 接手）。
   資料夾大小與檢視設定的快取檔只由 Hub 寫（`hub::save_sizes` 與檔案合併、`hub::folder_view` 同時轉送給其他視窗）。
   程序層級的狀態（`static`）會被所有視窗共用：新增時想清楚是否該依視窗（例：`shellwin` 的狀態依視窗、`guard` 的 UI 執行緒依執行緒）。
@@ -119,12 +119,15 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 樹狀列有鍵盤焦點時，檔案命令（複製、剪下、貼上、刪除、內容、複製路徑、重新命名）的對象是焦點節點，與清單相同的按鍵
   （`App::tree_command_target`，與樹狀列的右鍵選單同一個 `tree_menu_target`；`command_paths` 依焦點選對象），
   命令列按鈕的「不能用」也跟著焦點走。我的最愛的節點按 Delete 只從我的最愛移除，磁碟機不能刪除。
-- 分頁開著的資料夾被刪除或改名（資料夾監看看不到自己被刪除）：上層的子資料夾變更（樹狀列監看）、檔案作業完成時，
-  在背景確認它下面的分頁（`services::check_gone`）；重新整理時找不到也一樣（`Msg::ListingError` 的 `gone`）。
-  不在了就移到仍存在的上層（`App::on_folder_gone`）。只限列舉成功過的路徑（`Tab::shown`），輸入錯的路徑照樣顯示錯誤。
+- 移走中的路徑（`vacate.rs` 的 `Vacating`，每個視窗一個）：檔案作業正要移走的資料夾，以及因此對分頁與監看的所有決定
+  （暫停與恢復監看、作業中「資料夾不見了」的誤報、改名時換掉分頁的路徑、要確認哪些分頁還在、分頁移到上層）。
+  它只做路徑的判斷、回傳 `Effect`，由 `App::apply_vacate` 執行；這些規則改在那裡、單元測試也寫在那裡，App 不再自己判斷。
 - 資料夾底下有開啟中的監看（分頁、樹狀列）時，Windows 拒絕改名、移動、刪除到資源回收筒（監看它自己不影響）。
   `App::submit_op` 送出前暫停 `FileOp::vacated` 之下的監看（`pause_watches`），`Msg::FileOpDone` 的 `vacated` 恢復；
   新增會移走項目的作業時同步更新 `vacated`。
+- 分頁開著的資料夾被刪除或改名（資料夾監看看不到自己被刪除）：上層的子資料夾變更（樹狀列監看）、檔案作業完成時，
+  在背景確認它下面的分頁（`Vacating::check_under` → `services::check_gone`）；重新整理時找不到也一樣（`Msg::ListingError` 的 `gone`）。
+  不在了就移到仍存在的上層（`App::on_folder_gone`）。只限列舉成功過的路徑（`Tab::shown`），輸入錯的路徑照樣顯示錯誤。
 - 網址列每一層後面的「›」（完整路徑樣式是分隔的「\」，`Layout::crumb_menus`）在背景列出那一層的子資料夾
   （`services::crumb_folders`），回來時「›」還在才開啟選單，目前路徑經過的打勾。
 - 分頁：移動一律經 `App::move_tab`（拖曳、`tab.moveleft`／`moveright`；移到別的窗格時移走唯一分頁的窗格關閉），
