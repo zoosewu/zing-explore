@@ -1,21 +1,25 @@
 //! 已經有 zing 開著時，再次啟動的 zing 把請求轉給它，不另外執行一個程序（多視窗都在同一個程序裡，hub.rs）：
 //! 指定了資料夾（命令列參數）就在它的視窗開新分頁，沒有指定就由它開一個新視窗（與再次執行 explorer.exe 相同）。
 //!
-//! - 每個 zing（隔離模式除外）開著具名的 mutex：它存在表示已有 zing 在執行（或正在啟動）。
-//! - 以 WM_COPYDATA 轉給看得見的 zing 視窗。mutex 存在但還沒有看得見的視窗（同時開啟多個資料夾，
+//! - 只轉給同一個執行檔（路徑相同）的 zing：不同位置的 zing（開發中的版本、另一份可攜版）各自是一個程序，
+//!   設定、工作階段本來就各自放在程式旁；否則從另一個位置啟動的新版會變成舊版開的視窗。
+//! - 每個 zing（隔離模式除外）開著依執行檔路徑命名的 mutex：它存在表示同一個執行檔的 zing 在執行（或正在啟動）。
+//! - 以 WM_COPYDATA 轉給同一個執行檔、看得見的 zing 視窗。mutex 存在但還沒有看得見的視窗（同時開啟多個資料夾，
 //!   第一個還在啟動）就等它出現，最多 3 秒。視窗拒絕（隔離模式、正在結束、權限較高的程序收不到）就自己開視窗。
 //! - 轉送前 `AllowSetForegroundWindow`：使用者剛開啟的是這個程序，收到的視窗才能把自己帶到前景。
 
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::Threading::{
+    CreateMutexW, GetCurrentProcessId, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, FindWindowExW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SMTO_ABORTIFHUNG, SMTO_BLOCK,
     SW_RESTORE, SendMessageTimeoutW, SetForegroundWindow, ShowWindow, WM_COPYDATA,
 };
-use windows::core::{PCWSTR, w};
+use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use crate::app::App;
 
@@ -36,8 +40,9 @@ enum Sent {
 /// 啟動時呼叫（建立視窗之前）。`open`：命令列要開啟的資料夾，None 時請執行中的 zing 開新視窗。
 /// 回傳 false 表示已轉給執行中的 zing，這個程序直接結束
 pub fn start(open: Option<&str>) -> bool {
-    // handle 不關閉：程序結束時才釋放，mutex 在最後一個 zing 結束後消失
-    let existed = match unsafe { CreateMutexW(None, false, w!("Local\\zing-explore.instance")) } {
+    let Some(exe) = image_path(unsafe { GetCurrentProcessId() }) else { return true };
+    // handle 不關閉：程序結束時才釋放，mutex 在這個執行檔的最後一個 zing 結束後消失
+    let existed = match unsafe { CreateMutexW(None, false, &HSTRING::from(mutex_name(&exe))) } {
         Ok(_) => (unsafe { GetLastError() }) == ERROR_ALREADY_EXISTS,
         Err(_) => false,
     };
@@ -50,7 +55,7 @@ pub fn start(open: Option<&str>) -> bool {
     };
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        match send(magic, path) {
+        match send(magic, path, &exe) {
             Sent::Accepted => return false,
             Sent::Refused => return true,
             Sent::NoWindow if Instant::now() >= deadline => return true,
@@ -59,7 +64,29 @@ pub fn start(open: Option<&str>) -> bool {
     }
 }
 
-fn send(magic: usize, path: &str) -> Sent {
+/// 執行檔路徑對應的 mutex 名稱（不分大小寫；名稱不能含 `\`，所以用雜湊）
+fn mutex_name(exe: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in exe.to_lowercase().bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("Local\\zing-explore.instance.{h:016x}")
+}
+
+/// 程序的執行檔完整路徑（兩邊都經同一個 API，寫法才一致）；權限不足時 None
+fn image_path(pid: u32) -> Option<String> {
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let r = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len);
+        let _ = CloseHandle(h);
+        r.ok()?;
+        Some(String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
+fn send(magic: usize, path: &str, exe: &str) -> Sent {
     let data: Vec<u16> = path.encode_utf16().collect();
     let cds = COPYDATASTRUCT { dwData: magic, cbData: (data.len() * 2) as u32, lpData: data.as_ptr() as *mut _ };
     let mut found = false;
@@ -69,11 +96,15 @@ fn send(magic: usize, path: &str) -> Sent {
         if !unsafe { IsWindowVisible(h) }.as_bool() {
             continue;
         }
-        found = true;
         let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+        // 另一個位置的 zing 不算
+        if !image_path(pid).is_some_and(|p| p.to_lowercase() == exe.to_lowercase()) {
+            continue;
+        }
+        found = true;
         let mut result = 0usize;
         let sent = unsafe {
-            GetWindowThreadProcessId(h, Some(&mut pid));
             let _ = AllowSetForegroundWindow(pid);
             SendMessageTimeoutW(h, WM_COPYDATA, WPARAM(0), LPARAM(&cds as *const _ as isize), SMTO_ABORTIFHUNG | SMTO_BLOCK, 3000, Some(&mut result))
         };
@@ -163,5 +194,22 @@ impl App {
         }
         self.focus = crate::app::Focus::List;
         self.invalidate();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mutex_per_exe() {
+        let a = mutex_name(r"E:\Apps\zing\zing.exe");
+        assert_eq!(a, mutex_name(r"e:\apps\ZING\Zing.EXE"));
+        assert_ne!(a, mutex_name(r"E:\Code\folder\target\release\zing.exe"));
+        assert_ne!(mutex_name(r"D:\工具\zing.exe"), mutex_name(r"D:\資料\zing.exe"));
+        assert!(!a["Local\\".len()..].contains('\\'));
+        // 自己的執行檔路徑讀得到
+        let me = image_path(unsafe { GetCurrentProcessId() }).unwrap();
+        assert!(std::path::Path::new(&me).is_file(), "{me}");
     }
 }
