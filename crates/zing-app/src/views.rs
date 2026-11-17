@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use zing_core::folderview::{FolderViews, ViewMode};
+use zing_core::folderview::{FolderView, FolderViews, ViewMode};
 
 use crate::app::App;
 use crate::services::Msg;
@@ -25,13 +25,37 @@ fn now_secs() -> u64 {
 }
 
 impl App {
-    /// 記下分頁目前資料夾的檢視設定並在背景儲存
+    /// 資料夾的檢視設定：記住的，沒有就是設定的預設（`list.view`、`list.sort`、`list.order`）
+    pub fn view_for(&self, path: &str) -> FolderView {
+        self.folder_views.get(path).unwrap_or_else(|| self.config.list.default_view())
+    }
+
+    /// 預設的檢視改了：還沒調整過的資料夾（沒有記錄、「此電腦」）的分頁立即換成新的預設
+    pub fn apply_default_view(&mut self, view: FolderView) {
+        for p in 0..self.panes.len() {
+            for t in 0..self.panes[p].tabs.len() {
+                let tab = &mut self.panes[p].tabs[t];
+                if self.folder_views.get(&tab.path).is_some() {
+                    continue;
+                }
+                tab.spec = view.sort;
+                tab.mode = view.mode;
+                tab.thumb = view.thumb;
+                self.resort(p, t);
+                self.sync_cover_watch(p, t);
+            }
+        }
+        self.layout = self.compute_layout();
+        self.invalidate();
+    }
+
+    /// 記下分頁目前資料夾的檢視設定並在背景儲存（調整過就記住，即使與預設相同）
     pub fn remember_view(&mut self, p: usize, t: usize) {
         let tab = &self.panes[p].tabs[t];
         if tab.path.is_empty() {
             return;
         }
-        let mut view = self.folder_views.get(&tab.path);
+        let mut view = self.view_for(&tab.path);
         view.sort = tab.spec;
         view.mode = tab.mode;
         view.thumb = tab.thumb;
@@ -112,15 +136,16 @@ impl App {
         });
     }
 
-    /// 讀取完成：併入（這次執行已設定的優先），已開啟、仍是預設排序的分頁改用記住的排序
+    /// 讀取完成：併入（這次執行已設定的優先），已開啟、仍是預設檢視的分頁改用記住的
     pub fn on_folder_views_loaded(&mut self, v: FolderViews) {
         self.folder_views.merge_loaded(v);
+        let default = self.config.list.default_view();
         for p in 0..self.panes.len() {
             for t in 0..self.panes[p].tabs.len() {
                 let tab = &mut self.panes[p].tabs[t];
-                let want = self.folder_views.get(&tab.path);
-                let untouched = tab.spec == Default::default() && tab.mode == ViewMode::List;
-                if untouched && (want.sort != tab.spec || want.mode != tab.mode) {
+                let Some(want) = self.folder_views.get(&tab.path) else { continue };
+                let untouched = tab.spec == default.sort && tab.mode == default.mode;
+                if untouched && (want.sort != tab.spec || want.mode != tab.mode || want.thumb != tab.thumb) {
                     tab.spec = want.sort;
                     tab.mode = want.mode;
                     tab.thumb = want.thumb;

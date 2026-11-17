@@ -1,6 +1,7 @@
 //! 每個資料夾記住自己的檢視設定：排序、檢視模式、縮圖大小。
 //!
-//! 以資料夾路徑（不分大小寫）為鍵；與預設相同的設定不保存。最多保留 `MAX` 個最近使用的資料夾，
+//! 以資料夾路徑（不分大小寫）為鍵；調整過的就記住（即使與預設相同：之後改了預設也不跟著變），
+//! 沒有記錄的資料夾用設定的預設（`ListConfig::default_view`）。最多保留 `MAX` 個最近使用的資料夾，
 //! 存成 TSV（`%LOCALAPPDATA%\zing-explore\folders.tsv`，可重建的資料）。
 
 use std::collections::HashMap;
@@ -47,19 +48,14 @@ fn key_name(k: SortKey) -> &'static str {
 }
 
 impl FolderViews {
-    /// 這個資料夾的設定；沒有記錄時為預設
-    pub fn get(&self, path: &str) -> FolderView {
-        self.map.get(&path.to_lowercase()).map(|e| e.0).unwrap_or_default()
+    /// 這個資料夾記住的設定；沒有記錄時 None（用設定的預設）
+    pub fn get(&self, path: &str) -> Option<FolderView> {
+        self.map.get(&path.to_lowercase()).map(|e| e.0)
     }
 
-    /// 記下設定；與預設相同時移除記錄。超過上限時捨棄最久沒用的。
+    /// 記下設定。超過上限時捨棄最久沒用的。
     pub fn set(&mut self, path: &str, view: FolderView, now: u64) {
-        let k = path.to_lowercase();
-        if view == FolderView::default() {
-            self.map.remove(&k);
-            return;
-        }
-        self.map.insert(k, (view, now));
+        self.map.insert(path.to_lowercase(), (view, now));
         if self.map.len() > MAX {
             let mut whens: Vec<u64> = self.map.values().map(|e| e.1).collect();
             let cut = whens.len() - MAX;
@@ -130,14 +126,15 @@ mod tests {
     }
 
     #[test]
-    fn get_set_case_insensitive_and_default_removed() {
+    fn get_set_case_insensitive_and_default_kept() {
         let mut v = FolderViews::default();
-        assert_eq!(v.get(r"C:\a"), FolderView::default());
+        assert_eq!(v.get(r"C:\a"), None);
         v.set(r"C:\Photos", by(SortKey::Modified, false), 10);
-        assert_eq!(v.get(r"c:\photos"), by(SortKey::Modified, false));
-        // 改回預設就不保存
+        assert_eq!(v.get(r"c:\photos"), Some(by(SortKey::Modified, false)));
+        // 調整成與預設相同也記住（之後改了預設不跟著變）
         v.set(r"C:\PHOTOS", FolderView::default(), 11);
-        assert!(v.is_empty());
+        assert_eq!(v.get(r"c:\photos"), Some(FolderView::default()));
+        assert_eq!(v.len(), 1);
     }
 
     #[test]
@@ -149,8 +146,8 @@ mod tests {
         assert!(text.starts_with(r"d:\x"), "新的在前：{text}");
         let w = FolderViews::from_text(&format!("{text}壞掉的行\nC:\\y\tbogus\t1\tlist\t96\t1\n\n"));
         assert_eq!(w.len(), 2);
-        assert_eq!(w.get(r"C:\相片 2026"), FolderView { mode: ViewMode::Thumbnails, thumb: 160, ..by(SortKey::Size, false) });
-        assert_eq!(w.get(r"d:\X"), by(SortKey::Type, true));
+        assert_eq!(w.get(r"C:\相片 2026"), Some(FolderView { mode: ViewMode::Thumbnails, thumb: 160, ..by(SortKey::Size, false) }));
+        assert_eq!(w.get(r"d:\X"), Some(by(SortKey::Type, true)));
     }
 
     #[test]
@@ -160,8 +157,8 @@ mod tests {
             v.set(&format!(r"C:\d{i}"), by(SortKey::Size, true), i);
         }
         assert!(v.len() <= MAX);
-        assert_eq!(v.get(r"C:\d0"), FolderView::default());
-        assert_eq!(v.get(&format!(r"C:\d{}", MAX + 9)), by(SortKey::Size, true));
+        assert_eq!(v.get(r"C:\d0"), None);
+        assert_eq!(v.get(&format!(r"C:\d{}", MAX + 9)), Some(by(SortKey::Size, true)));
     }
 
     #[test]
@@ -172,7 +169,7 @@ mod tests {
         loaded.set(r"C:\a", by(SortKey::Type, true), 1);
         loaded.set(r"C:\b", by(SortKey::Modified, true), 1);
         v.merge_loaded(loaded);
-        assert_eq!(v.get(r"C:\a"), by(SortKey::Size, true));
-        assert_eq!(v.get(r"C:\b"), by(SortKey::Modified, true));
+        assert_eq!(v.get(r"C:\a"), Some(by(SortKey::Size, true)));
+        assert_eq!(v.get(r"C:\b"), Some(by(SortKey::Modified, true)));
     }
 }

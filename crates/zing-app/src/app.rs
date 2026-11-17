@@ -677,7 +677,7 @@ impl App {
     pub(crate) fn new_tab(&mut self, p: String) -> Tab {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        let view = self.folder_views.get(&p);
+        let view = self.view_for(&p);
         Tab::new(id, p, view)
     }
 
@@ -813,7 +813,7 @@ impl App {
 
     /// 分頁換到另一個資料夾（不記進上一頁）：套用那個資料夾記住的檢視、清空內容、重新載入
     fn retarget_tab(&mut self, p: usize, t: usize, target: String) {
-        let view = self.folder_views.get(&target);
+        let view = self.view_for(&target);
         let tab = &mut self.panes[p].tabs[t];
         // 套用這個資料夾記住的排序方式
         tab.spec = view.sort;
@@ -1953,6 +1953,10 @@ impl App {
         }
         if self.config.thumbnailers != old.thumbnailers {
             self.thumbs.set_thumbnailers(self.config.thumbnailers.clone());
+        }
+        let (was, now) = (old.list.default_view(), self.config.list.default_view());
+        if was != now {
+            self.apply_default_view(now);
         }
         // 下次游標停住時以新的設定重新準備右鍵選單
         if self.config.context_menu != old.context_menu {

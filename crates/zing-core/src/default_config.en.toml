@@ -53,6 +53,12 @@ auto = true
 # Typing in the list (character keys without a shortcut): filter (filter the current folder) | jump (jump to the item whose name starts with it, like File Explorer)
 # | none (do nothing; leave character keys to shortcuts; bind filter.start to a key to start filtering)
 typing = "filter"
+# View for folders whose view or sort you have not changed: list | small | medium | large (small, medium, large thumbnails)
+# Folders you changed keep their own settings; changing this does not affect them
+view = "list"
+# Default sort: name | modified (date modified) | type | size; order: asc (ascending) | desc (descending)
+sort = "name"
+order = "asc"
 
 [terminal]
 # Shell of the built-in terminal (terminal.toggle, Ctrl+`): auto (PowerShell 7 when installed, otherwise Windows PowerShell),

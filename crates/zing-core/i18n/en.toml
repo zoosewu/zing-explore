@@ -1041,3 +1041,7 @@
 "這個位置不是資料夾" = "This location is not a folder"
 "這個位置不是資料夾，終端機不能切換過去" = "This location is not a folder, so the terminal cannot go there"
 "開啟、切換到或關閉內建終端機（開啟時位於目前的資料夾）" = "Open, switch to, or close the built-in terminal (opens in the current folder)"
+"預設檢視" = "Default view"
+"預設排序" = "Default sort"
+"排序方向" = "Sort order"
+"調整過檢視或排序的資料夾維持各自的設定" = "Folders whose view or sort you changed keep their own settings"

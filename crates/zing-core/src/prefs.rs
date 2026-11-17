@@ -4,7 +4,8 @@
 //! 沒有這一行就插入在同一節的最後一個值後面，沒有這一節就加在檔案最後。修改後重新解析整份檔案，
 //! 結果不是預期的值（例如使用者寫成 `layout = { tree = "left" }`）就放棄、不寫入。
 
-use crate::config::{Config, MenuStyle, PalettePosition, RawConfig, Startup, TreeSide, Typing};
+use crate::config::{Config, DefaultView, MenuStyle, PalettePosition, RawConfig, SortOrder, Startup, TreeSide, Typing};
+use crate::sort::SortKey;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
@@ -57,6 +58,11 @@ const STARTUPS: &[(&str, &str)] =
     &[("session", tr_key!("還原上次的分頁")), ("new", tr_key!("一個新分頁（此電腦）")), ("tabs", tr_key!("指定的分頁"))];
 const TYPINGS: &[(&str, &str)] =
     &[("filter", tr_key!("篩選目前的資料夾")), ("jump", tr_key!("跳到名稱開頭相符的項目")), ("none", tr_key!("不做事（留給快速鍵）"))];
+const DEFAULT_VIEWS: &[(&str, &str)] =
+    &[("list", tr_key!("清單")), ("small", tr_key!("小縮圖")), ("medium", tr_key!("中縮圖")), ("large", tr_key!("大縮圖"))];
+const SORT_KEYS: &[(&str, &str)] =
+    &[("name", tr_key!("名稱")), ("modified", tr_key!("修改日期")), ("type", tr_key!("類型")), ("size", tr_key!("大小"))];
+const SORT_ORDERS: &[(&str, &str)] = &[("asc", tr_key!("遞增")), ("desc", tr_key!("遞減"))];
 const PALETTE_POSITIONS: &[(&str, &str)] =
     &[("top", tr_key!("視窗上方")), ("center", tr_key!("正中央（輸入框固定）")), ("middle", tr_key!("正中央（整個面板置中）"))];
 
@@ -99,6 +105,16 @@ pub const PREFS: &[Pref] = &[
         kind: Kind::Tabs,
     },
     Pref { key: "show_hidden", group: GENERAL, section: tr_key!("檔案清單"), label: tr_key!("顯示隱藏檔案"), hint: "", kind: Kind::Bool },
+    Pref {
+        key: "list.view",
+        group: GENERAL,
+        section: tr_key!("檔案清單"),
+        label: tr_key!("預設檢視"),
+        hint: tr_key!("調整過檢視或排序的資料夾維持各自的設定"),
+        kind: Kind::Choice(DEFAULT_VIEWS),
+    },
+    Pref { key: "list.sort", group: GENERAL, section: tr_key!("檔案清單"), label: tr_key!("預設排序"), hint: "", kind: Kind::Choice(SORT_KEYS) },
+    Pref { key: "list.order", group: GENERAL, section: tr_key!("檔案清單"), label: tr_key!("排序方向"), hint: "", kind: Kind::Choice(SORT_ORDERS) },
     Pref {
         key: "list.typing",
         group: GENERAL,
@@ -280,6 +296,9 @@ impl Config {
             "context_menu.allow_slow" => self.context_menu.allow_slow.join(","),
             "update.check" => self.update.check.to_string(),
             "list.typing" => typing_code(self.list.typing).into(),
+            "list.view" => code_of(DEFAULT_VIEWS, &self.list.view).into(),
+            "list.sort" => code_of(SORT_KEYS, &self.list.sort).into(),
+            "list.order" => code_of(SORT_ORDERS, &self.list.order).into(),
             "terminal.shell" => self.terminal.shell.clone(),
             _ => String::new(),
         }
@@ -310,11 +329,19 @@ impl Config {
             }
             "update.check" => self.update.check = value.parse().map_err(|_| bad())?,
             "list.typing" => self.list.typing = toml_enum(value).ok_or_else(bad)?,
+            "list.view" => self.list.view = toml_enum::<DefaultView>(value).ok_or_else(bad)?,
+            "list.sort" => self.list.sort = toml_enum::<SortKey>(value).ok_or_else(bad)?,
+            "list.order" => self.list.order = toml_enum::<SortOrder>(value).ok_or_else(bad)?,
             "terminal.shell" if SHELLS.iter().any(|(v, _)| v.eq_ignore_ascii_case(value)) => self.terminal.shell = value.to_ascii_lowercase(),
             _ => return Err(bad()),
         }
         Ok(())
     }
+}
+
+/// 列舉值在設定檔中的寫法：選項表裡序列化結果相同的那一個
+fn code_of<T: serde::de::DeserializeOwned + PartialEq>(list: &[(&'static str, &str)], v: &T) -> &'static str {
+    list.iter().find(|(c, _)| toml_enum::<T>(c).as_ref() == Some(v)).map_or("", |(c, _)| c)
 }
 
 fn toml_enum<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {

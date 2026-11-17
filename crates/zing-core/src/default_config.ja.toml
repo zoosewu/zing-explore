@@ -53,6 +53,12 @@ auto = true
 # 一覧で直接入力（ショートカットのない文字キー）：filter（現在のフォルダーを絞り込む）| jump（名前の先頭が一致する項目へ移動、エクスプローラーと同じ）
 # | none（何もしない。文字キーはすべてショートカット用。filter.start をキーに割り当てるとフィルターを開始できる）
 typing = "filter"
+# 表示や並べ替えを変更していないフォルダーの表示：list（一覧）| small | medium | large（小・中・大サムネイル）
+# 変更したフォルダーはそれぞれの設定を保持し、ここを変えても影響しない
+view = "list"
+# 既定の並べ替え：name（名前）| modified（更新日時）| type（種類）| size（サイズ）；order：asc（昇順）| desc（降順）
+sort = "name"
+order = "asc"
 
 [terminal]
 # 内蔵ターミナル（terminal.toggle、Ctrl+`）のシェル：auto（PowerShell 7 があればそれ、なければ Windows PowerShell）、

@@ -2486,7 +2486,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("縮圖", (a.tab().mode, a.tab().thumb), (zing_core::folderview::ViewMode::Thumbnails, 128))
     }));
     v.push(step("命令列：「⋯」的子選單", |c| {
-        // 回到預設的檢視（不留下這個資料夾的檢視記錄）
+        // 回到預設的檢視
         with_app(|a| {
             let (p, t) = (a.active_pane, a.panes[a.active_pane].active);
             let d = zing_core::folderview::FolderView::default();
@@ -4436,7 +4436,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             move |_, a| {
                 at(a, &dir_a)?;
                 expect("資料夾A 的排序", a.tab().spec, SortSpec::default())?;
-                expect("記住測試資料夾的排序", a.folder_views.get(&d).sort, SortSpec { key: SortKey::Modified, ascending: false })
+                expect("記住測試資料夾的排序", a.folder_views.get(&d).map(|v| v.sort), Some(SortSpec { key: SortKey::Modified, ascending: false }))
             }
         },
     ));
@@ -4449,10 +4449,110 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             expect("排序", a.tab().spec, SortSpec { key: SortKey::Modified, ascending: false })
         }
     }));
-    v.push(step("資料夾檢視：Ctrl+1 改回名稱排序（與預設相同，不再保存）", |c| key(c, "c", VIRTUAL_KEY(b'1' as u16)), |_, a| {
-        expect("排序", a.tab().spec, SortSpec::default())?;
-        expect("記錄", a.folder_views.is_empty(), true)
+    v.push(step("資料夾檢視：Ctrl+1 改回名稱排序（與預設相同也記住）", |c| key(c, "c", VIRTUAL_KEY(b'1' as u16)), {
+        let d = d.clone();
+        move |_, a| {
+            expect("排序", a.tab().spec, SortSpec::default())?;
+            expect("記錄", a.folder_views.get(&d).map(|v| v.sort), Some(SortSpec::default()))
+        }
     }));
+    // 預設檢視（設定「一般 → 檔案清單」）：隔離模式只改記憶體
+    let set_prefs = |pairs: &[(&str, &str)]| {
+        for &(key, value) in pairs {
+            with_app(|a| {
+                let i = zing_core::prefs::PREFS.iter().position(|p| p.key == key).expect(key);
+                a.set_pref(i, value.into());
+            });
+        }
+    };
+    let fresh = format!("{d}\\預設檢視");
+    v.push(step(
+        "預設檢視：改成大縮圖、依大小遞減；調整過的測試資料夾不變",
+        move |_| set_prefs(&[("list.view", "large"), ("list.sort", "size"), ("list.order", "desc")]),
+        {
+            let d = d.clone();
+            move |_, a| {
+                at(a, &d)?;
+                expect("檢視", a.tab().mode, ViewMode::List)?;
+                expect("排序", a.tab().spec, SortSpec::default())
+            }
+        },
+    ));
+    v.push(step(
+        "預設檢視：進入沒調整過的資料夾就用新的預設",
+        {
+            let fresh = fresh.clone();
+            move |_| {
+                let _ = harness_io(|| std::fs::create_dir_all(&fresh));
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, fresh.clone(), true);
+                });
+            }
+        },
+        {
+            let fresh = fresh.clone();
+            move |_, a| {
+                at(a, &fresh)?;
+                expect("記錄", a.folder_views.get(&fresh).is_none(), true)?;
+                expect("檢視", (a.tab().mode, a.tab().thumb), (ViewMode::Thumbnails, 192))?;
+                expect("排序", a.tab().spec, SortSpec { key: SortKey::Size, ascending: false })
+            }
+        },
+    ));
+    v.push(step(
+        "預設檢視：改回清單，開著的沒調整過的資料夾立即跟著換",
+        move |_| set_prefs(&[("list.view", "list"), ("list.sort", "name"), ("list.order", "asc")]),
+        |_, a| {
+            expect("檢視", a.tab().mode, ViewMode::List)?;
+            expect("排序", a.tab().spec, SortSpec::default())
+        },
+    ));
+    v.push(step(
+        "預設檢視：回到測試資料夾",
+        {
+            let d = d.clone();
+            move |_| {
+                with_app(|a| {
+                    let p = a.active_pane;
+                    a.navigate(p, d.clone(), true);
+                });
+            }
+        },
+        {
+            let d = d.clone();
+            move |_, a| {
+                at(a, &d)?;
+                if a.tab().watcher.is_none() { Err("還沒開始監看".into()) } else { Ok(()) }
+            }
+        },
+    ));
+    v.push(step(
+        "預設檢視：刪掉測試用的資料夾（清單跟著更新）",
+        {
+            let fresh = fresh.clone();
+            move |_| {
+                let _ = harness_io(|| std::fs::remove_dir(&fresh));
+            }
+        },
+        {
+            let (d, fresh) = (d.clone(), fresh.clone());
+            move |_, a| {
+                at(a, &d)?;
+                // 監看關閉後才刪得掉：還在就再刪一次、等下一次檢查（之後的縮圖步驟會數項目）
+                if exists(&fresh) {
+                    let _ = harness_io(|| std::fs::remove_dir(&fresh));
+                    return Err("測試用的資料夾還沒刪掉".into());
+                }
+                // 清單是刪除前列出的：等監看重新整理後不再列出
+                let t = a.tab();
+                if t.view.iter().any(|&e| t.full_path(e as usize).eq_ignore_ascii_case(&fresh)) {
+                    return Err("清單還列著測試用的資料夾".into());
+                }
+                Ok(())
+            }
+        },
+    ));
 
     // ------------------------------------------------ 縮圖檢視
     v.push(step("縮圖：Ctrl+Shift+3 切換為中縮圖（沒有欄位標題）", |c| key(c, "cs", VIRTUAL_KEY(b'3' as u16)), |_, a| {

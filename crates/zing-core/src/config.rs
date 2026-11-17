@@ -144,10 +144,57 @@ pub enum Typing {
     None,
 }
 
+/// 還沒調整過檢視的資料夾的檢視模式
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DefaultView {
+    #[default]
+    List,
+    Small,
+    Medium,
+    Large,
+}
+
+impl DefaultView {
+    /// 縮圖檢視的邊長（與 `view.mode small／medium／large` 相同）
+    pub fn thumb(self) -> Option<u16> {
+        match self {
+            DefaultView::List => None,
+            DefaultView::Small => Some(64),
+            DefaultView::Medium => Some(128),
+            DefaultView::Large => Some(192),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrder {
+    #[default]
+    Asc,
+    Desc,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ListConfig {
     pub typing: Typing,
+    /// 還沒調整過檢視的資料夾（`folderview` 沒有記錄）用的檢視、排序、方向
+    pub view: DefaultView,
+    pub sort: crate::sort::SortKey,
+    pub order: SortOrder,
+}
+
+impl ListConfig {
+    /// 沒有記錄的資料夾的檢視設定
+    pub fn default_view(&self) -> crate::folderview::FolderView {
+        let base = crate::folderview::FolderView::default();
+        crate::folderview::FolderView {
+            sort: crate::sort::SortSpec { key: self.sort, ascending: self.order == SortOrder::Asc },
+            mode: if self.view.thumb().is_some() { crate::folderview::ViewMode::Thumbnails } else { crate::folderview::ViewMode::List },
+            thumb: self.view.thumb().unwrap_or(base.thumb),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -436,6 +483,22 @@ mod tests {
         assert_eq!(cfg.list.typing, Typing::Filter);
         let (cfg, _) = Config::load(Some("[list]\ntyping = \"jump\""));
         assert_eq!(cfg.list.typing, Typing::Jump);
+    }
+
+    #[test]
+    fn default_folder_view() {
+        use crate::folderview::{FolderView, ViewMode};
+        use crate::sort::{SortKey, SortSpec};
+        // 沒有設定時與原本相同：清單、依名稱遞增
+        let (cfg, _) = Config::load(None);
+        assert_eq!(cfg.list.default_view(), FolderView::default());
+        let (cfg, w) = Config::load(Some("[list]\nview = \"large\"\nsort = \"size\"\norder = \"desc\""));
+        assert!(w.is_empty(), "{w:?}");
+        let v = cfg.list.default_view();
+        assert_eq!((v.mode, v.thumb), (ViewMode::Thumbnails, 192));
+        assert_eq!(v.sort, SortSpec { key: SortKey::Size, ascending: false });
+        let (cfg, _) = Config::load(Some("[list]\nview = \"small\""));
+        assert_eq!((cfg.list.default_view().mode, cfg.list.default_view().thumb), (ViewMode::Thumbnails, 64));
     }
 
     #[test]

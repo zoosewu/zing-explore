@@ -336,7 +336,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
     路徑一律經 `settings::app_dir()`。
   - 系統產生、可重建的資料（資料夾大小快取、縮圖快取…）放在 `%LOCALAPPDATA%\zing-explore\`（只屬於這台電腦、不漫遊，
     刪除只需重新計算），不要放在程式旁或 `%APPDATA%`。目前有：`folder-sizes.tsv`（沒有索引時的資料夾大小，見 `sizes.rs`）、
-    `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`）、
+    `folders.tsv`（每個資料夾的檢視設定，最多 5,000 個，見 `views.rs`、`zing_core::folderview`；沒有記錄的用設定的預設 `App::view_for`）、
     `thumbs\`（外部命令產生的縮圖 PNG，上限 256 MB，見 `thumbs.rs`；Windows 的縮圖只放記憶體，所有視窗合計上限 64 MB）、
     `custom-thumbs\`（手動指定的縮圖，檔名是「磁碟區序號-NTFS 檔案 ID」：鍵只在這台電腦有意義，所以不放在程式旁）、
     `slow-menu-extensions.tsv`（讓右鍵選單變慢的第三方擴充功能，7 天後失效重新量，見 `shellext.rs`）、
