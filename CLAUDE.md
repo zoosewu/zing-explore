@@ -211,7 +211,7 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   命令面板視為只有工程師會用：每個操作都要能從命令列（`cmdbar.rs`，內容在 `zing_core::cmdbar`）、「⋯」選單、右鍵或面板完成
   （搜尋本來就是輸入框，除外）。內建命令只在 `zing_core::builtin` 宣告一次（`builtins!` 一列：`Cmd` 變體、分組、預設圖示、Lua 說明），
   `App::run` 對 `Cmd` 窮舉，漏了實作會編譯失敗；命令面板的標題與命令列的短名稱在同一檔的 `PRESETS`。
-  新增命令時同步加進 `zing_core::cmdbar` 的選單（或確認已在其中）；
+  新增命令時同步加進 `zing_core::cmdbar` 的選單（或確認已在其中；設定裡已有的不重複放進「⋯」，見 `MORE_MENU` 的註解）；
   不能用時在 `App::cmd_disabled` 回傳原因（按鈕變灰、提示顯示原因）。圖示按鈕都要有提示（`tooltip.rs`）。
   下拉選單用 `menu.rs`（D2D 自繪、跟著主題；項目比視窗高時以滾輪、方向鍵捲動）。命令列可只用鍵盤操作（F10，`App::bar_focus`、`cmdbar_key`），新的按鈕種類
   也要能用鍵盤啟動。右側面板（設定、主題、自訂命令列、快速鍵）是 `App::side` 一個欄位（`sidepanel.rs`），一次只開一個；

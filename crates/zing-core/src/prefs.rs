@@ -98,6 +98,7 @@ pub const PREFS: &[Pref] = &[
         hint: tr_key!("「啟動時開啟」選「指定的分頁」時使用"),
         kind: Kind::Tabs,
     },
+    Pref { key: "", group: GENERAL, section: tr_key!("語言與啟動"), label: tr_key!("歡迎畫面…"), hint: "", kind: Kind::Action("welcome.show") },
     Pref { key: "show_hidden", group: GENERAL, section: tr_key!("檔案清單"), label: tr_key!("顯示隱藏檔案"), hint: "", kind: Kind::Bool },
     Pref {
         key: "list.typing",

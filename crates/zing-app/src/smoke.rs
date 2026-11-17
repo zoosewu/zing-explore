@@ -4066,9 +4066,18 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             |_| {
                 with_app(|a| a.terminal_send_text("echo zing-terminal-ok\r"));
             },
-            move |_, a| {
-                let n = term_text(a).matches("zing-terminal-ok").count();
-                if n >= 2 { Ok(()) } else { Err(format!("出現 {n} 次")) }
+            {
+                let d = d.clone();
+                move |_, a| {
+                    let text = term_text(a);
+                    let n = text.matches("zing-terminal-ok").count();
+                    if n < 2 {
+                        return Err(format!("出現 {n} 次"));
+                    }
+                    // 提示字元回來了（殼層又在讀輸入）才算完成：否則下一步的 ↑ 太早送出、叫不回這個命令
+                    let after = &text[text.rfind("zing-terminal-ok").unwrap_or(0)..];
+                    if after.contains(&format!("{d}>")) { Ok(()) } else { Err("提示字元還沒回來".into()) }
+                }
             },
         )
         .slow(),
@@ -6065,8 +6074,13 @@ function smoke_auto() end
             expect("預設的檔案總管不變", Some(format!("{:?}", a.default_app)).as_deref(), c.note("welcome_default_app"))
         },
     ));
-    v.push(step("歡迎畫面：以命令開啟", |_| exec("welcome.show"), |_, a| {
+    v.push(step("歡迎畫面：從設定「一般 → 歡迎畫面…」開啟（關閉設定）", |c| {
+        with_app(|a| a.open_settings_on(PrefKind::Action("welcome.show")));
+        let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == PrefKind::Action("welcome.show"));
+        click(c, "", i.and_then(|i| settings_pos(Row::Field(i), false)));
+    }, |_, a| {
         expect("歡迎畫面", a.welcome.is_some(), true)?;
+        expect("設定", a.settings_page().is_none(), true)?;
         expect("第一次啟動", a.first_run, false)?;
         expect("鍵盤焦點", a.welcome.as_ref().map(|w| w.focus), Some(0))
     }));

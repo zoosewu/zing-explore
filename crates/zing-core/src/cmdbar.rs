@@ -193,13 +193,8 @@ pub const MORE_MENU: &[Entry] = &[
         tr_key!("工具"),
         &[Cmd("search.open"), Cmd("view.foldersizes"), Cmd("folder.compare"), Sep, Cmd("terminal.toggle"), Cmd("terminal.cd"), Sep, Cmd("jobs.toggle"), Cmd("jobs.clear")],
     ),
-    Sub(tr_key!("外觀"), &[Cmd("theme.toggle"), Cmd("theme.edit"), Sep, Cmd("theme.import"), Cmd("theme.export")]),
-    Sep,
-    Cmd("cmdbar.edit"),
-    Cmd("keys.edit"),
-    Cmd("settings.open"),
-    Cmd("welcome.show"),
-    Cmd("update.check"),
+    Sub(tr_key!("外觀"), &[Cmd("theme.toggle"), Sep, Cmd("theme.import"), Cmd("theme.export")]),
+    // 設定（齒輪）裡已有的不重複放：設定、自訂命令列、快速鍵、主題編輯、歡迎畫面、檢查更新（自訂命令列仍可加成按鈕）
     Sep,
     Cmd("app.exit"),
 ];
@@ -408,5 +403,10 @@ mod tests {
         assert!(in_menus("sel.invert") && !in_menus("nav.back"));
         let groups = catalog();
         assert!(groups.iter().any(|(_, v)| v.contains(&"file.copy")));
+        // 設定裡已有的不放在「⋯」，但仍可加成命令列的按鈕
+        for c in ["settings.open", "cmdbar.edit", "keys.edit", "theme.edit", "welcome.show", "update.check"] {
+            assert!(!in_menus(c), "{c} 在選單裡");
+            assert!(groups.iter().any(|(_, v)| v.contains(&c)), "{c} 不能加入命令列");
+        }
     }
 }
