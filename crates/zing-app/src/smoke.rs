@@ -6074,7 +6074,7 @@ function smoke_auto() end
             expect("預設的檔案總管不變", Some(format!("{:?}", a.default_app)).as_deref(), c.note("welcome_default_app"))
         },
     ));
-    v.push(step("歡迎畫面：從設定「一般 → 歡迎畫面…」開啟（關閉設定）", |c| {
+    v.push(step("歡迎畫面：從設定「系統 → 歡迎畫面…」開啟（關閉設定）", |c| {
         with_app(|a| a.open_settings_on(PrefKind::Action("welcome.show")));
         let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == PrefKind::Action("welcome.show"));
         click(c, "", i.and_then(|i| settings_pos(Row::Field(i), false)));
