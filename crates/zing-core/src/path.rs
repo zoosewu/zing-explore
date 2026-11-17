@@ -2,8 +2,9 @@
 
 /// 去除多餘的結尾反斜線（磁碟根目錄 `C:\` 保留），把 `/` 轉成 `\`，並整理 `.`、`..`
 /// （Shell 的檔案作業不接受含 `..` 的路徑，回報「參數不正確」）。
+/// 另外展開使用者輸入的簡寫（見 `expand`）。
 pub fn normalize(p: &str) -> String {
-    let mut s = p.trim().trim_matches('"').replace('/', "\\");
+    let mut s = expand(p.trim().trim_matches('"')).replace('/', "\\");
     if s.len() == 2 && s.ends_with(':') {
         s.push('\\');
     }
@@ -14,6 +15,31 @@ pub fn normalize(p: &str) -> String {
         s.pop();
     }
     s
+}
+
+/// 展開使用者輸入的簡寫（只看開頭，不碰磁碟）：單獨的 `~` 與 `~\`、`~/` 開頭換成使用者資料夾（`USERPROFILE`），
+/// 開頭的 `%名稱%` 換成環境變數（與檔案總管相同）。`~old`、`~$報告.docx` 是一般名稱；未定義的變數保留原樣。
+/// 程式產生的路徑一律是絕對路徑（磁碟代號或 `\\` 開頭），不受影響。
+pub fn expand(p: &str) -> String {
+    expand_with(p, |name| std::env::var(name).ok().filter(|v| !v.is_empty()))
+}
+
+fn expand_with(p: &str, var: impl Fn(&str) -> Option<String>) -> String {
+    if let Some(rest) = p.strip_prefix('~')
+        && (rest.is_empty() || rest.starts_with(['\\', '/']))
+        && let Some(home) = var("USERPROFILE")
+    {
+        return format!("{}{rest}", home.trim_end_matches(['\\', '/']));
+    }
+    if let Some(rest) = p.strip_prefix('%')
+        && let Some((name, tail)) = rest.split_once('%')
+        && !name.is_empty()
+        && !name.contains(['\\', '/'])
+        && let Some(v) = var(name)
+    {
+        return format!("{v}{tail}");
+    }
+    p.to_string()
 }
 
 /// 去除 `.`、`..` 段（只處理字串、不碰磁碟）；`..` 不超過磁碟根目錄或網路分享（`\\server\share`）。
@@ -176,5 +202,31 @@ mod tests {
         assert!(is_ancestor_or_self("C:\\a", "c:\\A\\b"));
         assert!(!is_ancestor_or_self("C:\\a", "C:\\ab"));
         assert!(is_ancestor_or_self("C:\\", "C:\\ab"));
+    }
+
+    #[test]
+    fn expand_input() {
+        let var = |n: &str| match n {
+            "USERPROFILE" => Some(r"C:\Users\王".to_string()),
+            "APPDATA" => Some(r"C:\Users\王\AppData\Roaming".to_string()),
+            _ => None,
+        };
+        let e = |p: &str| expand_with(p, var);
+        assert_eq!(e("~"), r"C:\Users\王");
+        assert_eq!(e(r"~\Downloads"), r"C:\Users\王\Downloads");
+        assert_eq!(e("~/Downloads/a"), r"C:\Users\王/Downloads/a");
+        assert_eq!(e(r"%APPDATA%\zing"), r"C:\Users\王\AppData\Roaming\zing");
+        assert_eq!(e("%USERPROFILE%"), r"C:\Users\王");
+        // 一般名稱、未定義的變數、不在開頭的 ~ 與 %：不變
+        for p in ["~old", "~$報告.docx", "~~", r"%NOPE%\a", "%", "%%", r"%a\b%c", r"C:\a\~\b", r"C:\%APPDATA%", "https://x/~a", "PROGRA~1"] {
+            assert_eq!(e(p), p);
+        }
+        // 沒有使用者資料夾時不變
+        assert_eq!(expand_with("~", |_| None), "~");
+        // 經 normalize：/ 轉成 \、. 與 .. 整理、結尾的 \ 去掉
+        let home = std::env::var("USERPROFILE").unwrap();
+        let home = home.trim_end_matches('\\');
+        assert_eq!(normalize("~/"), home);
+        assert_eq!(normalize(r"~\a\..\b"), format!(r"{home}\b"));
     }
 }

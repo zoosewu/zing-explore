@@ -233,6 +233,12 @@ impl NameQuery {
                 Some(Ok(None)) => {}
                 Some(Err(())) => out.errors.push(word.clone()),
                 None => {
+                    // 路徑的詞：~\、%變數%\ 開頭展開（單獨的 ~ 仍是名稱中的 ~）
+                    let expanded = match crate::path::expand(w) {
+                        e if e != w && w.contains(['\\', '/']) => e.replace('/', "\\"),
+                        _ => w.to_string(),
+                    };
+                    let w = expanded.as_str();
                     let folded = fold(w.as_bytes());
                     // 只有 * 的詞符合一切，不必比對
                     if folded.iter().all(|&c| c == b'*') {
@@ -767,6 +773,15 @@ mod tests {
         let q = NameQuery::parse_at(r"!\node_modules\ index.js", 0, 0);
         assert!(q.matches("index.js", r"C:\app\index.js", FILE));
         assert!(!q.matches("index.js", r"C:\app\node_modules\x\index.js", FILE));
+        // ~\ 開頭是使用者資料夾；單獨的 ~ 是名稱中的 ~
+        let home = std::env::var("USERPROFILE").unwrap();
+        let home = home.trim_end_matches('\\');
+        let q = NameQuery::parse_at(r"~/Downloads/ *.pdf", 0, 0);
+        assert!(q.matches("a.pdf", &format!(r"{home}\Downloads\a.pdf"), FILE));
+        assert!(!q.matches("a.pdf", r"D:\x\Downloads\a.pdf", FILE));
+        let q = NameQuery::parse_at("~", 0, 0);
+        assert!(!q.needs_path());
+        assert!(q.matches("~$報告.docx", "", FILE));
     }
 
     #[test]

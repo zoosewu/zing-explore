@@ -144,7 +144,8 @@ impl App {
                     }
                 }
                 EditKind::Address => {
-                    let target = text.trim().to_string();
+                    // ~、%變數%：不是資料夾時交給系統開啟的也是展開後的（~\筆記.txt）
+                    let target = path::expand(text.trim());
                     let pane = self.active_pane;
                     if target.is_empty() || target == "此電腦" || target == tr!("此電腦") {
                         self.navigate(pane, String::new(), true);

@@ -1694,6 +1694,21 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             move |_, a| at(a, &dir_a)
         },
     ));
+    let home = std::env::var("USERPROFILE").unwrap_or_default().trim_end_matches('\\').to_string();
+    v.push(step("網址列：~ 開頭是使用者資料夾", |c| {
+        key(c, "c", letter('l'));
+        if let Some(e) = edit_hwnd() {
+            key_to(e, "c", letter('a'));
+        }
+        edit_commit("~/");
+    }, {
+        let home = home.clone();
+        move |_, a| at(a, &home)
+    }));
+    v.push(step("網址列：從使用者資料夾回到資料夾A", |c| key(c, "a", VK_LEFT), {
+        let dir_a = dir_a.clone();
+        move |_, a| at(a, &dir_a)
+    }));
     v.push(step("網址列：回到測試資料夾", |c| key(c, "a", VK_LEFT), {
         let d = d.clone();
         move |_, a| at(a, &d)
