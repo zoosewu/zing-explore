@@ -6,8 +6,12 @@
 //! 設定本執行緒的按鍵狀態。不移動真實游標、視窗不搶前景，使用者操作電腦時也能執行。
 //! 每一步送出輸入後輪詢 App 狀態與磁碟，逾時即失敗並停止；結束時寫出報告並關閉。
 //!
+//! `--smoke-showcase=zh-TW|en`：改為產生作品集的截圖（`showcase.rs`，tools/screenshots.ps1）。
+//!
 //! 測試資料夾由 tools/smoke.ps1 建立。不測右鍵選單、剪貼簿、刪除：會搶前景視窗、
 //! 覆蓋使用者的剪貼簿、留東西在資源回收筒。
+
+mod showcase;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -208,6 +212,8 @@ pub struct Smoke {
     out: PathBuf,
     dir: String,
     shots: Option<PathBuf>,
+    /// 作品集的截圖（介面語言）
+    showcase: Option<zing_core::i18n::Lang>,
 }
 
 impl Smoke {
@@ -217,6 +223,7 @@ impl Smoke {
             out: PathBuf::from(get("smoke-out")?),
             dir: path::normalize(&get("smoke-dir")?),
             shots: get("smoke-shots").map(PathBuf::from),
+            showcase: get("smoke-showcase").and_then(|l| zing_core::i18n::Lang::parse(&l)),
         };
         RUNNING.store(true, std::sync::atomic::Ordering::Relaxed);
         Some(smoke)
@@ -338,7 +345,11 @@ pub fn start(hwnd: HWND, smoke: Smoke) {
     let clip = harness_io(clip_backup);
     let driver = Driver {
         clip,
-        steps: steps(&ctx).into(),
+        steps: match smoke.showcase {
+            Some(lang) => showcase::steps(&ctx, lang),
+            None => steps(&ctx),
+        }
+        .into(),
         ctx,
         out: smoke.out,
         results: Vec::new(),

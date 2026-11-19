@@ -1,0 +1,22 @@
+{
+  "01-main-window": {
+    "zh-TW": "主視窗：樹狀列、檔案清單與資料夾大小",
+    "en": "Main window: folder tree, file list and folder sizes"
+  },
+  "02-thumbnails": {
+    "zh-TW": "縮圖檢視",
+    "en": "Thumbnail view"
+  },
+  "03-folder-compare": {
+    "zh-TW": "資料夾比對與同步",
+    "en": "Compare and sync folders"
+  },
+  "04-settings": {
+    "zh-TW": "設定",
+    "en": "Settings"
+  },
+  "05-light-theme-preview": {
+    "zh-TW": "Fluent 淺色主題與預覽窗格",
+    "en": "Fluent light theme with the preview pane"
+  }
+}

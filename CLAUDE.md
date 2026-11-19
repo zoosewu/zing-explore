@@ -357,3 +357,13 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   兩種風格的主題（`zing_core::theme::Style`），各有深色與淺色。強調色是圖示的黃色 `#f2c230`。
   風格的差異只透過主題資料（`metrics`、`color`、`chrome`）表達，繪製程式碼不判斷風格名稱。
 - 自用為主，但會開源。
+
+## 作品集（apex-code）
+
+本專案列在 zoosewu 的作品集：https://zoosewu.github.io/apex-code/
+- 截圖：依 https://github.com/zoosewu/apex-code/blob/main/docs/SCREENSHOTS.md 放在 `docs/screenshots/`；
+  介面有明顯改變時一併更新截圖與 captions.json
+- 要顯示「作者的其他專案」時：依 https://github.com/zoosewu/apex-code/blob/main/docs/API.md 讀取 API，不要把清單寫死在本專案
+- 截圖以 `pwsh tools/screenshots.ps1` 重新產生（繁中、英文各五張，1280×800）：示範資料以 `subst` 掛成磁碟機，
+  zing 以冒煙測試的 `--smoke-showcase` 模式（`smoke/showcase.rs`）操作並截圖，不動真實游標。
+  示範資料的名稱兩邊要一致；新增或更換截圖時同步修改兩邊與 captions（在 screenshots.ps1）。
