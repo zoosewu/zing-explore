@@ -5,7 +5,7 @@ members = ["crates/zing-core", "crates/zing-app", "crates/zing-index"]
 [workspace.package]
 version = "0.6.2"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [workspace.dependencies]
 zing-core = { path = "crates/zing-core" }
