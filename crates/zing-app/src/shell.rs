@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use zing_core::{guard, path};
 use zing_core::text::wide_z;
-use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, POINTL, WPARAM};
+use windows::Win32::Foundation::{E_FAIL, HGLOBAL, HWND, LPARAM, LRESULT, POINT, POINTL, S_OK, WPARAM};
 use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
 use windows::Win32::System::Com::{
     CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, COINIT_MULTITHREADED, CoCreateInstance,
@@ -31,7 +31,7 @@ use windows::Win32::UI::Shell::{
     BHID_DataObject, CLSID_DragDropHelper, CMF_CANRENAME, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE,
     CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, DragQueryFileW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
     FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION, FOF_SILENT, FOF_WANTNUKEWARNING, FOFX_RECYCLEONDELETE, FileOperation, GCS_VERBW, HDROP, IContextMenu,
-    IContextMenu2, IContextMenu3, IDropTargetHelper, IFileOperation, IFileOperationProgressSink,
+    IContextMenu2, IContextMenu3, IDataObjectAsyncCapability, IDropTargetHelper, IFileOperation, IFileOperationProgressSink,
     IFileOperationProgressSink_Impl, IShellFolder, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY,
     IShellItem, IShellItemArray, ILFindLastID, ILFree, SHBindToObject, SHBindToParent,
     SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDoDragDrop, SHMultiFileProperties,
@@ -999,8 +999,97 @@ fn shell_drop_target(hwnd: HWND, pidl: &Pidl) -> Option<IDropTarget> {
 /// 由視窗層提供：螢幕座標 → 放置目標資料夾；以及拖曳中的游標位置（None 表示離開）
 pub type ResolveFn = fn(POINT) -> Option<String>;
 pub type HoverFn = fn(Option<POINT>);
-/// 放下檔案時交給背景檔案作業：(來源, 目標資料夾, 是否移動)
-pub type TransferFn = fn(Vec<String>, String, bool);
+/// 放下檔案時交給背景檔案作業：(來源, 目標資料夾, 是否移動, 何時讓來源知道已用完)
+pub type TransferFn = fn(Vec<String>, String, bool, DropFinish);
+
+/// 放下的檔案什麼時候可以讓來源收回。OLE 的規定：放置目標從 `Drop` 返回時就要用完資料，
+/// 除非來源支援非同步（`IDataObjectAsyncCapability` 的 GetAsyncMode 為真：目標呼叫 StartOperation，用完再 EndOperation）。
+/// 7-Zip、WinRAR 這類來源拖曳時先解壓縮到系統的暫存資料夾、不支援非同步，`DoDragDrop` 一返回就刪除暫存檔，
+/// 所以不能放下後才在背景複製（作業開始時檔案已經不見了）。檔案總管拖出的（Shell 的資料物件）也不支援非同步
+/// （SetAsyncMode 之後 GetAsyncMode 仍為假），但檔案是使用者的、拖曳結束後還在，等待只會讓檔案總管的視窗卡到複製完，
+/// 所以只有暫存資料夾裡的來源才等。
+pub enum DropFinish {
+    /// 作業完成時（`async_drop_finished`）才呼叫 EndOperation；`Drop` 立即返回
+    Async(IDataObjectAsyncCapability),
+    /// 等作業完成才從 `Drop` 返回（訊息迴圈照常處理，見 `window::pump_until`）
+    Wait,
+    /// 檔案在拖曳結束後還在：`Drop` 立即返回、背景複製
+    Background,
+}
+
+/// 冒煙測試：當成系統暫存資料夾的資料夾（測試資料夾本身可能就在暫存資料夾裡）
+pub static TEST_TRANSIENT_DIR: Mutex<Option<String>> = Mutex::new(None);
+
+/// 在系統的暫存資料夾裡：拖曳來源的暫存檔，拖曳結束就可能被刪除
+fn is_transient(p: &str) -> bool {
+    static TEMP: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let under = |dir: &str| {
+        let dir = dir.trim_end_matches('\\');
+        p.get(..dir.len()).is_some_and(|head| head.eq_ignore_ascii_case(dir)) && p.as_bytes().get(dir.len()) == Some(&b'\\')
+    };
+    if crate::smoke::running() {
+        return TEST_TRANSIENT_DIR.lock().unwrap().as_deref().is_some_and(under);
+    }
+    // GetTempPath 可能是 8.3 短檔名的形式：連長檔名的形式一起比對（第一次放下時讀一次，暫存資料夾在本機）
+    let dirs = TEMP.get_or_init(|| {
+        let _allow = zing_core::guard::allow_io("讀取暫存資料夾的長檔名（本機、只讀一次）");
+        let raw = std::env::temp_dir().to_string_lossy().into_owned();
+        let long = std::fs::canonicalize(&raw).map(|l| l.to_string_lossy().trim_start_matches(r"\\?\").to_string());
+        let mut v = vec![raw];
+        v.extend(long.ok().filter(|l| !v[0].eq_ignore_ascii_case(l)));
+        v
+    });
+    dirs.iter().any(|d| under(d))
+}
+
+impl DropFinish {
+    fn of(data: &IDataObject, paths: &[String]) -> Self {
+        if let Ok(a) = data.cast::<IDataObjectAsyncCapability>() {
+            unsafe {
+                if a.GetAsyncMode().is_ok_and(|m| m.as_bool()) && a.StartOperation(None).is_ok() {
+                    return DropFinish::Async(a);
+                }
+            }
+        }
+        if paths.iter().any(|p| is_transient(p)) { DropFinish::Wait } else { DropFinish::Background }
+    }
+
+    /// 沒有送出作業（例如匯入主題、壓縮檔裡不能放）：`ok` 表示已經在 `Drop` 中處理完
+    pub fn end_now(self, ok: bool) {
+        if let DropFinish::Async(a) = self {
+            end_operation(&a, ok, DROPEFFECT_COPY);
+        }
+    }
+}
+
+fn end_operation(a: &IDataObjectAsyncCapability, ok: bool, effect: DROPEFFECT) {
+    let (hr, effect) = if ok { (S_OK, effect) } else { (E_FAIL, DROPEFFECT_NONE) };
+    unsafe {
+        let _ = a.EndOperation(hr, None, effect.0);
+    }
+}
+
+thread_local! {
+    /// 非同步放下的作業：（工作編號, 來源, 是否移動），完成時呼叫 EndOperation。COM 物件屬於這個 UI 執行緒
+    static ASYNC_DROPS: RefCell<Vec<(crate::jobs::JobId, IDataObjectAsyncCapability, bool)>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn async_drop_started(id: crate::jobs::JobId, a: IDataObjectAsyncCapability, mov: bool) {
+    ASYNC_DROPS.with(|d| d.borrow_mut().push((id, a, mov)));
+}
+
+/// 作業結束（完成、失敗、取消）：通知非同步放下的來源可以收回資料。
+/// 移動已由目標搬好（最佳化移動），回報 DROPEFFECT_NONE，來源不要再刪除原檔
+pub fn async_drop_finished(id: crate::jobs::JobId, ok: bool) {
+    let found = ASYNC_DROPS.with(|d| {
+        let mut d = d.borrow_mut();
+        d.iter().position(|e| e.0 == id).map(|i| d.swap_remove(i))
+    });
+    if let Some((_, a, mov)) = found {
+        end_operation(&a, ok, if mov { DROPEFFECT_NONE } else { DROPEFFECT_COPY });
+    }
+}
+
 
 #[implement(IDropTarget)]
 pub struct DropTarget {
@@ -1182,7 +1271,8 @@ impl IDropTarget_Impl for DropTarget_Impl {
                         set_dword(d, logical_performed_drop_effect_format(), DROPEFFECT_MOVE.0);
                         unsafe { *effect = DROPEFFECT_NONE };
                     }
-                    (self.transfer)(paths, dest, mov);
+                    let finish = DropFinish::of(d, &paths);
+                    (self.transfer)(paths, dest, mov, finish);
                     return Ok(());
                 }
                 // 其他情況（右鍵選單、建立捷徑、虛擬檔案、資源回收筒）仍交給 Shell，同步執行，COM 規定必須在 UI 執行緒
@@ -1304,3 +1394,4 @@ mod ctx_menu_timing {
         }
     }
 }
+

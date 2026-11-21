@@ -1287,8 +1287,85 @@ fn luma(ctx: &Ctx, name: &str) -> f64 {
 
 // ---------------------------------------------------------------- 拖放
 
-/// 對放置目標模擬一次左鍵拖曳：經過 `over` 中的各點後放在 `drop_at`（`copy`：按住 Ctrl）
+/// 支援非同步的拖曳來源（IDataObjectAsyncCapability）：包住 Shell 的資料物件（它本身不支援），
+/// 記下目標是否呼叫了 StartOperation、EndOperation 回報的效果
+#[windows::core::implement(windows::Win32::System::Com::IDataObject, windows::Win32::UI::Shell::IDataObjectAsyncCapability)]
+struct AsyncSource {
+    inner: windows::Win32::System::Com::IDataObject,
+}
+
+/// （已呼叫 StartOperation, EndOperation 的（成功, 效果））
+static ASYNC_SOURCE: std::sync::Mutex<(bool, Option<(bool, u32)>)> = std::sync::Mutex::new((false, None));
+
+mod async_source {
+    use windows::Win32::System::Com::{
+        FORMATETC, IAdviseSink, IBindCtx, IDataObject_Impl, IEnumFORMATETC, IEnumSTATDATA, STGMEDIUM,
+    };
+    use windows::Win32::UI::Shell::IDataObjectAsyncCapability_Impl;
+    use windows::core::{BOOL, HRESULT, Ref, Result};
+
+    use super::{ASYNC_SOURCE, AsyncSource_Impl};
+
+    impl IDataObject_Impl for AsyncSource_Impl {
+        fn GetData(&self, f: *const FORMATETC) -> Result<STGMEDIUM> {
+            unsafe { self.inner.GetData(f) }
+        }
+        fn GetDataHere(&self, f: *const FORMATETC, m: *mut STGMEDIUM) -> Result<()> {
+            unsafe { self.inner.GetDataHere(f, m) }
+        }
+        fn QueryGetData(&self, f: *const FORMATETC) -> HRESULT {
+            unsafe { self.inner.QueryGetData(f) }
+        }
+        fn GetCanonicalFormatEtc(&self, f: *const FORMATETC, out: *mut FORMATETC) -> HRESULT {
+            unsafe { self.inner.GetCanonicalFormatEtc(f, out) }
+        }
+        fn SetData(&self, f: *const FORMATETC, m: *const STGMEDIUM, release: BOOL) -> Result<()> {
+            unsafe { self.inner.SetData(f, m, release.as_bool()) }
+        }
+        fn EnumFormatEtc(&self, dir: u32) -> Result<IEnumFORMATETC> {
+            unsafe { self.inner.EnumFormatEtc(dir) }
+        }
+        fn DAdvise(&self, f: *const FORMATETC, advf: u32, sink: Ref<IAdviseSink>) -> Result<u32> {
+            unsafe { self.inner.DAdvise(f, advf, sink.as_ref()) }
+        }
+        fn DUnadvise(&self, c: u32) -> Result<()> {
+            unsafe { self.inner.DUnadvise(c) }
+        }
+        fn EnumDAdvise(&self) -> Result<IEnumSTATDATA> {
+            unsafe { self.inner.EnumDAdvise() }
+        }
+    }
+
+    impl IDataObjectAsyncCapability_Impl for AsyncSource_Impl {
+        fn SetAsyncMode(&self, _: BOOL) -> Result<()> {
+            Ok(())
+        }
+        fn GetAsyncMode(&self) -> Result<BOOL> {
+            Ok(true.into())
+        }
+        fn StartOperation(&self, _: Ref<IBindCtx>) -> Result<()> {
+            ASYNC_SOURCE.lock().unwrap().0 = true;
+            Ok(())
+        }
+        fn InOperation(&self) -> Result<BOOL> {
+            let s = ASYNC_SOURCE.lock().unwrap();
+            Ok((s.0 && s.1.is_none()).into())
+        }
+        fn EndOperation(&self, hr: HRESULT, _: Ref<IBindCtx>, effect: u32) -> Result<()> {
+            ASYNC_SOURCE.lock().unwrap().1 = Some((hr.is_ok(), effect));
+            Ok(())
+        }
+    }
+}
+
+/// 對放置目標模擬一次左鍵拖曳（見 `simulate_drop_from`）；來源與檔案總管拖出的相同（Shell 的資料物件，不支援非同步）
 fn simulate_drop(ctx: &mut Ctx, source: &str, over: &[(f32, f32)], drop_at: (f32, f32), copy: bool) {
+    simulate_drop_from(ctx, source, over, drop_at, copy, false);
+}
+
+/// 對放置目標模擬一次左鍵拖曳：經過 `over` 中的各點後放在 `drop_at`（`copy`：按住 Ctrl）。
+/// `async_mode`：來源允許目標非同步使用資料（以 `AsyncSource` 包住，記在 `ASYNC_SOURCE`）
+fn simulate_drop_from(ctx: &mut Ctx, source: &str, over: &[(f32, f32)], drop_at: (f32, f32), copy: bool, async_mode: bool) {
     let Some(target) = crate::window::drop_target() else {
         ctx.notes.push(("drop_error", "沒有註冊放置目標".into()));
         return;
@@ -1297,6 +1374,13 @@ fn simulate_drop(ctx: &mut Ctx, source: &str, over: &[(f32, f32)], drop_at: (f32
     let data = {
         let _allow = zing_core::guard::allow_io("冒煙測試扮演拖曳來源");
         crate::shell::data_object(&[source.to_string()])
+    };
+    let data = match data {
+        Ok(d) if async_mode => {
+            *ASYNC_SOURCE.lock().unwrap() = (false, None);
+            Ok(AsyncSource { inner: d }.into())
+        }
+        other => other,
     };
     let data = match data {
         Ok(d) => d,
@@ -3388,6 +3472,88 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
                         return Err("檔案沒有移到資料夾A".into());
                     }
                     if names(a).iter().any(|n| n == "報告 9.txt") { Err("清單沒有更新".into()) } else { Ok(()) }
+                }
+            },
+        )
+        .slow(),
+    );
+
+    // 7-Zip、WinRAR 這類來源：拖曳時先解壓縮到暫存資料夾，不支援非同步，DoDragDrop 一返回就刪除暫存資料夾。
+    // Drop 必須等作業用完檔案才返回（等待中訊息照常處理），否則背景作業開始時檔案已經不見了
+    let unpacked = path::join(&d, "7z暫存");
+    v.push(
+        step(
+            "拖放：來源不支援非同步、放下後立即刪除暫存檔（7-Zip）",
+            {
+                let unpacked = unpacked.clone();
+                move |c| {
+                    let src = path::join(&unpacked, "解壓縮的檔案.txt");
+                    harness_io(|| {
+                        let _ = std::fs::create_dir_all(&unpacked);
+                        let _ = std::fs::write(&src, "7-Zip 的暫存檔");
+                    });
+                    // 這個資料夾當成系統的暫存資料夾（測試資料夾本身可能就在暫存資料夾裡）
+                    *crate::shell::TEST_TRANSIENT_DIR.lock().unwrap() = Some(unpacked.clone());
+                    match row_pos("資料夾A") {
+                        Some(pa) => simulate_drop(c, &src, &[pa, pa], pa, false),
+                        None => c.notes.push(("drop_error", "找不到資料夾列".into())),
+                    }
+                    *crate::shell::TEST_TRANSIENT_DIR.lock().unwrap() = None;
+                    // 來源的 DoDragDrop 返回：刪除暫存資料夾
+                    harness_io(|| {
+                        let _ = std::fs::remove_dir_all(&unpacked);
+                    });
+                }
+            },
+            {
+                let moved = path::join(&dir_a, "解壓縮的檔案.txt");
+                move |c, _| {
+                    if let Some(e) = c.note("drop_error") {
+                        return Err(e.to_string());
+                    }
+                    let text = harness_io(|| std::fs::read_to_string(&moved).ok());
+                    expect("放進資料夾A的內容", text.as_deref(), Some("7-Zip 的暫存檔"))?;
+                    harness_io(|| std::fs::remove_file(&moved)).map_err(|e| e.to_string())
+                }
+            },
+        )
+        .slow(),
+    );
+
+    v.push(
+        step(
+            "拖放：來源支援非同步：Drop 立即返回，作業完成才通知來源（EndOperation）",
+            {
+                let src = ctx.sub("非同步來源.txt");
+                move |c| {
+                    harness_io(|| {
+                        let _ = std::fs::write(&src, "async");
+                    });
+                    match row_pos("資料夾A") {
+                        Some(pa) => simulate_drop_from(c, &src, &[pa, pa], pa, true, true),
+                        None => c.notes.push(("drop_error", "找不到資料夾列".into())),
+                    }
+                }
+            },
+            {
+                let (src, copied) = (ctx.sub("非同步來源.txt"), path::join(&dir_a, "非同步來源.txt"));
+                move |c, _| {
+                    if let Some(e) = c.note("drop_error") {
+                        return Err(e.to_string());
+                    }
+                    drop_fast(c)?;
+                    let state = *ASYNC_SOURCE.lock().unwrap();
+                    expect("呼叫 StartOperation", state.0, true)?;
+                    // 1 = DROPEFFECT_COPY
+                    expect("作業完成後 EndOperation（成功, 複製）", state.1, Some((true, 1)))?;
+                    if !exists(&copied) {
+                        return Err("檔案沒有複製到資料夾A".into());
+                    }
+                    harness_io(|| {
+                        let _ = std::fs::remove_file(&copied);
+                        std::fs::remove_file(&src)
+                    })
+                    .map_err(|e| e.to_string())
                 }
             },
         )

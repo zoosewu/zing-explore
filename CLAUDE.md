@@ -309,6 +309,9 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   （冒煙測試確認：來回經過 12 次只建立 2 次，DragOver 約 1.5 ms）。
 - 放下：一般檔案（CF_HDROP）的複製／移動交給 `FileOps` 在背景執行，`Drop` 約 1 ms 返回；效果沿用 Shell 在最後一次
   DragOver 決定的（與檔案總管規則相同），移動時以「最佳化移動」回報來源（回傳 DROPEFFECT_NONE、設定 Performed DropEffect）。
+  例外（`shell::DropFinish`）：來源支援非同步（`IDataObjectAsyncCapability`）時作業完成才 `EndOperation`；來源在系統的暫存資料夾
+  （7-Zip、WinRAR 拖曳時解壓縮到暫存資料夾，`DoDragDrop` 一返回就刪除）時 `Drop` 等作業完成才返回，等待中以
+  `window::pump_until` 照常處理訊息（只有拖曳來源的程式在等）。
   右鍵拖曳、建立捷徑、虛擬檔案（非 CF_HDROP）、資源回收筒內的項目仍交給 Shell 的 `Drop`，會在 UI 執行緒同步執行
   （約 120–190 ms），以 `window::exempt_stall()` 排除在卡頓監看外。
 - 連續繪製（捲動、拖曳）約 40 幀後，系統把視窗從桌面合成（Composed: Flip）改成獨立翻轉（Hardware: Independent Flip），

@@ -87,12 +87,7 @@ mod window;
 
 use windows::Win32::Graphics::Gdi::UpdateWindow;
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext};
-use windows::Win32::Foundation::WAIT_OBJECT_0;
-use windows::Win32::System::Threading::INFINITE;
-use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW,
-    QS_ALLINPUT, SW_SHOWMAXIMIZED, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, ShowWindow, TranslateMessage, WM_QUIT,
-};
+use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, SW_SHOWMAXIMIZED, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, ShowWindow};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -179,35 +174,7 @@ fn run(init: hub::WindowInit) -> windows::core::Result<()> {
         if let Some(s) = smoke {
             smoke::start(hwnd, s);
         }
-        let mut msg = MSG::default();
-        let dispatch = |msg: &MSG| {
-            let _ = TranslateMessage(msg);
-            #[cfg(debug_assertions)]
-            let started = std::time::Instant::now();
-            DispatchMessageW(msg);
-            #[cfg(debug_assertions)]
-            window::check_stall(msg, started.elapsed());
-        };
-        'pump: loop {
-            // 有延後的重畫（gfx::ready_or_defer）：同時等交換鏈與訊息
-            let waitable = window::APP.with(|a| a.borrow().as_ref().and_then(|a| a.gfx.deferred_waitable()));
-            let Some(h) = waitable else {
-                if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                    break;
-                }
-                dispatch(&msg);
-                continue;
-            };
-            if MsgWaitForMultipleObjectsEx(Some(&[h]), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_OBJECT_0 {
-                window::with_app(|a| a.gfx.frame_signaled());
-            }
-            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                if msg.message == WM_QUIT {
-                    break 'pump;
-                }
-                dispatch(&msg);
-            }
-        }
+        window::pump_until(|| false);
     }
     window::APP.with(|a| a.borrow_mut().take());
     Ok(())

@@ -717,6 +717,48 @@ pub fn last_edit_blur() -> String {
     LAST_EDIT_BLUR.with(|b| b.borrow().clone())
 }
 
+/// 視窗執行緒的訊息迴圈，直到 `done()` 為真或收到 WM_QUIT（回傳 false；巢狀時重新送出 WM_QUIT 給外層）。
+/// 有延後的重畫（gfx::ready_or_defer）時同時等交換鏈與訊息。主迴圈是 `pump_until(|| false)`；
+/// 巢狀使用（放下的來源不支援非同步時，`drop_transfer` 等作業完成）時介面照常更新、可以操作。
+pub fn pump_until(mut done: impl FnMut() -> bool) -> bool {
+    let mut msg = MSG::default();
+    let dispatch = |msg: &MSG| unsafe {
+        let _ = TranslateMessage(msg);
+        #[cfg(debug_assertions)]
+        let started = std::time::Instant::now();
+        DispatchMessageW(msg);
+        #[cfg(debug_assertions)]
+        check_stall(msg, started.elapsed());
+    };
+    let quit = |msg: &MSG| unsafe { PostQuitMessage(msg.wParam.0 as i32) };
+    while !done() {
+        let waitable = APP.with(|a| a.borrow().as_ref().and_then(|a| a.gfx.deferred_waitable()));
+        unsafe {
+            let Some(h) = waitable else {
+                if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    quit(&msg);
+                    return false;
+                }
+                dispatch(&msg);
+                continue;
+            };
+            if MsgWaitForMultipleObjectsEx(Some(&[h]), windows::Win32::System::Threading::INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+                == windows::Win32::Foundation::WAIT_OBJECT_0
+            {
+                with_app(|a| a.gfx.frame_signaled());
+            }
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    quit(&msg);
+                    return false;
+                }
+                dispatch(&msg);
+            }
+        }
+    }
+    true
+}
+
 /// 這次訊息處理中有已知會阻塞、但受 COM 限制必須在 UI 執行緒的 Shell 呼叫（見 CLAUDE.md 已知缺口）
 pub fn exempt_stall() {
     IN_MODAL.with(|m| m.set(true));
@@ -810,8 +852,11 @@ fn drop_resolve(pt: POINT) -> Option<String> {
     .flatten()
 }
 
-/// 放下的檔案交給背景檔案作業佇列（完成後重新整理相關分頁）
-fn drop_transfer(sources: Vec<String>, dest: String, mov: bool) {
+/// 放下的檔案交給背景檔案作業佇列（完成後重新整理相關分頁）。
+/// 來源在暫存資料夾、不支援非同步時（7-Zip 等先解壓縮到暫存資料夾、`DoDragDrop` 返回就刪除，見 `shell::DropFinish`），
+/// 等作業結束才從 `Drop` 返回，
+/// 等待中照常處理訊息（`pump_until`）：介面可以操作、作業佇列顯示進度，只有拖曳來源的程式在等（與檔案總管相同）
+fn drop_transfer(sources: Vec<String>, dest: String, mov: bool, finish: shell::DropFinish) {
     // 拖進來的全是 .zingtheme：匯入主題，不複製檔案
     let theme = |p: &String| p.to_ascii_lowercase().ends_with(".zingtheme");
     if !sources.is_empty() && sources.iter().all(theme) {
@@ -820,9 +865,20 @@ fn drop_transfer(sources: Vec<String>, dest: String, mov: bool) {
                 a.import_theme_file(p);
             }
         });
+        finish.end_now(true);
         return;
     }
-    with_app(|a| a.submit_op(shell::FileOp::Transfer { sources, dest, mov }));
+    let id = with_app(|a| a.submit_op_from(shell::FileOp::Transfer { sources, dest, mov }, shell::Origin::Normal)).flatten();
+    match (id, finish) {
+        (Some(id), shell::DropFinish::Async(a)) => shell::async_drop_started(id, a, mov),
+        (Some(id), shell::DropFinish::Wait) => {
+            pump_until(|| with_app(|a| a.job_ended(id)).unwrap_or(true));
+            // 外層的這個訊息（COM 呼叫 Drop）包含了整個等待；等待中的訊息各自受卡頓監看
+            exempt_stall();
+        }
+        (Some(_), shell::DropFinish::Background) => {}
+        (None, finish) => finish.end_now(false),
+    }
 }
 
 fn drop_hover(pt: Option<POINT>) {

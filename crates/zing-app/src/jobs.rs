@@ -197,18 +197,24 @@ impl App {
         self.submit_op_from(op, crate::shell::Origin::Normal);
     }
 
-    /// 送出作業；`origin` 決定完成時是否記進復原的堆疊（undo.rs）
-    pub fn submit_op_from(&mut self, op: FileOp, origin: crate::shell::Origin) {
+    /// 送出作業；`origin` 決定完成時是否記進復原的堆疊（undo.rs）。
+    /// 回傳作業佇列中的工作編號（重新命名、新增資料夾不進佇列，回傳 None）
+    pub fn submit_op_from(&mut self, op: FileOp, origin: crate::shell::Origin) -> Option<JobId> {
         if crate::archive::op_writes_archive(&op) {
             self.set_status(tr!("壓縮檔是唯讀的：先複製出來再修改"), true);
-            return;
+            return None;
         }
         let (title, glyph) = describe(&op);
-        if let Some((id, ctl)) = self.fileops.submit(op, origin) {
-            let info = JobInfo { id, title, glyph, ctl };
-            self.broadcast(crate::hub::Shared::JobAdded(info.clone()));
-            self.add_job(info);
-        }
+        let (id, ctl) = self.fileops.submit(op, origin)?;
+        let info = JobInfo { id, title, glyph, ctl };
+        self.broadcast(crate::hub::Shared::JobAdded(info.clone()));
+        self.add_job(info);
+        Some(id)
+    }
+
+    /// 作業佇列中的工作已結束（完成、失敗、取消；不在清單中也算）
+    pub fn job_ended(&self, id: JobId) -> bool {
+        self.jobs.list.iter().find(|j| j.id == id).is_none_or(|j| matches!(j.status, JobStatus::Done | JobStatus::Failed(_) | JobStatus::Cancelled))
     }
 
     /// 作業佇列介面加入一個作業（這個視窗或其他視窗送出的）
@@ -262,6 +268,8 @@ impl App {
                     job.active += s.elapsed();
                 }
                 job.finished_at = Some(Instant::now());
+                // 非同步放下的來源（shell::DropFinish）等到這裡才收回資料
+                crate::shell::async_drop_finished(id, error.is_none() && !cancelled);
                 job.status = match (error, cancelled) {
                     (_, true) => JobStatus::Cancelled,
                     (Some(e), _) => JobStatus::Failed(e),
