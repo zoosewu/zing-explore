@@ -211,10 +211,8 @@ jobs:
           # 發佈期間 master 可能又有新的 commit：在最新的 master 上改版本號
           git fetch origin master
           git checkout -f -B release-version origin/master
+          # 連 Cargo.lock 中本專案的版本一起改（不用 cargo：離線時快取不一定有每個平台的相依套件）
           pwsh -NoProfile tools/set-version.ps1 $env:VERSION
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          # 更新 Cargo.lock 中本專案的版本
-          cargo metadata --format-version 1 --offline | Out-Null
           if ($LASTEXITCODE -ne 0) { exit 1 }
           git add Cargo.toml Cargo.lock
           git diff --cached --quiet
