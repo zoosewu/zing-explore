@@ -1009,6 +1009,10 @@ impl App {
         let tab = self.panes[p].tab();
         let radius = self.theme.metrics.radius;
         let px = crate::thumbs::bucket(gr.thumb * g.scale());
+        let renaming = match self.edit.as_ref().map(|e| &e.kind) {
+            Some(crate::edit::EditKind::Rename { path, .. }) => Some(path.as_str()),
+            _ => None,
+        };
         let at = |x: f32, y: f32, w: f32, h: f32| {
             let (l, t) = (list.l + x, list.t + y - tab.scroll);
             Rect::new(l, t, l + w, t + h)
@@ -1042,6 +1046,10 @@ impl App {
                 if !self.icons.get(key).is_some_and(|id| g.icon(id, &self.icons, boxr, opacity)) {
                     g.text(if dir { glyph::FOLDER } else { glyph::FILE }, Font::Glyph, boxr, if dir { c.folder } else { c.text_secondary });
                 }
+            }
+            // 重新命名中：檔名由輸入框顯示（兩行的檔名不會從框線下露出）
+            if renaming == Some(full.as_str()) {
+                continue;
             }
             let cap = gr.caption(cell);
             let capr = at(cap.x, cap.y, cap.w, cap.h);

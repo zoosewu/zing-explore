@@ -678,6 +678,33 @@ fn edit_hwnd() -> Option<HWND> {
     with_app(|a| a.edit.as_ref().map(|e| e.hwnd)).flatten()
 }
 
+/// 縮圖檢視的重新命名框：垂直置中在焦點格子的檔名第一行、水平置中在檔名區、不超出檔名區；回傳輸入框的寬度（DIP）
+fn thumb_rename_centered(c: &Ctx, a: &App) -> Result<f32, String> {
+    let e = a.edit.as_ref().filter(|e| matches!(e.kind, EditKind::Rename { .. })).ok_or("重新命名框沒有開啟")?;
+    let s = a.gfx.scale();
+    let mut r = RECT::default();
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(e.hwnd, &mut r);
+        let mut pt = [POINT { x: r.left, y: r.top }, POINT { x: r.right, y: r.bottom }];
+        windows::Win32::Graphics::Gdi::MapWindowPoints(None, Some(c.hwnd), &mut pt);
+        r = RECT { left: pt[0].x, top: pt[0].y, right: pt[1].x, bottom: pt[1].y };
+    }
+    let (el, et, er, eb) = (r.left as f32 / s, r.top as f32 / s, r.right as f32 / s, r.bottom as f32 / s);
+    let p = a.active_pane;
+    let pl = a.layout.panes.get(p).ok_or("沒有窗格")?;
+    let g = a.grid(p, pl.list).ok_or("不是縮圖檢視")?;
+    let t = a.tab();
+    let cap = g.caption(g.cell(t.focus));
+    let (cl, ct) = (pl.list.l + cap.x, pl.list.t + cap.y - t.scroll);
+    let (cr, cb) = (cl + cap.w, ct + g.line_h);
+    let off_y = (et + eb) / 2.0 - (ct + cb) / 2.0;
+    let off_x = (el + er) / 2.0 - (cl + cr) / 2.0;
+    if off_y.abs() > 3.0 || off_x.abs() > 3.0 || el < cl - 2.0 || er > cr + 2.0 {
+        return Err(format!("輸入框 ({el:.0},{et:.0})-({er:.0},{eb:.0})，檔名第一行 ({cl:.0},{ct:.0})-({cr:.0},{cb:.0})"));
+    }
+    Ok(er - el)
+}
+
 /// 在編輯框輸入文字後按 Enter
 fn edit_commit(text: &str) {
     if let Some(e) = edit_hwnd() {
@@ -2580,6 +2607,32 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
         expect("選單關閉", a.menu.is_none(), true)?;
         expect("縮圖", (a.tab().mode, a.tab().thumb), (zing_core::folderview::ViewMode::Thumbnails, 128))
     }));
+    // 縮圖檢視的重新命名：輸入框在檔名原本的位置（置中在格子的檔名第一行，寬度跟著文字）
+    let width_before = std::rc::Rc::new(std::cell::Cell::new(0.0f32));
+    let before = width_before.clone();
+    v.push(step("縮圖：重新命名的輸入框在檔名的位置（置中）", |_| exec("file.rename"), move |c, a| {
+        let w = thumb_rename_centered(c, a)?;
+        before.set(w);
+        screenshot(c, "07-縮圖重新命名")
+    }));
+    v.push(step(
+        "縮圖：輸入較長的名稱，輸入框變寬並維持置中",
+        |_| {
+            if let Some(e) = edit_hwnd() {
+                set_text(e, "b2 比較長的新名稱.txt");
+            }
+        },
+        move |c, a| {
+            let w = thumb_rename_centered(c, a)?;
+            if w > width_before.get() + 4.0 { Ok(()) } else { Err(format!("寬度 {w:.0}，輸入前 {:.0}", width_before.get())) }
+        },
+    ));
+    v.push(step("縮圖：Esc 取消重新命名", |c| {
+        if let Some(e) = edit_hwnd() {
+            key_to(e, "", VK_ESCAPE);
+        }
+        let _ = c;
+    }, |_, a| expect("輸入框", a.edit.is_none(), true)));
     v.push(step("命令列：「⋯」的子選單", |c| {
         // 回到預設的檢視
         with_app(|a| {

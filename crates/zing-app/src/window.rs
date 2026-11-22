@@ -339,27 +339,28 @@ fn create_edit(app: &mut App, rect: crate::gfx::Rect, text: &str, sel_end: usize
 /// 重新命名框的框線與輸入框之間的距離（DIP）：框線 1 + 內距 3，文字對齊清單中名稱的位置
 const RENAME_PAD: f32 = 4.0;
 
-/// 重新命名框的寬度：文字寬度加上游標的空間，介於 `min_w` 與右緣 `max_r` 之間
-fn rename_frame(app: &App, frame: crate::gfx::Rect, max_r: f32, text: &str) -> crate::gfx::Rect {
-    let w = app.gfx.measure(text, crate::gfx::Font::Text) + 2.0 * RENAME_PAD + 24.0;
-    let min_w = 80.0f32.min(max_r - frame.l);
-    crate::gfx::Rect::new(frame.l, frame.t, (frame.l + w.max(min_w)).min(max_r), frame.b)
+/// 重新命名框的框線（上下緣 `t`、`b`）：寬度是文字寬度加上游標的空間，介於最小寬度與 `fit` 的範圍之間；
+/// `fit.center` 時置中（縮圖檢視的檔名置中在格子裡），否則從左緣開始
+fn rename_frame(app: &App, t: f32, b: f32, fit: edit::Fit, text: &str) -> crate::gfx::Rect {
+    let avail = fit.r - fit.l;
+    let w = (app.gfx.measure(text, crate::gfx::Font::Text) + 2.0 * RENAME_PAD + 24.0).max(80.0f32.min(avail)).min(avail);
+    let l = if fit.center { (fit.l + fit.r - w) / 2.0 } else { fit.l };
+    crate::gfx::Rect::new(l, t, l + w, b)
 }
 
-/// 重新命名框的內容改變：調整寬度（只在框寬跟著文字時）
+/// 框線內的輸入框；右邊多留一點，文字不會被框線蓋住
+fn rename_inner(frame: crate::gfx::Rect) -> crate::gfx::Rect {
+    crate::gfx::Rect::new(frame.l + RENAME_PAD, frame.t + 1.0, frame.r - RENAME_PAD + 3.0, frame.b - 1.0)
+}
+
+/// 重新命名框的內容改變：框線與輸入框跟著文字調整寬度（置中時也調整位置）
 pub fn rename_text_changed(app: &mut App, text: &str) {
-    let Some((hwnd, frame, max_r)) = app.edit.as_ref().and_then(|e| Some((e.hwnd, e.frame?, e.fit?))) else { return };
-    let f = rename_frame(app, frame, max_r, text);
-    if f.r == frame.r {
+    let Some((hwnd, frame, fit)) = app.edit.as_ref().and_then(|e| Some((e.hwnd, e.frame?, e.fit?))) else { return };
+    let f = rename_frame(app, frame.t, frame.b, fit, text);
+    if f == frame {
         return;
     }
-    let s = app.gfx.scale();
-    unsafe {
-        let mut wr = RECT::default();
-        let _ = GetWindowRect(hwnd, &mut wr);
-        let w = ((f.r - f.l - 2.0 * RENAME_PAD + 3.0) * s).round() as i32;
-        let _ = SetWindowPos(hwnd, None, 0, 0, w, wr.bottom - wr.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    }
+    move_edit(app, hwnd, rename_inner(f));
     if let Some(e) = app.edit.as_mut() {
         e.frame = Some(f);
     }
@@ -436,20 +437,21 @@ pub fn begin_rename(app: &mut App, tab: TabId, full: String) {
     let t = app.panes[p].tab();
     let rh = app.row_h();
     let name = path::file_name(&full).to_string();
-    // 框線：縮圖時蓋在檔名第一行（寬度固定，檔名置中）；清單時從名稱的位置開始、寬度跟著文字
-    let (frame, fit) = match app.grid(p, pl.list) {
+    // 框線：縮圖時置中在檔名第一行（與檔名的位置相同），清單時從名稱的位置開始；寬度都跟著文字
+    let (fit, t0, t1) = match app.grid(p, pl.list) {
         Some(g) => {
             let c = g.caption(g.cell(t.focus));
             let (l, top) = (pl.list.l + c.x, pl.list.t + c.y - t.scroll);
-            (crate::gfx::Rect::new(l, top, l + c.w, top + rh), None)
+            let mid = top + g.line_h / 2.0;
+            (edit::Fit { l, r: l + c.w, center: true }, mid - rh / 2.0, mid + rh / 2.0)
         }
         None => {
             let y = pl.list.t + t.focus as f32 * rh - t.scroll;
             let (nl, nr) = pl.cols[0];
-            let f = crate::gfx::Rect::new(nl + 36.0 - RENAME_PAD, y + 1.0, nr - 4.0, y + rh - 1.0);
-            (rename_frame(app, f, f.r, &name), Some(f.r))
+            (edit::Fit { l: nl + 36.0 - RENAME_PAD, r: nr - 4.0, center: false }, y + 1.0, y + rh - 1.0)
         }
     };
+    let frame = rename_frame(app, t0, t1, fit, &name);
     let is_dir = t.focused_entry().is_some_and(|e| t.listing.entries[e].is_dir());
     // 預設只選取主檔名，不含副檔名
     let sel_end = match name.rfind('.') {
@@ -468,19 +470,17 @@ pub fn begin_tree_rename(app: &mut App, i: usize) {
     let rh = app.row_h();
     let y = tr.t + 4.0 + i as f32 * rh - app.tree.scroll;
     let x = tr.l + 6.0 + n.depth as f32 * 14.0;
-    let f = crate::gfx::Rect::new(x + 44.0 - RENAME_PAD, y + 1.0, tr.r - 4.0, y + rh - 1.0);
-    let frame = rename_frame(app, f, f.r, &name);
+    let fit = edit::Fit { l: x + 44.0 - RENAME_PAD, r: tr.r - 4.0, center: false };
+    let frame = rename_frame(app, y + 1.0, y + rh - 1.0, fit, &name);
     let len = name.encode_utf16().count();
-    open_rename_edit(app, frame, Some(f.r), &name, len, EditKind::TreeRename { path: full });
+    open_rename_edit(app, frame, fit, &name, len, EditKind::TreeRename { path: full });
 }
 
-fn open_rename_edit(app: &mut App, frame: crate::gfx::Rect, fit: Option<f32>, name: &str, sel_end: usize, kind: EditKind) {
-    // 輸入框在框線內；右邊多留一點，文字不會被框線蓋住
-    let inner = crate::gfx::Rect::new(frame.l + RENAME_PAD, frame.t + 1.0, frame.r - RENAME_PAD + 3.0, frame.b - 1.0);
-    create_edit(app, inner, name, sel_end, kind);
+fn open_rename_edit(app: &mut App, frame: crate::gfx::Rect, fit: edit::Fit, name: &str, sel_end: usize, kind: EditKind) {
+    create_edit(app, rename_inner(frame), name, sel_end, kind);
     if let Some(e) = app.edit.as_mut() {
         e.frame = Some(frame);
-        e.fit = fit;
+        e.fit = Some(fit);
     }
     app.invalidate();
 }

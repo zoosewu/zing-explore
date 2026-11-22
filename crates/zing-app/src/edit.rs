@@ -41,7 +41,15 @@ pub struct Edit {
     pub kind: EditKind,
     /// 重新命名：以 D2D 畫在輸入框外的框線（DIP）；`fit` 為 Some 時框的寬度跟著文字，最寬到這個右緣
     pub frame: Option<crate::gfx::Rect>,
-    pub fit: Option<f32>,
+    pub fit: Option<Fit>,
+}
+
+/// 重新命名框的寬度跟著文字：可用的左右緣；`center` 時置中在兩緣的中線（縮圖檢視的檔名置中），否則從左緣開始
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fit {
+    pub l: f32,
+    pub r: f32,
+    pub center: bool,
 }
 
 /// 子類別資料的旗標：方向鍵、PageUp/PageDown、Ctrl+數字交給命令面板
