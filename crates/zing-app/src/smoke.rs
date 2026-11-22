@@ -5541,6 +5541,24 @@ function smoke_auto() end
             expect("腳本的命令", sub.items.iter().any(|i| i.cmd.as_deref() == Some("smoke_auto")), true)
         },
     ));
+    v.push(step(
+        "Lua：「腳本」的項目是短名稱（---@label），游標停住時提示標題",
+        // 在動作中記下提示：模擬的滑鼠移動之後會收到 WM_MOUSELEAVE（真實游標不在視窗裡）而收起提示
+        |c| {
+            hover_at(c, menu_item_pos(1, "自動"));
+            let tip = with_app(|a| {
+                a.on_tip_timer();
+                a.tip.as_ref().filter(|t| t.shown).map(|t| t.text.title.clone())
+            });
+            c.notes.push(("menu_tip", tip.flatten().unwrap_or_default()));
+        },
+        |c, a| {
+            let sub = a.menu.as_ref().and_then(|m| m.levels.get(1)).ok_or("沒有子選單")?;
+            let it = sub.items.iter().find(|i| i.cmd.as_deref() == Some("smoke_auto")).ok_or("沒有 smoke_auto")?;
+            expect("名稱", it.label.as_str(), "自動")?;
+            expect("提示", c.note("menu_tip"), Some("自動載入"))
+        },
+    ));
     v.push(step("Lua：Esc 關閉選單", |c| {
         key(c, "", VK_ESCAPE);
         key(c, "", VK_ESCAPE);

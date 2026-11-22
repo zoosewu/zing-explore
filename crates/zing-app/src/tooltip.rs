@@ -57,7 +57,17 @@ impl App {
                 let bl = lay.cmdbar.as_ref()?;
                 let &(i, r, _) = bl.buttons.get(k)?;
                 let it = self.config.cmdbar.get(i)?;
-                Some((self.tip_text(&it.title(), &it.cmd, !it.is_menu()), r))
+                let mut t = self.tip_text(&it.title(), &it.cmd, !it.is_menu());
+                // 腳本命令：按鈕是短名稱（---@label），說明是標題
+                if t.detail.is_none() {
+                    t.detail = self.script_title(&it.cmd).filter(|d| *d != t.title).map(String::from);
+                }
+                Some((t, r))
+            }
+            Hit::MenuItem(li, i) => {
+                let level = self.menu.as_ref()?.levels.get(li)?;
+                let tip = level.items.get(i)?.tip.clone()?;
+                Some((TipText { title: tip, key: None, detail: None }, self.menu_item_rect(level, i)))
             }
             Hit::TabNew(p) => Some((self.tip_text(tr!("新增分頁"), "tab.new", false), lay.panes.get(p)?.tab_new)),
             Hit::TabClose(p, t) => Some((self.tip_text(tr!("關閉分頁"), "tab.close", false), *lay.panes.get(p)?.tab_close.get(t)?)),
@@ -83,7 +93,8 @@ impl App {
 
     /// 游標移到新的位置（hover 改變時呼叫）
     pub fn update_tip(&mut self, hit: &Hit) {
-        if self.menu.is_some() {
+        // 選單開著時只有選單項目有提示
+        if self.menu.is_some() && !matches!(hit, Hit::MenuItem(..)) {
             return self.hide_tip();
         }
         match self.tip_for(hit) {

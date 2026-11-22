@@ -945,6 +945,11 @@ fn write_if_changed(p: &Path, text: &str) {
 const ASK_W: f32 = 560.0;
 
 impl crate::app::App {
+    /// 腳本命令的標題（`---` 的第一行）；不是腳本命令時為 None
+    pub fn script_title(&self, cmd: &str) -> Option<&str> {
+        self.scripts.commands.iter().find(|(n, _)| n == cmd).map(|(_, t)| t.as_str())
+    }
+
     /// 呼叫腳本時的狀態快照
     pub fn script_ctx(&self) -> Ctx {
         let tab = self.tab();

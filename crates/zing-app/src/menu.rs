@@ -47,11 +47,13 @@ pub struct MenuItem {
     pub separator: bool,
     /// 可以加到命令列的命令（右鍵時用）
     pub cmd: Option<String>,
+    /// 游標停住時的提示（名稱放不下的說明，例如腳本命令的標題）
+    pub tip: Option<String>,
 }
 
 impl MenuItem {
     pub fn new(label: impl Into<String>, action: Action) -> Self {
-        MenuItem { label: label.into(), key: None, action, enabled: true, checked: false, icon: None, sub: Vec::new(), separator: false, cmd: None }
+        MenuItem { label: label.into(), key: None, action, enabled: true, checked: false, icon: None, sub: Vec::new(), separator: false, cmd: None, tip: None }
     }
 
     pub fn separator() -> Self {
@@ -139,12 +141,13 @@ impl App {
 
     pub fn close_menu(&mut self) {
         if self.menu.take().is_some() {
+            self.hide_tip();
             self.invalidate();
         }
     }
 
     /// 第 i 項的位置（捲動後；可能在選單範圍外）
-    fn menu_item_rect(&self, level: &Level, i: usize) -> Rect {
+    pub fn menu_item_rect(&self, level: &Level, i: usize) -> Rect {
         let mut y = level.rect.t + PAD - level.scroll;
         for it in &level.items[..i] {
             y += self.item_h(it);
@@ -269,6 +272,7 @@ impl App {
             let level = &mut m.levels[li];
             level.scroll = (level.scroll - step).clamp(0.0, max);
         }
+        self.hide_tip();
         self.invalidate();
         true
     }

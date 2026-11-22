@@ -228,11 +228,16 @@ impl App {
                 if !self.scripts.commands.is_empty() {
                     scripts.push(MenuItem::separator());
                 }
-                scripts.extend(self.scripts.commands.iter().map(|(name, title)| MenuItem {
-                    key: self.key_text(name),
-                    cmd: Some(name.clone()),
-                    icon: core::glyph("script"),
-                    ..MenuItem::new(title.clone(), Action::Exec(name.clone()))
+                // 名稱是短名稱（---@label），游標停住時提示標題
+                scripts.extend(self.scripts.commands.iter().map(|(name, title)| {
+                    let label = core::label_for(name).into_owned();
+                    MenuItem {
+                        key: self.key_text(name),
+                        cmd: Some(name.clone()),
+                        icon: core::glyph("script"),
+                        tip: (*title != label).then(|| title.clone()),
+                        ..MenuItem::new(label, Action::Exec(name.clone()))
+                    }
                 }));
                 let mut more = self.menu_entries(core::MORE_MENU);
                 let at = more.iter().position(|m| m.separator).unwrap_or(more.len());
