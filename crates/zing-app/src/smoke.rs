@@ -5642,6 +5642,19 @@ function smoke_auto() end
     v.push(step("Lua：ask() 顯示輸入框", |_| exec("smoke_ask"), |_, a| {
         if a.ask.is_some() && a.edit.is_some() { Ok(()) } else { Err(format!("{}；ask={} 狀態={:?}", edit_missing("沒有輸入框", a), a.ask.is_some(), status(a))) }
     }));
+    // 切到別的程式（焦點給了 NULL 或別的執行緒）：輸入框留著，回來可以繼續填（例如去複製密碼）
+    v.push(step(
+        "Lua：ask() 切到別的程式時輸入框不關閉",
+        |_| {
+            if let Some(e) = edit_hwnd() {
+                send(e, windows::Win32::UI::WindowsAndMessaging::WM_KILLFOCUS, 0, 0);
+            }
+        },
+        |_, a| {
+            expect("ask", a.ask.is_some(), true)?;
+            expect("輸入框", a.edit.is_some(), true)
+        },
+    ));
     v.push(
         step(
             "Lua：ask() 回答後腳本繼續",

@@ -649,10 +649,16 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             WM_CHAR if wparam.0 == 0x0D || wparam.0 == 0x1B || wparam.0 == 0x01 => return LRESULT(0),
             // 命令面板：Ctrl+字母綁定的快速鍵（例如 Ctrl+J 往下）產生的控制字元不輸入、不發出提示音
             WM_CHAR if data & edit::LIST_KEYS != 0 && wparam.0 < 0x20 && wparam.0 != 0x08 => return LRESULT(0),
-            // 失去焦點：重新命名、網址列、面板的欄位視為確認；命令面板、ask() 視為取消
+            // 失去焦點：重新命名、網址列、面板的欄位視為確認；命令面板、ask() 視為取消（ask() 切到別的程式時留著）
             WM_KILLFOCUS => {
                 #[cfg(feature = "smoke")]
                 record_edit_blur(parent, HWND(wparam.0 as _));
+                // 切到別的程式時焦點給的是 NULL 或別的執行緒的視窗
+                let to = HWND(wparam.0 as _);
+                let own = !to.0.is_null() && GetWindowThreadProcessId(to, None) == windows::Win32::System::Threading::GetCurrentThreadId();
+                if data & edit::KEEP_ON_LEAVE != 0 && !own {
+                    return DefSubclassProc(hwnd, msg, wparam, lparam);
+                }
                 done(data & edit::BLUR_CANCELS == 0)
             }
             _ => {}

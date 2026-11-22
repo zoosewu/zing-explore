@@ -48,13 +48,16 @@ pub struct Edit {
 pub const LIST_KEYS: usize = 1;
 /// 子類別資料的旗標：失去焦點視為取消（沒有這個旗標時視為確定）
 pub const BLUR_CANCELS: usize = 2;
+/// 子類別資料的旗標：焦點給了別的程式（或其他視窗的執行緒）時不結束，回到 zing 時 WM_ACTIVATE 把焦點放回輸入框
+/// （ask() 詢問密碼時要能切到別的程式複製）；點 zing 自己的其他地方照樣依 `BLUR_CANCELS` 結束
+pub const KEEP_ON_LEAVE: usize = 4;
 
 impl EditKind {
     /// 建立輸入框時存進子類別資料，`edit_proc` 依此處理按鍵（在輸入框自己的訊息處理中不借用 App）
     pub fn subclass_data(&self) -> usize {
         match self {
             EditKind::Palette => LIST_KEYS | BLUR_CANCELS,
-            EditKind::Ask => BLUR_CANCELS,
+            EditKind::Ask => BLUR_CANCELS | KEEP_ON_LEAVE,
             EditKind::Rename { .. }
             | EditKind::TreeRename { .. }
             | EditKind::Address
