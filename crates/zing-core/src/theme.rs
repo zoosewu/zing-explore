@@ -130,7 +130,7 @@ pub struct Colors {
     pub border: Color,
     pub hover: Color,
     pub selection: Color,
-    /// 焦點所在的選取列上的文字（選取色為實心強調色時用深色字）
+    /// 焦點所在的選取列上的文字（自訂主題把選取色改成實心色時用來確保看得見）
     pub selection_text: Color,
     pub selection_inactive: Color,
     pub accent: Color,
@@ -179,7 +179,7 @@ pub struct Chrome {
     pub address: AddressStyle,
     /// 作用中的分頁上緣畫一條強調色線（不論有幾個窗格）
     pub tab_accent: bool,
-    /// 選取底色從圖示右側開始：選取色與資料夾圖示同色系時（緊湊風格的實心黃），圖示才看得見
+    /// 選取底色從圖示右側開始：自訂主題的選取色是與資料夾圖示同色系的實心色時，圖示才看得見
     pub selection_after_icon: bool,
 }
 
@@ -195,6 +195,13 @@ pub struct Theme {
     pub metrics: Metrics,
     pub effects: Effects,
     pub chrome: Chrome,
+}
+
+impl Colors {
+    /// 選取項目上的焦點框：半透明的選取色上用強調色，實心的（自訂主題）用選取文字色才看得見
+    pub fn ring_on_selection(&self) -> Color {
+        if self.selection.a == 255 { self.selection_text } else { self.accent }
+    }
 }
 
 impl Default for Colors {
@@ -233,20 +240,25 @@ impl Default for Theme {
     }
 }
 
-/// 內建主題的配色：(背景, 次要區域, 文字, 次要文字, 框線, 滑過, 選取, 選取文字, 非作用中選取, 強調, 資料夾)
-type Palette = [u32; 11];
+/// 內建主題的配色：(背景, 次要區域, 文字, 次要文字, 框線, 滑過, 強調, 資料夾)；
+/// 選取色不在這裡，由 `builtin_style` 依同一條規則算出
+type Palette = [u32; 8];
 
-const COMPACT_DARK: Palette =
-    [0x1b1b1b, 0x141414, 0xe8e8e8, 0xa0a0a0, 0x333333, 0x262626, 0xf2c230, 0x141414, 0x3d3520, 0xf2c230, 0xf2c230];
-const COMPACT_LIGHT: Palette =
-    [0xffffff, 0xf0f0f0, 0x1b1b1b, 0x5c5c5c, 0xd4d4d4, 0xebebeb, 0xf2c230, 0x1b1b1b, 0xf3e5b5, 0x8a6500, 0xd9a12b];
-const FLUENT_DARK: Palette =
-    [0x272727, 0x1f1f1f, 0xf3f3f3, 0xa8a8a8, 0x3a3a3a, 0x333333, 0x4a3f1c, 0xf3f3f3, 0x383838, 0xf2c230, 0xf2c230];
-const BALANCED_DARK: Palette =
-    [0x222222, 0x1c1c1c, 0xf0f0f0, 0xafafaf, 0x353535, 0x2e2e2e, 0x4a3f1c, 0xf0f0f0, 0x363636, 0xf2c230, 0xf2c230];
+const COMPACT_DARK: Palette = [0x1b1b1b, 0x141414, 0xe8e8e8, 0xa0a0a0, 0x333333, 0x262626, 0xf2c230, 0xf2c230];
+const COMPACT_LIGHT: Palette = [0xffffff, 0xf0f0f0, 0x1b1b1b, 0x5c5c5c, 0xd4d4d4, 0xebebeb, 0x8a6500, 0xd9a12b];
+const FLUENT_DARK: Palette = [0x272727, 0x1f1f1f, 0xf3f3f3, 0xa8a8a8, 0x3a3a3a, 0x333333, 0xf2c230, 0xf2c230];
+const BALANCED_DARK: Palette = [0x222222, 0x1c1c1c, 0xf0f0f0, 0xafafaf, 0x353535, 0x2e2e2e, 0xf2c230, 0xf2c230];
 /// Fluent 與折衷的淺色共用
-const SOFT_LIGHT: Palette =
-    [0xffffff, 0xf3f3f3, 0x1b1b1b, 0x616161, 0xe0e0e0, 0xf0f0f0, 0xfbeec4, 0x1b1b1b, 0xececec, 0x8a6500, 0xd9a12b];
+const SOFT_LIGHT: Palette = [0xffffff, 0xf3f3f3, 0x1b1b1b, 0x616161, 0xe0e0e0, 0xf0f0f0, 0x8a6500, 0xd9a12b];
+
+/// 選取的底色一律是半透明的淡色，不用實心色塊：疊在背景、滑過色上都自然，圖示與文字維持原本的顏色。
+/// 使用中的窗格是圖示黃（`#f2c230`，淺色主題的強調色是給文字用的深金色，太暗）的淡色，
+/// 非作用中是文字色的淡色（中性灰，與滑過色區分得出來）
+const SELECTION_TINT: u32 = 0xf2c230;
+fn selection_colors(mode: Mode, text: Color) -> (Color, Color) {
+    let (sel, inactive) = if mode == Mode::Dark { (0x33, 0x1f) } else { (0x40, 0x1a) };
+    (Color::rgb(SELECTION_TINT).with_alpha(sel), text.with_alpha(inactive))
+}
 
 impl Theme {
     /// 預設主題：緊湊、深色
@@ -267,8 +279,9 @@ impl Theme {
             (Style::Balanced, Mode::Dark) => BALANCED_DARK,
             (_, Mode::Light) => SOFT_LIGHT,
         };
-        let [background, surface, text, text_secondary, border, hover, selection, selection_text, selection_inactive, accent, folder] =
-            palette.map(Color::rgb);
+        let [background, surface, text, text_secondary, border, hover, accent, folder] = palette.map(Color::rgb);
+        let (selection, selection_inactive) = selection_colors(mode, text);
+        let selection_text = text;
         let error = Color::rgb(if mode == Mode::Dark { 0xff6b6b } else { 0xc42b1c });
         // (字級, 列高, 圓角, 工具列, 分頁列, 狀態列, 樹狀列寬, 間距)
         let (size, row_height, radius, toolbar_height, tab_height, status_height, tree_width, padding) = match style {
@@ -303,7 +316,7 @@ impl Theme {
             chrome: Chrome {
                 address: if style == Style::Compact { AddressStyle::Path } else { AddressStyle::Breadcrumb },
                 tab_accent: style == Style::Compact,
-                selection_after_icon: style == Style::Compact,
+                selection_after_icon: false,
             },
         }
     }

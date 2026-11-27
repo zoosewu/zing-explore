@@ -780,7 +780,7 @@ impl App {
                 g.fill_round(row, self.theme.metrics.radius, c.hover);
             }
             if self.focus == Focus::Tree && self.tree.focus == i {
-                let ring = if is_current { c.selection_text } else { c.accent };
+                let ring = if is_current { c.ring_on_selection() } else { c.accent };
                 g.stroke_round(row, self.theme.metrics.radius, ring, 1.0);
             }
             let header = matches!(n.kind, NodeKind::FavRoot | NodeKind::Pc);
@@ -910,7 +910,7 @@ impl App {
             let y = list.t + i as f32 * rh - tab.scroll;
             let row = Rect::new(pl.cols[0].0, y, pl.cols[3].1, y + rh);
             let selected = tab.is_selected(e);
-            // 焦點所在的選取列：文字一律用選取文字色（緊湊風格的實心強調色上用深色字）
+            // 焦點所在的選取列：文字一律用選取文字色（自訂主題的實心選取色上才看得見）
             let on_selection = selected && list_focused && drop_row != Some(i);
             if drop_row == Some(i) {
                 g.fill_round(row, radius, c.accent.with_alpha(70));
@@ -922,13 +922,13 @@ impl App {
                 g.fill_round(row, radius, c.hover);
             }
             if list_focused && i == tab.focus {
-                // 實心選取色上的焦點框用選取文字色才看得見；選取底色不含圖示時框也只框住文字部分
+                // 選取底色不含圖示時框也只框住文字部分
                 let ring_r = if on_selection && self.theme.chrome.selection_after_icon {
                     Rect::new(pl.cols[0].0 + 34.0, row.t, row.r, row.b)
                 } else {
                     row
                 };
-                g.stroke_round(ring_r, radius, if on_selection { c.selection_text } else { c.accent }, 1.0);
+                g.stroke_round(ring_r, radius, if on_selection { c.ring_on_selection() } else { c.accent }, 1.0);
             }
             let name = tab.listing.name(e);
             let dir = entry.is_dir();
@@ -1032,7 +1032,7 @@ impl App {
                 g.fill_round(r, radius, c.hover);
             }
             if list_focused && i == tab.focus {
-                g.stroke_round(r, radius, if on_selection { c.selection_text } else { c.accent }, 1.0);
+                g.stroke_round(r, radius, if on_selection { c.ring_on_selection() } else { c.accent }, 1.0);
             }
             let tb = gr.thumb_box(cell);
             let boxr = at(tb.x, tb.y, tb.w, tb.h);
