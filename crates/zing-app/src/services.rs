@@ -694,6 +694,30 @@ pub fn launch(n: &Notifier, file: String, params: Option<String>, dir: Option<St
     });
 }
 
+/// 「開啟方式…」：Windows 的選擇應用程式對話方塊，選了就以它開啟（可勾選一律使用）。
+/// 不用 ShellExecuteEx 的 openas 動詞：Windows 10 以後它常回報錯誤，文件建議改用 SHOpenWithDialog。
+/// 對話方塊是模態的，在獨立的 STA 執行緒等待使用者選擇
+pub fn open_with(n: &Notifier, file: String) {
+    use windows::Win32::UI::Shell::{OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT, OPENASINFO, SHOpenWithDialog};
+    let n = n.clone();
+    std::thread::spawn(move || unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        let hwnd = HWND(n.hwnd() as _);
+        let file_w = wide_z(&file);
+        let info = OPENASINFO {
+            pcszFile: PCWSTR(file_w.as_ptr()),
+            pcszClass: PCWSTR::null(),
+            oaifInFlags: OAIF_ALLOW_REGISTRATION | OAIF_REGISTER_EXT | OAIF_EXEC,
+        };
+        match SHOpenWithDialog(Some(hwnd), &info) {
+            // 使用者取消不算錯誤
+            Err(e) if e.code().0 as u32 != 0x800704C7 => n.status(tr!("無法開啟 {file}：{e}", file, e = e.message()), true),
+            _ => {}
+        }
+        CoUninitialize();
+    });
+}
+
 /// 主控台程式的視窗
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Show {

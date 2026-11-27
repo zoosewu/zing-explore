@@ -27,7 +27,7 @@ pub struct MenuExts {
     pub hidden: Vec<String>,
 }
 
-/// 第一層選單的「開啟方式…」（Windows 的 openas 動詞）
+/// 第一層選單的「開啟方式…」（Windows 的選擇應用程式對話方塊，`services::open_with`）
 pub const MENU_OPEN_WITH: u32 = crate::shell::EXTRA_ID_BASE + 100;
 /// 樹狀列第一層選單的項目，對象是節點的路徑
 pub const MENU_TREE_OPEN: u32 = crate::shell::EXTRA_ID_BASE + 101;
@@ -245,7 +245,7 @@ impl App {
     /// 第一層選單中程式自己的項目
     pub fn on_compact_extra(&mut self, id: u32, target: String) {
         match id {
-            MENU_OPEN_WITH => crate::services::launch(&self.notifier, target, None, None, Some("openas"), crate::services::Show::Normal),
+            MENU_OPEN_WITH => crate::services::open_with(&self.notifier, target),
             MENU_TREE_OPEN => self.navigate(self.active_pane, target, true),
             MENU_TREE_CUT | MENU_TREE_COPY => {
                 self.shell_host.submit(ShellJob::SetClipboard { paths: vec![target], cut: id == MENU_TREE_CUT });
