@@ -741,13 +741,24 @@ fn shell_image_from(p: &str, px: u32, cache_only: bool) -> Option<IconPixels> {
         let r = crate::icons::read_bitmap(hbm);
         let _ = DeleteObject(HGDIOBJ(hbm.0));
         let (w, h, mut bgra) = r?;
-        // 相片類的縮圖不帶 alpha（全為 0）：當成不透明；圖示類的已是預乘 alpha
-        if bgra.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
-            for p in bgra.as_chunks_mut::<4>().0 {
-                p[3] = 255;
+        fix_alpha(&mut bgra);
+        Some(IconPixels { w, h, bgra })
+    }
+}
+
+/// Shell 的縮圖轉成 D2D 要的預乘 alpha：相片類的不帶 alpha（全為 0），當成不透明；
+/// 圖示類的多半已預乘，但有些資料夾的是未預乘的（透明處是白色，畫出來是白底），偵測到就預乘
+fn fix_alpha(bgra: &mut [u8]) {
+    let px = bgra.as_chunks_mut::<4>().0;
+    if px.iter().all(|p| p[3] == 0) {
+        px.iter_mut().for_each(|p| p[3] = 255);
+    } else if px.iter().any(|p| p[0].max(p[1]).max(p[2]) > p[3]) {
+        for p in px {
+            let a = p[3] as u32;
+            for c in &mut p[..3] {
+                *c = ((*c as u32 * a + 127) / 255) as u8;
             }
         }
-        Some(IconPixels { w, h, bgra })
     }
 }
 
@@ -876,6 +887,22 @@ pub fn custom_dir(isolated: bool) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn premultiplies_straight_alpha() {
+        // 透明的白色、半透明的白色、不透明的紅色
+        let mut v = vec![255, 255, 255, 0, 255, 255, 255, 128, 0, 0, 255, 255];
+        fix_alpha(&mut v);
+        assert_eq!(v, [0, 0, 0, 0, 128, 128, 128, 128, 0, 0, 255, 255]);
+        // 已預乘的不動
+        let mut v = vec![0, 0, 0, 0, 100, 100, 100, 128];
+        fix_alpha(&mut v);
+        assert_eq!(v, [0, 0, 0, 0, 100, 100, 100, 128]);
+        // 全無 alpha 的相片當成不透明
+        let mut v = vec![10, 20, 30, 0];
+        fix_alpha(&mut v);
+        assert_eq!(v, [10, 20, 30, 255]);
+    }
 
     #[test]
     fn buckets() {
