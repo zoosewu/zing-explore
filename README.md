@@ -232,4 +232,6 @@ Lua API 文件（`docs/lua*.md`）由 `scriptapi.rs`、`builtin.rs`（內建命�
 
 ## 授權
 
-程式碼以 [GNU AGPL-3.0](LICENSE) 授權。
+本專案以 [AGPL-3.0](LICENSE) 授權。如需以 AGPL-3.0 以外的條款使用（例如閉源的商業產品），可另外取得商業授權，請透過 [GitHub Issues](https://github.com/zoosewu/zing-explore/issues) 聯絡。
+
+要貢獻程式碼請先閱讀 [CONTRIBUTING.md](CONTRIBUTING.md) 的貢獻授權。

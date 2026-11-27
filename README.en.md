@@ -203,4 +203,6 @@ The Lua API documents (`docs/lua*.md`) are generated from `scriptapi.rs` and `bu
 
 ## License
 
-The code is licensed under the [GNU AGPL-3.0](LICENSE).
+Licensed under [AGPL-3.0](LICENSE). A commercial license is available for use outside the terms of the AGPL-3.0 (for example in closed-source products); please get in touch through [GitHub Issues](https://github.com/zoosewu/zing-explore/issues).
+
+Before contributing, please read the contribution license in [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -1,0 +1,7 @@
+name: contributor-license
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+jobs:
+  agreement:
+    uses: zoosewu/zoo-release/.github/workflows/contributor-license.yml@v1

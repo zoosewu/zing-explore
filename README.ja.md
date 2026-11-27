@@ -203,4 +203,6 @@ Lua API の文書（`docs/lua*.md`）は `scriptapi.rs`、`builtin.rs`（組み�
 
 ## ライセンス
 
-コードは [GNU AGPL-3.0](LICENSE) でライセンスされています。
+本プロジェクトは [AGPL-3.0](LICENSE) でライセンスされています。AGPL-3.0 以外の条件で利用したい場合（クローズドソースの商用製品など）は商用ライセンスを別途提供できますので、[GitHub Issues](https://github.com/zoosewu/zing-explore/issues) からご連絡ください。
+
+コントリビュートの前に [CONTRIBUTING.md](CONTRIBUTING.md) のコントリビューションライセンスをお読みください。

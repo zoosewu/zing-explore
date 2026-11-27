@@ -39,11 +39,13 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - commit 訊息用慣例式提交（Conventional Commits）：第一行 `類型(範圍): 說明`（說明用繁體中文），類型為 feat、fix、perf、
   refactor、docs、test、build、ci、chore、style、revert，不相容的變更在冒號前加 `!`；內文照舊（效能結果表等）。
   Release 的說明由這些 commit 產生（`cliff.toml`，只列符合格式的）。`git config core.hooksPath tools/hooks` 啟用格式檢查。
-- 發佈：在 master 上 push `v<主.次.修補>` 標籤即可（不必先改 `Cargo.toml`）。`.github/workflows/release.yml` 以標籤的版本號
-  （`tools/set-version.ps1`）跑 clippy、單元測試、release 的冒煙測試、效能檢查，全部通過才建立 GitHub Release
-  （`zing-explore-windows-x64.zip`、`.sha256`、`perf.json`；檔名不含版本，`releases/latest/download/` 永遠是最新版；
-  說明由 git-cliff 依上一個標籤以來的 commit 產生），最後把版本號以 `chore(release): v<版本>` commit 回 master
-  （之後本機要先 `git pull`）。CI 的效能基準是在同一次執行、同一台機器上和上一個 Release 的 zing.exe 交替量（`perf.ps1 -CompareExe`；
+- 發佈：在 master 上 push `v<主.次.修補>` 標籤即可（不必先改 `Cargo.toml`；`-預先發行` 的標籤只建 prerelease，已安裝的 zing 收不到）。
+  `.github/workflows/release.yml` 的 build job 以標籤的版本號（`tools/set-version.ps1`）跑 clippy、單元測試、release 的冒煙測試、
+  效能檢查，全部通過才把 `zing-explore-windows-x64.zip`、`perf.json` 上傳成 `release-windows`；release job 交給 zoo-release 的
+  共用流程（`release.yml@v1`：簽章 `.sig`、`.sha256`、`latest.json`，說明由 git-cliff 依 `cliff.toml` 產生、後面接
+  `.github/release-notes.md`；檔名不含版本，`releases/latest/download/` 永遠是最新版），最後 version job 把版本號以
+  `chore(release): v<版本>` commit 回 master（之後本機要先 `git pull`）。簽章的 secrets（`ZOO_SIGNING_KEY`、
+  `ZOO_SIGNING_PASSWORD`）由使用者設定。CI 的效能基準是在同一次執行、同一台機器上和上一個 Release 的 zing.exe 交替量（`perf.ps1 -CompareExe`；
   每次分到的機器快慢差很多，拿別台量的結果比較會誤判；同一台也會在量測途中變慢，先後各量一輪也會誤判），量不到時才用 Release 附的 `perf.json`；不用 `perf/baseline.json`。
   相對容差 15%；刻意接受的退步以手動執行（選標籤、勾選 allow_regression）發佈。
   工具鏈固定在 `rust-toolchain.toml`。測試、冒煙測試、效能失敗時 `tools/ci-annotate.ps1` 把原因輸出成錯誤摘要
@@ -363,6 +365,16 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
 - 選取（清單、樹狀列、命令面板、終端機）的底色一律是半透明的淡色，不用實心色塊：使用中是圖示黃的淡色、非作用中是文字色的淡色
   （`theme::selection_colors`，所有內建主題同一條規則）；實心的只留給開關、主要按鈕這類控制項。
 - 自用為主，但會開源。
+
+## 發布、更新與授權（zoo-release: v1）
+
+發布流程、更新機制、相關 UI 與授權依 https://github.com/zoosewu/zoo-release 的規範：
+- commit 使用慣例式提交；推 tag `vX.Y.Z` 發布（docs/RELEASE.md）
+- 更新檢查、提示與安裝（docs/UPDATE.md），新版本橫幅與「關於」頁（docs/UI.md）
+- 授權依 docs/LICENSING.md：產品 AGPL-3.0-only＋商業授權、函式庫與工具 MIT；加入 GPL／AGPL 的相依套件前先問使用者
+- 外部 PR 必須勾選同意 CONTRIBUTING.md 的貢獻授權才能合併；不要合併沒有同意的 PR
+- 修改發布、更新或「關於」頁前先讀對應的規範，不要自行偏離；規範不適用時回報使用者
+- 使用者說「更新 zoo-release 規範」時：讀 docs/ADOPTION.md 的「變更紀錄」，只做從目前版本到最新版本列出的「專案要做的事」，最後把上面標題的版本號改成最新版
 
 ## 作品集（apex-code）
 
