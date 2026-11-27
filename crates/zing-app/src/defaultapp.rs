@@ -1,6 +1,8 @@
 //! 設為預設的檔案總管：只寫目前使用者的登錄（HKCU\Software\Classes，不需要系統管理員權限），關閉即刪除、還原。
 //!
 //! - `Directory`、`Drive` 的預設動作改成 `zing-explore`（`"zing.exe" "%1"`）：桌面、開始功能表、其他程式開啟資料夾時。
+//! - 同時接手 `open`、`explore` 動作（`HANDOFF`）：其他程式常明確指定動作呼叫 ShellExecute（Steam 的「瀏覽本機檔案」是
+//!   `open`），沒有這兩個就落到 `Folder\shell\open`，開的是檔案總管。只對 `Directory`、`Drive`，虛擬資料夾（`Folder`）照舊。
 //! - Win+E：`CLSID\{52205fd8-…}\shell\opennewwindow` 的命令（`DelegateExecute` 設為空字串才會用命令）。
 //! - 「在資料夾中顯示」（`SHOpenFolderAndSelectItems`）要找到登記在 ShellWindows 的視窗才會選取檔案：見 shellwin.rs。
 //! - zing 是可攜式：啟動時（背景）發現登錄記的 zing.exe 已經不在了，就改成目前的位置（`repair`）。
@@ -25,6 +27,12 @@ const VERB: &str = "zing-explore";
 /// 檔案總管的「此電腦／常用」視窗（Win+E 開的就是它）
 const WIN_E: &str = "CLSID\\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}";
 const TYPES: [&str; 2] = ["Directory", "Drive"];
+/// 其他程式明確指定的動作，也改成 zing 開啟（`explore` 與系統的一樣不顯示在右鍵選單）
+const HANDOFF: [&str; 2] = ["open", "explore"];
+
+fn folder_command(exe: &str) -> String {
+    format!("\"{exe}\" \"%1\"")
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -59,8 +67,12 @@ pub fn enable(root: &str, exe: &str) -> Result<(), String> {
     for t in TYPES {
         let shell = format!("{root}\\{t}\\shell");
         set(&format!("{shell}\\{VERB}"), "", label)?;
-        set(&format!("{shell}\\{VERB}\\command"), "", &format!("\"{exe}\" \"%1\""))?;
+        set(&format!("{shell}\\{VERB}\\command"), "", &folder_command(exe))?;
         set(&shell, "", VERB)?;
+        for v in HANDOFF {
+            set(&format!("{shell}\\{v}\\command"), "", &folder_command(exe))?;
+        }
+        set(&format!("{shell}\\explore"), "ProgrammaticAccessOnly", "")?;
     }
     let cmd = format!("{root}\\{WIN_E}\\shell\\opennewwindow\\command");
     set(&cmd, "", &format!("\"{exe}\" {}", zing_core::startup::THIS_PC))?;
@@ -74,31 +86,48 @@ pub fn disable(root: &str) -> Result<(), String> {
     zing_core::guard::io("還原預設的檔案總管");
     // Win+E 的命令指向資料夾動作的同一個程式（或名稱是 zing.exe）才是自己寫的
     let ours_exe = get(&format!("{root}\\Directory\\shell\\{VERB}\\command"), "").and_then(|c| command_exe(&c));
+    let ours = |command: &str| {
+        get(command, "")
+            .and_then(|c| command_exe(&c))
+            .is_some_and(|p| ours_exe.as_ref().is_some_and(|o| o.eq_ignore_ascii_case(&p)) || p.to_ascii_lowercase().ends_with("\\zing.exe"))
+    };
     for t in TYPES {
         let shell = format!("{root}\\{t}\\shell");
         if get(&shell, "").is_some_and(|v| v.eq_ignore_ascii_case(VERB)) {
             check(unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, PCWSTR(wide_z(&shell).as_ptr()), PCWSTR::null()) })?;
         }
+        for v in HANDOFF {
+            if ours(&format!("{shell}\\{v}\\command")) {
+                delete_tree(&format!("{shell}\\{v}"))?;
+            }
+        }
         delete_tree(&format!("{shell}\\{VERB}"))?;
     }
     let win_e = format!("{root}\\{WIN_E}");
-    let ours = get(&format!("{win_e}\\shell\\opennewwindow\\command"), "")
-        .and_then(|c| command_exe(&c))
-        .is_some_and(|p| ours_exe.is_some_and(|o| o.eq_ignore_ascii_case(&p)) || p.to_ascii_lowercase().ends_with("\\zing.exe"));
-    if ours {
+    if ours(&format!("{win_e}\\shell\\opennewwindow\\command")) {
         delete_tree(&win_e)?;
     }
     notify(root);
     Ok(())
 }
 
-/// 啟動時：登錄指向的 zing.exe 已經不在（資料夾搬家、改名）就改成這個；回傳最後的狀態
+/// 啟動時：登錄指向的 zing.exe 已經不在（資料夾搬家、改名）就改成這個；舊版設定的（少了 `HANDOFF` 的動作）補上。
+/// 回傳最後的狀態
 pub fn repair(root: &str, exe: &str) -> Status {
     match status(root, exe) {
         Status::Other(p) if !std::path::Path::new(&p).exists() => match enable(root, exe) {
             Ok(()) => Status::On,
             Err(_) => Status::Other(p),
         },
+        Status::On => {
+            let current = TYPES.iter().all(|t| {
+                HANDOFF.iter().all(|v| get(&format!("{root}\\{t}\\shell\\{v}\\command"), "").is_some_and(|c| c.eq_ignore_ascii_case(&folder_command(exe))))
+            });
+            if !current {
+                let _ = enable(root, exe);
+            }
+            Status::On
+        }
         s => s,
     }
 }
@@ -254,6 +283,16 @@ mod tests {
         let win_e = format!("{r}\\{WIN_E}\\shell\\opennewwindow\\command");
         assert_eq!(get(&win_e, "").as_deref(), Some(r#""C:\Tools\zing\zing.exe" shell:MyComputerFolder"#));
         assert_eq!(get(&win_e, "DelegateExecute").as_deref(), Some(""));
+        for t in TYPES {
+            for v in HANDOFF {
+                assert_eq!(get(&format!("{r}\\{t}\\shell\\{v}\\command"), "").as_deref(), Some(r#""C:\Tools\zing\zing.exe" "%1""#), "{t} {v}");
+            }
+        }
+        assert_eq!(get(&format!("{r}\\Directory\\shell\\explore"), "ProgrammaticAccessOnly").as_deref(), Some(""));
+        // 舊版設定的：啟動時補上明確指定的動作
+        delete_tree(&format!("{r}\\Directory\\shell\\open")).unwrap();
+        assert_eq!(repair(r, exe), Status::On);
+        assert_eq!(get(&format!("{r}\\Directory\\shell\\open\\command"), "").as_deref(), Some(r#""C:\Tools\zing\zing.exe" "%1""#));
         // 另一個位置的 zing.exe：還在就不動，不在了就改成自己
         let other = r"E:\gone\zing.exe";
         assert_eq!(status(r, other), Status::Other(exe.into()));
@@ -267,6 +306,9 @@ mod tests {
         assert_eq!(status(r, &here), Status::Off);
         for t in TYPES {
             assert_eq!(get(&format!("{r}\\{t}\\shell"), ""), None, "{t}");
+            for v in HANDOFF {
+                assert_eq!(get(&format!("{r}\\{t}\\shell\\{v}\\command"), ""), None, "{t} {v}");
+            }
         }
         assert_eq!(get(&win_e, ""), None);
         disable(r).unwrap();
@@ -281,9 +323,13 @@ mod tests {
         set(&format!("{r}\\Directory\\shell"), "", "openinfiles").unwrap();
         let win_e = format!("{r}\\{WIN_E}\\shell\\opennewwindow\\command");
         set(&win_e, "", r#""C:\Files\Files.exe""#).unwrap();
+        let open = format!("{r}\\Directory\\shell\\open\\command");
+        set(&open, "", r#""C:\Files\Files.exe" "%1""#).unwrap();
         assert_eq!(status(r, r"C:\zing\zing.exe"), Status::Off);
         disable(r).unwrap();
         assert_eq!(get(&format!("{r}\\Directory\\shell"), "").as_deref(), Some("openinfiles"));
+        assert_eq!(get(&open, "").as_deref(), Some(r#""C:\Files\Files.exe" "%1""#));
+        assert_eq!(get(&format!("{r}\\Drive\\shell\\open\\command"), ""), None);
         assert_eq!(get(&format!("{r}\\Drive\\shell"), ""), None);
         assert_eq!(get(&win_e, "").as_deref(), Some(r#""C:\Files\Files.exe""#));
     }

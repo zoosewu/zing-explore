@@ -229,8 +229,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   隔離模式不連網、不寫檔，冒煙測試以 `update::TEST_LATEST` 提供最新版；連網的測試：
   `cargo test -p zing-app latest_release -- --ignored --nocapture`；下載最新版安裝到暫存資料夾（整條安裝流程）：
   `cargo test -p zing-app install_latest_release -- --ignored --nocapture`。Release 壓縮檔的內容（檔名、平放在最上層）改變時同步修改這裡。
-- 設為預設的檔案總管（`defaultapp.rs`）：只寫 `HKCU\Software\Classes`（`Directory`、`Drive` 的預設動作 `zing-explore`、
-  Win+E 的 `CLSID\{52205fd8-…}\shell\opennewwindow`），關閉時只刪自己寫的；在背景執行緒讀寫，啟動時（第一幀之後）
+- 設為預設的檔案總管（`defaultapp.rs`）：只寫 `HKCU\Software\Classes`（`Directory`、`Drive` 的預設動作 `zing-explore`
+  與其他程式明確指定的 `open`、`explore`（`HANDOFF`，舊版設定的在啟動時補上）、Win+E 的 `CLSID\{52205fd8-…}\shell\opennewwindow`），關閉時只刪自己寫的；在背景執行緒讀寫，啟動時（第一幀之後）
   發現登錄指向的 zing.exe 已不存在就改成目前的位置。隔離模式只在記憶體中切換；單元測試寫在自己的測試機碼下並刪除。
   命令列的資料夾（`zing_core::startup::parse_args`）：`shell:MyComputerFolder` 是「此電腦」，其他 `shell:`、`::{CLSID}`
   直接交給 `explorer.exe`（不能用 ShellExecute 開資料夾，會再轉回 zing）。已有同一個執行檔的 zing 開著時（`instance.rs`：

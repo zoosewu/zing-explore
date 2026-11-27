@@ -2,6 +2,19 @@
 
 技術取捨的原因，供日後查詢。新的在上面。
 
+## 2026-11-28　預設的檔案總管也接手 `open`、`explore` 動作
+
+**決定**：設為預設的檔案總管時，`Directory`、`Drive` 除了預設動作 `zing-explore`，也寫入 `open`、`explore` 的命令
+（`defaultapp::HANDOFF`；`explore` 與系統的一樣標 `ProgrammaticAccessOnly`，不出現在右鍵選單）。
+舊版設定的在啟動時（`repair`）補上。
+
+**原因**：很多程式開資料夾時明確指定動作呼叫 ShellExecute，例如 Steam 的「瀏覽本機檔案」用 `open`。
+`Directory`、`Drive` 沒有這個動作時，Windows 改找 `Folder\shell\open`，開的是檔案總管，所以只改預設動作攔不到。
+實測：寫入前 `ShellExecute("open", 資料夾)` 開出檔案總管，寫入後改由 zing 開啟。
+
+**沒有改 `Folder`**：`Folder` 也包含控制台、資源回收筒等虛擬資料夾，zing 開不了。
+直接執行 `explorer.exe 資料夾` 不經過這些動作，所以 zing 把虛擬位置交給 explorer.exe 時不會繞回 zing（已實測）。
+
 ## 2026-11-27　選取的底色改成半透明的淡色
 
 **決定**：所有內建主題的選取底色都是半透明的淡色（`theme::selection_colors`）。
