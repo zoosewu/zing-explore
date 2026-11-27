@@ -4879,11 +4879,11 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
     // 已取得縮圖之後才放進封面：資料夾的修改時間改變，清單更新後重新取得
     v.push(
         step(
-            "縮圖：之後放進 cover.png，資料夾的縮圖跟著換成封面",
+            "縮圖：之後放進 Front.PNG（不分大小寫），資料夾的縮圖跟著換成封面",
             {
                 let d = d.clone();
                 move |_| {
-                    let _ = harness_io(|| std::fs::write(path::join(&path::join(&d, "封面測試"), "cover.png"), TINY_PNG));
+                    let _ = harness_io(|| std::fs::write(path::join(&path::join(&d, "封面測試"), "Front.PNG"), TINY_PNG));
                 }
             },
             {
@@ -4903,7 +4903,7 @@ fn steps(ctx: &Ctx) -> Vec<Step> {
             {
                 let d = d.clone();
                 move |_| {
-                    let cover = path::join(&path::join(&d, "封面測試"), "cover.png");
+                    let cover = path::join(&path::join(&d, "封面測試"), "Front.PNG");
                     let t = zing_core::config::Thumbnailer {
                         pattern: "*.zt".into(),
                         cmd: format!(r#"cmd /c copy /y "{cover}" "{{out}}""#),

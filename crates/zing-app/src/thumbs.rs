@@ -45,8 +45,11 @@ const DISK_LIMIT: u64 = 256 << 20;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// 要求的像素邊長，取不小於需要的一級（同一張圖在相近大小時共用）
 const BUCKETS: [u32; 7] = [64, 96, 128, 192, 256, 384, 512];
-/// 資料夾封面的檔名（依序）
-const COVERS: [&str; 4] = ["folder.jpg", "folder.png", "cover.jpg", "cover.png"];
+/// 資料夾封面的主檔名（依序）：folder（Windows Media Player、檔案總管）、cover、front（音樂播放器）、
+/// poster（Kodi、Jellyfin、Plex 的影片）
+const COVER_NAMES: [&str; 4] = ["folder", "cover", "front", "poster"];
+/// 封面的副檔名（同一個主檔名有多個時依序）；Windows 沒有對應解碼器的（例如沒裝 AVIF 擴充功能）解不開就試下一個
+const COVER_EXTS: [&str; 7] = ["jpg", "jpeg", "png", "webp", "avif", "gif", "bmp"];
 
 /// 縮圖的來源（冒煙測試用來確認封面與外部命令有作用）
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -495,16 +498,58 @@ fn produce(shared: &Shared, job: &Job) -> (Option<IconPixels>, Source) {
             return (Some(p), Source::Command);
         }
     } else {
-        for c in COVERS {
-            let cover = path::join(&job.path, c);
-            if std::fs::metadata(path::long_form(&cover)).is_ok_and(|m| m.is_file())
-                && let Some(p) = shell_image(&cover, job.px)
-            {
+        for cover in covers(&job.path) {
+            if let Some(p) = shell_image(&cover, job.px) {
                 return (Some(p), Source::Cover);
             }
         }
     }
     (shell_image(&job.path, job.px), Source::Shell)
+}
+/// 資料夾裡可以當封面的檔案（完整路徑），依 `COVER_NAMES`、`COVER_EXTS` 的順序。
+/// 每個主檔名列一次 `名稱.*`（網路磁碟上比逐一檢查每種組合少很多次往返）
+fn covers(dir: &str) -> Vec<String> {
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW,
+        FindNextFileW, WIN32_FIND_DATAW,
+    };
+    let mut out = Vec::new();
+    for name in COVER_NAMES {
+        let pattern = wide_z(&path::long_form(&path::join(dir, &format!("{name}.*"))));
+        let mut found: Vec<(usize, String)> = Vec::new();
+        let mut data = WIN32_FIND_DATAW::default();
+        unsafe {
+            let Ok(h) = FindFirstFileExW(
+                PCWSTR(pattern.as_ptr()),
+                FindExInfoBasic,
+                &mut data as *mut _ as *mut _,
+                FindExSearchNameMatch,
+                None,
+                FIND_FIRST_EX_LARGE_FETCH,
+            ) else {
+                continue;
+            };
+            loop {
+                let n = data.cFileName.iter().position(|&c| c == 0).unwrap_or(data.cFileName.len());
+                let file = String::from_utf16_lossy(&data.cFileName[..n]);
+                // 「folder.*」也會找到 folder.jpg.bak：主檔名必須正好是 name、副檔名在清單中
+                if data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0
+                    && let Some((stem, ext)) = file.rsplit_once('.')
+                    && stem.eq_ignore_ascii_case(name)
+                    && let Some(k) = COVER_EXTS.iter().position(|e| e.eq_ignore_ascii_case(ext))
+                {
+                    found.push((k, path::join(dir, &file)));
+                }
+                if FindNextFileW(h, &mut data).is_err() {
+                    break;
+                }
+            }
+            let _ = FindClose(h);
+        }
+        found.sort();
+        out.extend(found.into_iter().map(|(_, p)| p));
+    }
+    out
 }
 
 /// 項目的鍵：「磁碟區序號-NTFS 檔案 ID」（改名、同一磁碟區內移動後不變）；不支援檔案 ID 的檔案系統為 None
