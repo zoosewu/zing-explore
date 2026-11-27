@@ -116,6 +116,11 @@ pub struct Scripts {
 static THUMB_HOOK: AtomicBool = AtomicBool::new(false);
 static THUMB_TX: Mutex<Option<Sender<Job>>> = Mutex::new(None);
 
+/// 腳本定義了 thumbnail()（縮圖要先問腳本）
+pub fn has_thumbnail_rule() -> bool {
+    THUMB_HOOK.load(Ordering::Relaxed)
+}
+
 /// 縮圖規則：回傳要當縮圖的圖片路徑（沒有規則、逾時或回傳 nil 時為 None）。在縮圖背景執行緒呼叫
 pub fn thumbnail_rule(path: &str) -> Option<String> {
     if !THUMB_HOOK.load(Ordering::Relaxed) {

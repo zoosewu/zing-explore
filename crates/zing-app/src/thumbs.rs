@@ -2,7 +2,10 @@
 //! 資料夾有封面圖（folder.jpg 等）時用封面，設定了外部命令產生器的檔案改用命令產生的 PNG。
 //!
 //! - 只要求畫面上看得到的格子：繪製時登記，繪製結束時把已不可見、還沒開始的請求從佇列移除。
-//! - 本機檔案由兩條背景執行緒處理；網路磁碟、光碟另有一條，一次只取一張，不拖慢本機。
+//! - 分兩階段：先只向 Windows 的縮圖快取（thumbcache）要（`SIIGBF_INCACHEONLY`，看過的圖約 1 ms），
+//!   所有看得到的格子都問過之後，快取沒有的才真的產生（解碼原圖、資料夾的組合縮圖），已有快取的不必排在慢的後面。
+//! - 本機檔案由四條執行緒處理（略低於一般的優先權：是使用者正在等的，不用背景模式的最低 I/O 優先權）；
+//!   網路磁碟、光碟另有一條，一次只取一張，不拖慢本機。
 //! - 產生縮圖的執行緒與記憶體中的結果是整個程序共用的（多視窗）：同一張縮圖只解碼一次，所有視窗合計上限 64 MB，
 //!   最久沒用的先丟；視窗只持有 `Weak`，丟掉時記憶體真的釋放，視窗在繪製結束時清掉自己的點陣圖。
 //!   以清單中的修改時間與大小（`stamp`）判斷檔案是否改寫過。
@@ -25,10 +28,10 @@ use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::Threading::{
     BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW, CreateProcessW, GetCurrentThread, GetExitCodeProcess,
-    PROCESS_INFORMATION, STARTUPINFOW, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN, TerminateProcess,
+    PROCESS_INFORMATION, STARTUPINFOW, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL, TerminateProcess,
     WaitForSingleObject,
 };
-use windows::Win32::UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_RESIZETOFIT};
+use windows::Win32::UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_INCACHEONLY, SIIGBF_RESIZETOFIT};
 use windows::core::{PCWSTR, PWSTR};
 use zing_core::config::Thumbnailer;
 use zing_core::path;
@@ -37,6 +40,8 @@ use zing_core::text::wide_z;
 use crate::icons::IconPixels;
 use crate::services::{Msg, Notifier};
 
+/// 本機檔案的執行緒數（網路磁碟、光碟另有一條）
+const LOCAL_WORKERS: usize = 4;
 /// 記憶體快取上限（所有視窗合計）
 const MEMORY_LIMIT: usize = 64 << 20;
 /// 磁碟快取（外部命令產生的 PNG）超過這個大小時刪掉最舊的，直到低於 3/4
@@ -160,6 +165,26 @@ struct Job {
     is_dir: bool,
     px: u32,
     stamp: u64,
+    /// 第一階段：只向 Windows 的縮圖快取要；沒有就改成產生（`fast = false`）排到佇列後面
+    fast: bool,
+    /// 送出請求的時間（`ZING_THUMB_LOG` 的排隊時間）
+    queued: std::time::Instant,
+}
+
+/// 診斷用的計時記錄：設定環境變數 `ZING_THUMB_LOG=檔案` 時，每張縮圖記一行
+/// （距程序開始的毫秒、執行緒、階段、排隊與產生的毫秒、來源、路徑），取消的請求也記。平常不寫
+fn thumb_log(line: impl FnOnce() -> String) {
+    static LOG: std::sync::OnceLock<Option<(Mutex<std::fs::File>, std::time::Instant)>> = std::sync::OnceLock::new();
+    let log = LOG.get_or_init(|| {
+        let p = std::env::var_os("ZING_THUMB_LOG")?;
+        let f = std::fs::OpenOptions::new().create(true).append(true).open(p).ok()?;
+        Some((Mutex::new(f), std::time::Instant::now()))
+    });
+    if let Some((f, start)) = log {
+        use std::io::Write;
+        let name = std::thread::current().name().unwrap_or("?").to_string();
+        let _ = writeln!(f.lock().unwrap(), "{:>9.1} {name:<17} {}", start.elapsed().as_secs_f64() * 1000.0, line());
+    }
 }
 
 struct Queue {
@@ -177,10 +202,12 @@ impl Queue {
         self.cv.notify_one();
     }
 
+    /// 先取只問快取的工作（很快），都沒有了才取要產生的
     fn pop(&self) -> Job {
         let mut q = self.jobs.lock().unwrap();
         loop {
-            if let Some(j) = q.pop_front() {
+            let i = q.iter().position(|j| j.fast).unwrap_or(0);
+            if let Some(j) = q.remove(i) {
                 return j;
             }
             q = self.cv.wait(q).unwrap();
@@ -298,13 +325,14 @@ impl Thumbs {
         inner.slots.insert(id, (Slot::Pending, key, stamp));
         drop(inner);
         self.start();
-        self.shared.local.push(Job { id, owner: self.owner, n: self.notifier.clone(), path: path.to_string(), is_dir, px, stamp });
+        self.shared.local.push(Job { id, owner: self.owner, n: self.notifier.clone(), path: path.to_string(), is_dir, px, stamp, fast: true, queued: std::time::Instant::now() });
+        thumb_log(|| format!("request {px}px {path}"));
         None
     }
 
     fn start(&self) {
         self.shared.started.call_once(|| {
-            for i in 0..2 {
+            for i in 0..LOCAL_WORKERS {
                 spawn_worker(format!("zing-thumbs-{i}"), self.shared.clone(), false);
             }
             spawn_worker("zing-thumbs-slow".into(), self.shared.clone(), true);
@@ -322,6 +350,7 @@ impl Thumbs {
                 let keep = j.owner != self.owner || wanted.contains(&j.id);
                 if !keep {
                     dropped.push(j.id);
+                    thumb_log(|| format!("cancel  (已不在畫面上，排隊 {:.0} ms) {}", j.queued.elapsed().as_secs_f64() * 1000.0, j.path));
                 }
                 keep
             });
@@ -402,6 +431,11 @@ impl Thumbs {
         std::mem::take(&mut self.inner.borrow_mut().evicted)
     }
 
+    /// 還在等的縮圖數（效能模式的 `thumbs_ready_ms`）
+    pub fn pending_count(&self) -> usize {
+        self.inner.borrow().slots.values().filter(|(s, _, _)| matches!(s, Slot::Pending)).count()
+    }
+
     /// 已就緒的數量（冒煙測試用）
     #[cfg(feature = "smoke")]
     pub fn ready_count(&self) -> usize {
@@ -435,23 +469,46 @@ fn spawn_worker(name: String, shared: Arc<Shared>, slow: bool) {
     let _ = std::thread::Builder::new().name(name).spawn(move || {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-            let _ = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         }
         loop {
-            let job = if slow { shared.slow.pop() } else { shared.local.pop() };
+            let mut job = if slow { shared.slow.pop() } else { shared.local.pop() };
+            // 網路磁碟、光碟：連問快取都可能等很久，直接交給一次一張的執行緒產生
             if !slow && is_slow_path(&job.path) {
+                job.fast = false;
                 shared.slow.push(job);
                 continue;
             }
             let key = (job.path.to_lowercase(), job.px);
             // 另一個視窗同時要了同一張（排在前面的已做好）
-            let thumb = cache_get(&key, job.stamp).or_else(|| {
-                #[cfg(feature = "smoke")]
-                PRODUCED.fetch_add(1, Ordering::Relaxed);
-                let (pixels, source) = produce(&shared, &job);
-                let t = Arc::new(Thumb { pixels: pixels?, source, stamp: job.stamp, used: AtomicU64::new(TICK.fetch_add(1, Ordering::Relaxed)) });
+            if let Some(t) = cache_get(&key, job.stamp) {
+                job.n.send(Msg::Thumb { id: job.id, thumb: Some(t) });
+                continue;
+            }
+            let waited = job.queued.elapsed().as_secs_f64() * 1000.0;
+            let t0 = std::time::Instant::now();
+            let produced = produce(&shared, &job, job.fast);
+            thumb_log(|| {
+                let phase = if job.fast { "cache" } else { "produce" };
+                let result = match &produced {
+                    None => "快取沒有".to_string(),
+                    Some((Some(_), s)) => format!("{s:?}"),
+                    Some((None, s)) => format!("{s:?} 失敗"),
+                };
+                format!("{phase:<7} 排隊 {waited:>7.0} ms  花 {:>6.0} ms  {result:<10} {}", t0.elapsed().as_secs_f64() * 1000.0, job.path)
+            });
+            let Some((pixels, source)) = produced else {
+                // Windows 的快取沒有：等看得到的都問過快取之後再產生
+                job.fast = false;
+                shared.local.push(job);
+                continue;
+            };
+            #[cfg(feature = "smoke")]
+            PRODUCED.fetch_add(1, Ordering::Relaxed);
+            let thumb = pixels.map(|pixels| {
+                let t = Arc::new(Thumb { pixels, source, stamp: job.stamp, used: AtomicU64::new(TICK.fetch_add(1, Ordering::Relaxed)) });
                 cache_insert(key, t.clone());
-                Some(t)
+                t
             });
             job.n.send(Msg::Thumb { id: job.id, thumb });
         }
@@ -476,36 +533,56 @@ fn is_slow_path(p: &str) -> bool {
     t == 4 || t == 5
 }
 
-fn produce(shared: &Shared, job: &Job) -> (Option<IconPixels>, Source) {
+/// 依來源的順序產生縮圖：手動指定、腳本的規則、外部命令（檔案）或封面（資料夾）、Windows 的縮圖。
+/// `fast`：只向 Windows 的縮圖快取要；該用的來源快取裡沒有（或要跑腳本、外部命令）就回傳 None，之後再以產生的方式重做
+fn produce(shared: &Shared, job: &Job, fast: bool) -> Option<(Option<IconPixels>, Source)> {
     zing_core::guard::io("讀取縮圖");
-    if let Some(img) = custom_image(shared, &job.path)
-        && let Some(p) = shell_image(&img.to_string_lossy(), job.px)
-    {
-        return (Some(p), Source::Custom);
+    let image = |p: &str| shell_image_from(p, job.px, fast);
+    if let Some(img) = custom_image(shared, &job.path) {
+        match image(&img.to_string_lossy()) {
+            Some(p) => return Some((Some(p), Source::Custom)),
+            None if fast => return None,
+            None => {}
+        }
+    }
+    // 腳本的規則在腳本執行緒判斷（可能要等），外部命令要啟動程式：都留到產生的階段
+    if fast && crate::script::has_thumbnail_rule() {
+        return None;
     }
     if let Some(img) = crate::script::thumbnail_rule(&job.path)
-        && let Some(p) = shell_image(&img, job.px)
+        && let Some(p) = image(&img)
     {
-        return (Some(p), Source::Script);
+        return Some((Some(p), Source::Script));
     }
     if !job.is_dir {
         let name: Vec<u16> = path::file_name(&job.path).encode_utf16().collect();
         let list = shared.thumbnailers.lock().unwrap().clone();
-        if let Some(t) = list.iter().find(|t| t.matches(&name))
-            && let Some(png) = command_thumbnail(shared, t, &job.path, job.px)
-            && let Some(p) = shell_image(&png.to_string_lossy(), job.px)
-        {
-            return (Some(p), Source::Command);
+        if let Some(t) = list.iter().find(|t| t.matches(&name)) {
+            if fast {
+                return None;
+            }
+            if let Some(png) = command_thumbnail(shared, t, &job.path, job.px)
+                && let Some(p) = image(&png.to_string_lossy())
+            {
+                return Some((Some(p), Source::Command));
+            }
         }
     } else {
         for cover in covers(&job.path) {
-            if let Some(p) = shell_image(&cover, job.px) {
-                return (Some(p), Source::Cover);
+            match image(&cover) {
+                Some(p) => return Some((Some(p), Source::Cover)),
+                None if fast => return None,
+                None => {}
             }
         }
     }
-    (shell_image(&job.path, job.px), Source::Shell)
+    let p = image(&job.path);
+    if p.is_none() && fast {
+        return None;
+    }
+    Some((p, Source::Shell))
 }
+
 /// 資料夾裡可以當封面的檔案（完整路徑），依 `COVER_NAMES`、`COVER_EXTS` 的順序。
 /// 每個主檔名列一次 `名稱.*`（網路磁碟上比逐一檢查每種組合少很多次往返）
 fn covers(dir: &str) -> Vec<String> {
@@ -651,10 +728,16 @@ pub fn image_dialog(owner: windows::Win32::Foundation::HWND) -> Option<String> {
 
 /// Windows 的縮圖（沒有縮圖處理常式時是大圖示），轉成預乘 alpha 的 BGRA
 pub(crate) fn shell_image(p: &str, px: u32) -> Option<IconPixels> {
+    shell_image_from(p, px, false)
+}
+
+/// `cache_only`：只從 Windows 的縮圖快取取（沒有就是 None，不解碼原圖）
+fn shell_image_from(p: &str, px: u32, cache_only: bool) -> Option<IconPixels> {
     let w = wide_z(&path::long_form(p));
+    let flags = if cache_only { SIIGBF_RESIZETOFIT | SIIGBF_INCACHEONLY } else { SIIGBF_RESIZETOFIT };
     unsafe {
         let factory: IShellItemImageFactory = SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None).ok()?;
-        let hbm = factory.GetImage(SIZE { cx: px as i32, cy: px as i32 }, SIIGBF_RESIZETOFIT).ok()?;
+        let hbm = factory.GetImage(SIZE { cx: px as i32, cy: px as i32 }, flags).ok()?;
         let r = crate::icons::read_bitmap(hbm);
         let _ = DeleteObject(HGDIOBJ(hbm.0));
         let (w, h, mut bgra) = r?;

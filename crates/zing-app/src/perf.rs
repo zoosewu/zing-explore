@@ -1,6 +1,9 @@
 //! 效能量測模式（tools/perf.ps1 使用）。
 //!
-//! `zing --perf-out=結果.json [--perf-dir=資料夾] [--perf-scroll-frames=N] [--perf-theme] [--perf-idle-ms=N] [--perf-exec=命令]`
+//! `zing --perf-out=結果.json [--perf-dir=資料夾] [--perf-scroll-frames=N] [--perf-theme] [--perf-idle-ms=N] [--perf-exec=命令] [--perf-thumbs]`
+//!
+//! `--perf-thumbs`：執行 `--perf-exec`（例如 `view.mode medium`）之後，量到看得到的格子都沒有等待中的縮圖為止
+//! （`thumbs_ready_ms`，最多 60 秒）。tools/perf.ps1 不使用；比較縮圖的排程時手動執行。
 //!
 //! `--perf-exec`：資料夾載入後執行的命令腳本（不需模擬輸入即可測試命令）。debug build 的
 //! UI 執行緒 I/O 防呆回報會寫進結果的 `guard_violations`。
@@ -29,6 +32,10 @@ pub struct Perf {
     theme: bool,
     idle_ms: u32,
     exec: Option<String>,
+    thumbs: bool,
+    /// `--perf-thumbs`：開始等縮圖的時間；第一幀畫過縮圖檢視後才算（繪製時才送出請求）
+    thumbs_start: Option<Instant>,
+    thumbs_painted: bool,
     results: Vec<(String, f64)>,
     started: bool,
     nav_start: Option<Instant>,
@@ -51,6 +58,7 @@ impl Perf {
             theme: args.iter().any(|a| a == "--perf-theme"),
             idle_ms: get("perf-idle-ms").and_then(|v| v.parse().ok()).unwrap_or(0),
             exec: get("perf-exec"),
+            thumbs: args.iter().any(|a| a == "--perf-thumbs"),
             ..Default::default()
         })
     }
@@ -125,6 +133,24 @@ pub fn after_paint(app: &mut App) {
         }
         return;
     }
+    if let Some(t) = perf.thumbs_start {
+        let pending = app.thumbs.pending_count();
+        let perf = app.perf.as_mut().unwrap();
+        let done = perf.thumbs_painted && pending == 0;
+        if !perf.thumbs_painted {
+            // 這一幀送出了請求；全部都在記憶體快取（或不是縮圖檢視）時不會有結果觸發重畫，所以再畫一次來判斷
+            perf.thumbs_painted = true;
+            app.invalidate();
+            return;
+        }
+        if done || t.elapsed().as_secs() >= 60 {
+            perf.thumbs_start = None;
+            perf.record("thumbs_ready_ms", t.elapsed().as_secs_f64() * 1000.0);
+            perf.record("thumbs_pending_at_end", pending as f64);
+            schedule_finish(app);
+        }
+        return;
+    }
     if perf.first_screen_pending {
         perf.first_screen_pending = false;
         let ms = perf.nav_start.unwrap().elapsed().as_secs_f64() * 1000.0;
@@ -156,8 +182,16 @@ pub fn after_paint(app: &mut App) {
         perf.record("listing_mb", bytes as f64 / 1_048_576.0);
         let frames = perf.scroll_frames;
         let theme = perf.theme;
+        let thumbs = perf.thumbs;
+        if thumbs {
+            perf.thumbs_start = Some(Instant::now());
+        }
         if let Some(script) = perf.exec.take() {
             app.exec(&script);
+        }
+        if thumbs {
+            app.invalidate();
+            return;
         }
         if frames > 0 {
             scroll_test(app, frames);
