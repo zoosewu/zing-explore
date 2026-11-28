@@ -51,6 +51,8 @@ pub struct SettingsPage {
 
 /// 其他專案每個佔幾列（封面與名稱、介紹）
 pub const PROJECT_LINES: usize = 3;
+/// 其他專案一列放幾個（zoo-release 的 docs/ui-layout.svg）
+pub const PROJECT_COLUMNS: usize = 2;
 
 /// 面板中的一列
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -72,7 +74,7 @@ pub enum Row {
     UpdateStatus(usize),
     /// 連結：版本說明、原始碼、回報問題、授權（`Kind::AboutLinks`）
     Links(usize),
-    /// 作者的其他專案（`Kind::OtherProjects`）：第 p 個專案的第 n 列（0–2）
+    /// 作者的其他專案（`Kind::OtherProjects`）：第 g 組（`PROJECT_COLUMNS` 個專案並排）的第 n 列（0–2）
     Project(usize, usize, usize),
 }
 
@@ -126,7 +128,8 @@ impl SettingsPage {
                     continue;
                 }
                 Kind::OtherProjects => {
-                    out.extend((0..self.projects.len()).flat_map(|k| (0..PROJECT_LINES).map(move |n| Row::Project(i, k, n))));
+                    let groups = self.projects.len().div_ceil(PROJECT_COLUMNS);
+                    out.extend((0..groups).flat_map(|g| (0..PROJECT_LINES).map(move |n| Row::Project(i, g, n))));
                     continue;
                 }
                 _ => {}
@@ -314,8 +317,13 @@ impl App {
     fn settings_parts(&self, row: Row, rr: Rect) -> Vec<Rect> {
         match row {
             Row::AboutTitle(_) => vec![self.row_button(rr, UpdateAction::Check.label())],
+            // 其他專案：這一組的卡片
+            Row::Project(_, g, 0) => {
+                let n = self.settings_page().map_or(0, |p| p.projects.len().saturating_sub(g * PROJECT_COLUMNS).min(PROJECT_COLUMNS));
+                (0..n).map(|j| self.project_card(rr, j).0).collect()
+            }
             Row::UpdateStatus(_) => {
-                let labels: Vec<&'static str> = self.about_status().2.iter().map(|a| a.label()).collect();
+                let labels: Vec<&'static str> = self.about_status().actions.iter().map(|a| a.label()).collect();
                 self.right_buttons(rr, &labels)
             }
             Row::Links(_) => {
@@ -335,9 +343,12 @@ impl App {
         }
     }
 
-    /// 其他專案的卡片（第一列起佔 `PROJECT_LINES` 列）與封面的位置
-    fn project_card(&self, first: Rect) -> (Rect, Rect) {
-        let card = Rect::new(first.l, first.t, first.r, first.t + self.row_h() * PROJECT_LINES as f32);
+    /// 其他專案第 j 欄的卡片（第一列起佔 `PROJECT_LINES` 列）與封面的位置
+    fn project_card(&self, first: Rect, j: usize) -> (Rect, Rect) {
+        const GAP: f32 = 8.0;
+        let w = (first.w() - GAP * (PROJECT_COLUMNS - 1) as f32) / PROJECT_COLUMNS as f32;
+        let l = first.l + (w + GAP) * j as f32;
+        let card = Rect::new(l, first.t, l + w, first.t + self.row_h() * PROJECT_LINES as f32);
         let h = card.h() - 12.0;
         (card, Rect::new(card.l + 8.0, card.t + 6.0, card.l + 8.0 + (h * 1.6).round(), card.b - 6.0))
     }
@@ -377,8 +388,13 @@ impl App {
                     }
                     Some(Row::Field(_)) => return Hit::SettingsRow(k),
                     Some(Row::Slow(..)) if self.slow_table_enabled() => return Hit::SettingsRow(k),
-                    // 其他專案：卡片的任何一列都是第一列（鍵盤目標也在第一列）
-                    Some(Row::Project(_, _, n)) => return Hit::SettingsRow(k - n),
+                    // 其他專案：卡片的任何一列都算第一列（鍵盤目標也在第一列）
+                    Some(&Row::Project(i, g, n)) => {
+                        let (rr, _) = self.settings_row_rects(pl.list, k - n, page.scroll);
+                        if let Some(j) = self.settings_parts(Row::Project(i, g, 0), rr).iter().position(|r| r.l <= x && x < r.r) {
+                            return Hit::SettingsPart(k - n, j);
+                        }
+                    }
                     Some(&row @ (Row::AboutTitle(_) | Row::UpdateStatus(_) | Row::Links(_))) => {
                         let (rr, _) = self.settings_row_rects(pl.list, k, page.scroll);
                         if let Some(n) = self.settings_parts(row, rr).iter().position(|r| r.contains(x, y)) {
@@ -407,11 +423,10 @@ impl App {
                     }
                     Some(Row::Field(_)) => vec![(Hit::SettingsRow(k), rr)],
                     Some(Row::Slow(..)) if self.slow_table_enabled() => vec![(Hit::SettingsRow(k), rr)],
-                    // 其他專案：整張卡片是一個目標（在第一列）
-                    Some(Row::Project(_, _, 0)) => vec![(Hit::SettingsRow(k), self.project_card(rr).0)],
                     // 「檢查更新」停用時沒有目標
                     Some(Row::AboutTitle(_)) if !self.can_check_update() => Vec::new(),
-                    Some(&row @ (Row::AboutTitle(_) | Row::UpdateStatus(_) | Row::Links(_))) => {
+                    // 其他專案：每張卡片是一個目標（在第一列）
+                    Some(&row @ (Row::AboutTitle(_) | Row::UpdateStatus(_) | Row::Links(_) | Row::Project(_, _, 0))) => {
                         self.settings_parts(row, rr).into_iter().enumerate().map(|(n, r)| (Hit::SettingsPart(k, n), r)).collect()
                     }
                     _ => Vec::new(),
@@ -455,11 +470,6 @@ impl App {
                         Kind::IndexService => self.toggle_index_service(),
                         Kind::SlowList | Kind::About | Kind::AboutLinks | Kind::OtherProjects => {}
                     },
-                    Some(Row::Project(_, p, _)) => {
-                        if let Some(url) = page.projects.get(p).map(|p| p.url.clone()) {
-                            crate::services::launch(&self.notifier, url, None, None, None, crate::services::Show::Normal);
-                        }
-                    }
                     Some(Row::Slow(i, e)) if self.slow_table_enabled() => {
                         let Some(clsid) = page.slow.get(e).map(|e| e.clsid.clone()) else { return };
                         let mut allow = self.config.context_menu.allow_slow.clone();
@@ -479,12 +489,17 @@ impl App {
                 match page.rows().get(k) {
                     Some(Row::AboutTitle(_)) => self.check_update_now(),
                     Some(Row::UpdateStatus(_)) => {
-                        if let Some(&a) = self.about_status().2.get(n) {
+                        if let Some(&a) = self.about_status().actions.get(n) {
                             self.update_action(a);
                         }
                     }
                     Some(Row::Links(_)) => {
                         if let Some((_, url)) = Self::about_links().into_iter().nth(n) {
+                            crate::services::launch(&self.notifier, url, None, None, None, crate::services::Show::Normal);
+                        }
+                    }
+                    Some(Row::Project(_, g, _)) => {
+                        if let Some(url) = page.projects.get(g * PROJECT_COLUMNS + n).map(|p| p.url.clone()) {
                             crate::services::launch(&self.notifier, url, None, None, None, crate::services::Show::Normal);
                         }
                     }
@@ -617,7 +632,8 @@ impl App {
         let slow_on = self.slow_table_enabled();
         let cols = Self::slow_columns(pl.list);
         g.push_clip(pl.list);
-        for (k, row) in page.rows().iter().enumerate() {
+        let rows = page.rows();
+        for (k, row) in rows.iter().enumerate() {
             let (rr, value) = self.settings_row_rects(pl.list, k, page.scroll);
             // 其他專案的卡片從第一列畫到第三列
             let extra = if matches!(row, Row::Project(_, _, 0)) { self.row_h() * (PROJECT_LINES - 1) as f32 } else { 0.0 };
@@ -627,6 +643,10 @@ impl App {
             let hover = self.hover == Hit::SettingsRow(k);
             match *row {
                 Row::Section(name) => {
+                    // 作者的其他專案與上面的「關於」以分隔線隔開
+                    if matches!(rows.get(k + 1), Some(Row::Project(..))) {
+                        g.fill(Rect::new(rr.l, rr.t, rr.r, rr.t + 1.0), c.border);
+                    }
                     g.text(zing_core::i18n::tr(name), Font::Bold, Rect::new(rr.l, rr.t + 4.0, rr.r, rr.b), c.text_secondary)
                 }
                 Row::Status(_) => {
@@ -744,11 +764,23 @@ impl App {
                     g.text(tr!("輕量、快速、可自訂的 Windows 11 檔案總管"), Font::Text, Rect::new(rr.l + 8.0, rr.t, rr.r, rr.b), c.text_secondary)
                 }
                 Row::UpdateStatus(_) => {
-                    let (text, error, actions) = self.about_status();
+                    let st = self.about_status();
                     let buttons = self.settings_parts(*row, rr);
                     let right = buttons.first().map_or(rr.r - 6.0, |b| b.l - 8.0);
-                    g.text(&text, Font::Text, Rect::new(rr.l + 8.0, rr.t, right, rr.b), if error { c.error } else { c.text });
-                    for (n, (b, a)) in buttons.iter().zip(&actions).enumerate() {
+                    g.text(&st.text, Font::Text, Rect::new(rr.l + 8.0, rr.t, right, rr.b), if st.error { c.error } else { c.text });
+                    let after = rr.l + 8.0 + g.measure(&st.text, Font::Text);
+                    if let Some(d) = &st.detail {
+                        g.text(d, Font::Text, Rect::new(after, rr.t, right, rr.b), c.text_secondary);
+                    }
+                    // 下載中：與橫幅相同的進度條
+                    if let Some(pct) = st.progress {
+                        let l = after + 16.0;
+                        let p = Rect::new(l, rr.t + rr.h() / 2.0 - 3.0, (l + 180.0).min(right - 60.0), rr.t + rr.h() / 2.0 + 3.0);
+                        g.fill_round(p, 3.0, c.border);
+                        g.fill_round(Rect::new(p.l, p.t, p.l + p.w() * pct.min(100) as f32 / 100.0, p.b), 3.0, c.accent);
+                        g.text(&format!("{pct}%"), Font::Small, Rect::new(p.r + 8.0, rr.t, right, rr.b), c.text_secondary);
+                    }
+                    for (n, (b, a)) in buttons.iter().zip(&st.actions).enumerate() {
                         self.paint_button(*b, a.label(), a.primary(), self.hover == Hit::SettingsPart(k, n));
                     }
                 }
@@ -766,21 +798,23 @@ impl App {
                         }
                     }
                 }
-                Row::Project(_, p, 0) => {
-                    let Some(proj) = page.projects.get(p) else { continue };
-                    let (card, cover) = self.project_card(rr);
-                    if hover {
-                        g.fill_round(card, radius, c.hover);
-                    }
-                    g.fill_round(cover, radius, c.surface);
-                    if let Some(px) = &proj.cover {
-                        g.keyed_image(&format!("about-cover:{}", proj.id), px, cover, 1.0);
-                    }
-                    g.stroke_round(cover, radius, c.border, 1.0);
-                    let x = cover.r + 14.0;
+                Row::Project(_, gi, 0) => {
                     let rh = self.row_h();
-                    g.text(&proj.name, Font::Bold, Rect::new(x, card.t + 4.0, card.r - 8.0, card.t + 4.0 + rh), c.text);
-                    g.text(&proj.tagline, Font::Text, Rect::new(x, card.t + 4.0 + rh, card.r - 8.0, card.b - 4.0), c.text_secondary);
+                    for j in 0..PROJECT_COLUMNS {
+                        let Some(proj) = page.projects.get(gi * PROJECT_COLUMNS + j) else { break };
+                        let (card, cover) = self.project_card(rr, j);
+                        if self.hover == Hit::SettingsPart(k, j) {
+                            g.fill_round(card, radius, c.hover);
+                        }
+                        g.fill_round(cover, radius, c.surface);
+                        if let Some(px) = &proj.cover {
+                            g.keyed_image(&format!("about-cover:{}", proj.id), px, cover, 1.0);
+                        }
+                        g.stroke_round(cover, radius, c.border, 1.0);
+                        let x = cover.r + 14.0;
+                        g.text(&proj.name, Font::Bold, Rect::new(x, card.t + 4.0, card.r - 8.0, card.t + 4.0 + rh), c.text);
+                        g.text(&proj.tagline, Font::Text, Rect::new(x, card.t + 4.0 + rh, card.r - 8.0, card.b - 4.0), c.text_secondary);
+                    }
                 }
                 Row::Project(..) => {}
             }

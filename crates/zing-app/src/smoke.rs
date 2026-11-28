@@ -6284,27 +6284,39 @@ function smoke_auto() end
         "更新：「檢查更新」開啟設定的「關於」，有功能更新時「關於」與主畫面的橫幅都顯示；也列出作者的其他專案",
         |_| {
             *crate::update::TEST_LATEST.lock().unwrap() = Some("99.1.0".into());
-            *crate::about::TEST_PROJECTS.lock().unwrap() = Some(vec![crate::about::Project {
-                id: "zoo-type".into(),
-                name: "Zoo Type".into(),
-                tagline: "輸入法".into(),
-                url: "https://github.com/zoosewu/zoo-type".into(),
+            let project = |id: &str, name: &str, tagline: &str| crate::about::Project {
+                id: id.into(),
+                name: name.into(),
+                tagline: tagline.into(),
+                url: format!("https://github.com/zoosewu/{id}"),
                 cover: None,
-            }]);
+            };
+            *crate::about::TEST_PROJECTS.lock().unwrap() = Some(vec![
+                project("zoo-type", "Zoo Type", "輸入法"),
+                project("zoo-downloader", "Zoo Downloader", "下載工具"),
+                project("waypoint", "waypoint", "書籤"),
+            ]);
             exec("update.check");
         },
         move |_, a| {
             expect("設定", a.settings_page().map(|p| p.category), about_tab())?;
-            let (text, error, actions) = a.about_status();
-            expect("關於", (text.as_str(), error, actions), ("有新版本 v99.1.0", false, vec![UA::Notes, UA::Install]))?;
+            let st = a.about_status();
+            expect("關於", (st.text.as_str(), st.error, st.actions), ("有新版本 v99.1.0", false, vec![UA::Notes, UA::Install]))?;
             let b = a.update_banner().ok_or("沒有橫幅")?;
             expect("橫幅", (b.text.as_str(), b.actions, b.close), ("有新版本 v99.1.0", vec![UA::Notes, UA::Skip, UA::Install], true))?;
             a.layout = a.compute_layout();
             expect("橫幅的目標", a.layout.banner.as_ref().map(|b| b.targets.len()), Some(4))?;
             let rows = a.settings_page().map(|p| p.rows()).unwrap_or_default();
             expect("其他專案的副標題", rows.contains(&Row::Section("作者的其他專案")), true)?;
-            let lines = rows.iter().filter(|r| matches!(r, Row::Project(_, 0, _))).count();
-            expect("其他專案的列", lines, crate::prefspage::PROJECT_LINES)
+            // 兩個一列（zoo-release 的 docs/ui-layout.svg）：三個專案是兩組
+            let lines = rows.iter().filter(|r| matches!(r, Row::Project(..))).count();
+            expect("其他專案的列", lines, 2 * crate::prefspage::PROJECT_LINES)?;
+            let cards = |g: usize| {
+                let k = rows.iter().position(|r| matches!(r, Row::Project(_, x, 0) if *x == g));
+                let panel = a.layout.side_panel;
+                k.zip(panel).map_or(0, |(k, panel)| a.settings_targets(panel, crate::sidepanel::Line::Row(k)).len())
+            };
+            expect("每組的卡片", (cards(0), cards(1)), (2, 1))
         },
     ));
     v.push(step("截圖：關於", |_| {}, |c, _| screenshot(c, "33-關於")));
@@ -6337,7 +6349,7 @@ function smoke_auto() end
             let patch = format!("{}.{}.{}", cur.major, cur.minor, cur.patch + 1);
             checked(a, patch.clone());
             expect("修補版的橫幅", banner_text(a), None)?;
-            expect("修補版的「關於」", a.about_status().0, format!("有新版本 v{patch}"))?;
+            expect("修補版的「關於」", a.about_status().text, format!("有新版本 v{patch}"))?;
             checked(a, "99.1.3".into());
             expect("略過的次版本", banner_text(a), None)?;
             checked(a, "99.2.0".into());
@@ -6393,11 +6405,12 @@ function smoke_auto() end
             click(c, "", about_pos(is_title, 0));
         },
         move |_, a| {
-            let (text, error, actions) = a.about_status();
-            if !text.starts_with("已是最新版（上次檢查：今天 ") {
-                return Err(format!("關於：{text}"));
+            let st = a.about_status();
+            let detail = st.detail.unwrap_or_default();
+            if st.text != "已是最新版" || !detail.starts_with("（上次檢查：今天 ") {
+                return Err(format!("關於：{}{detail}", st.text));
             }
-            expect("錯誤與按鈕", (error, actions), (false, Vec::new()))?;
+            expect("錯誤與按鈕", (st.error, st.actions), (false, Vec::new()))?;
             expect("橫幅", banner_text(a), None)
         },
     ));

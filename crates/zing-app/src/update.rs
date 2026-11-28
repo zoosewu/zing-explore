@@ -127,6 +127,16 @@ pub struct Banner {
     pub close: bool,
 }
 
+/// 「關於」頁的狀態列：文字、接在後面的次要文字、是否為錯誤、進度（下載中）、按鈕
+#[derive(Default)]
+pub struct AboutStatus {
+    pub text: String,
+    pub detail: Option<String>,
+    pub error: bool,
+    pub progress: Option<u32>,
+    pub actions: Vec<UpdateAction>,
+}
+
 /// 安裝的結果
 pub enum Installed {
     Done(Version),
@@ -441,32 +451,41 @@ impl App {
         }
     }
 
-    /// 「關於」頁的狀態列：文字、是否為錯誤、按鈕
-    pub fn about_status(&self) -> (String, bool, Vec<UpdateAction>) {
+    /// 「關於」頁的狀態列
+    pub fn about_status(&self) -> AboutStatus {
+        let status = |text: String, error: bool, actions: Vec<UpdateAction>| AboutStatus { text, error, actions, ..Default::default() };
         match &self.update {
+            // 與橫幅相同的進度
             Update::Downloading { version, percent, .. } => {
-                return (format!("{}  {percent}%", tr!("正在下載 {version}", version = format!("v{version}"))), false, vec![UpdateAction::Cancel]);
+                return AboutStatus {
+                    text: tr!("正在下載 {version}", version = format!("v{version}")),
+                    progress: Some(*percent),
+                    actions: vec![UpdateAction::Cancel],
+                    ..Default::default()
+                };
             }
             Update::Ready { version } => {
-                return (tr!("{version} 已下載，重新啟動後完成更新", version = format!("v{version}")), false, vec![UpdateAction::Restart]);
+                return status(tr!("{version} 已下載，重新啟動後完成更新", version = format!("v{version}")), false, vec![UpdateAction::Restart]);
             }
-            Update::Failed { reason, .. } => return (tr!("更新失敗：{reason}", reason), true, vec![UpdateAction::Manual]),
+            Update::Failed { reason, .. } => return status(tr!("更新失敗：{reason}", reason), true, vec![UpdateAction::Manual]),
             Update::Idle => {}
         }
         match self.update_check {
-            CheckStatus::Checking => return (tr!("檢查中…").into(), false, Vec::new()),
-            CheckStatus::Failed => return (tr!("無法檢查更新").into(), true, vec![UpdateAction::Retry]),
+            CheckStatus::Checking => return status(tr!("檢查中…").into(), false, Vec::new()),
+            CheckStatus::Failed => return status(tr!("無法檢查更新").into(), true, vec![UpdateAction::Retry]),
             CheckStatus::Idle => {}
         }
-        let Some(st) = &self.update_state else { return (String::new(), false, Vec::new()) };
+        let Some(st) = &self.update_state else { return AboutStatus::default() };
         match st.availability(current()).version() {
-            Some(v) => (tr!("有新版本 {version}", version = format!("v{v}")), false, vec![UpdateAction::Notes, UpdateAction::Install]),
+            Some(v) => status(tr!("有新版本 {version}", version = format!("v{v}")), false, vec![UpdateAction::Notes, UpdateAction::Install]),
             None => match st.last_check {
-                Some(t) => {
-                    let time = zing_core::format::relative_local(t, now_secs());
-                    (format!("{}（{}）", tr!("已是最新版"), tr!("上次檢查：{time}", time)), false, Vec::new())
-                }
-                None => (String::new(), false, Vec::new()),
+                // 上次檢查的時間以次要的顏色接在後面
+                Some(t) => AboutStatus {
+                    text: tr!("已是最新版").into(),
+                    detail: Some(format!("（{}）", tr!("上次檢查：{time}", time = zing_core::format::relative_local(t, now_secs())))),
+                    ..Default::default()
+                },
+                None => AboutStatus::default(),
             },
         }
     }
@@ -610,9 +629,11 @@ impl App {
         let c = &self.theme.color;
         let g = &self.gfx;
         let radius = self.theme.metrics.radius.max(4.0);
-        // 強調色的淡色（與選取相同的做法：疊在背景上，文字維持一般的顏色）
+        // 強調色（失敗時錯誤色）的淡色（與選取相同的做法：疊在背景上，文字維持一般的顏色）
         g.fill(bl.bar, c.background);
-        g.fill(bl.bar, c.accent.with_alpha(0x2a));
+        // 失敗時用錯誤色的淡色
+        let tint = if matches!(self.update, Update::Failed { .. }) { c.error } else { c.accent };
+        g.fill(bl.bar, tint.with_alpha(0x2a));
         g.hline(0.0, bl.bar.r, bl.bar.b - 1.0, c.border);
         let text_r = bl.targets.first().map_or(bl.bar.r, |t| t.l - 8.0);
         g.text(&b.text, Font::Text, Rect::new(bl.bar.l + 16.0, bl.bar.t, text_r, bl.bar.b), c.text);
