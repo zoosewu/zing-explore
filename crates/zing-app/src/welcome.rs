@@ -93,7 +93,7 @@ impl App {
             Kind::DefaultApp => Some((self.default_app == Some(crate::defaultapp::Status::On), self.default_app.is_some())),
             // 還不知道是否已安裝時不能切換（與設定相同）
             Kind::IndexService => Some((self.index_installed == Some(true), self.index_installed.is_some())),
-            Kind::Choice(_) | Kind::Theme | Kind::Text | Kind::Tabs | Kind::SlowList | Kind::Action(_) | Kind::UpdateCheck => None,
+            Kind::Choice(_) | Kind::Theme | Kind::Text | Kind::Tabs | Kind::SlowList | Kind::Action(_) | Kind::About | Kind::AboutLinks | Kind::OtherProjects => None,
         }
     }
 
@@ -228,7 +228,7 @@ impl App {
                     *slot = Some(!on);
                 }
             }
-            Kind::Text | Kind::Tabs | Kind::SlowList | Kind::Action(_) | Kind::UpdateCheck => {}
+            Kind::Text | Kind::Tabs | Kind::SlowList | Kind::Action(_) | Kind::About | Kind::AboutLinks | Kind::OtherProjects => {}
         }
     }
 
@@ -295,7 +295,7 @@ impl App {
                     let label = if on { tr!("開") } else { tr!("關") };
                     g.text(label, Font::Text, Rect::new(right + 8.0, first.t, control.r, first.b), c.text_secondary);
                 }
-                Kind::Text | Kind::Tabs | Kind::SlowList | Kind::Action(_) | Kind::UpdateCheck => {}
+                Kind::Text | Kind::Tabs | Kind::SlowList | Kind::Action(_) | Kind::About | Kind::AboutLinks | Kind::OtherProjects => {}
             }
         }
         let n = items().len();

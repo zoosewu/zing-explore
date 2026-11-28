@@ -23,8 +23,6 @@ pub enum Action {
     ShellMenu,
     /// 右鍵選單中第三方擴充功能的項目（第幾個擴充功能, 命令 id）
     ShellExt(usize, u32),
-    /// 狀態列「有新版本」的選單（update.rs）
-    Update(crate::update::Choice),
     /// 設定 `PREFS[i]` 為這個值（歡迎畫面的選項，welcome.rs）
     Pref(usize, String),
     /// 目前的窗格切換到這個資料夾（網址列「›」的子資料夾）
@@ -249,7 +247,6 @@ impl App {
             Action::Extra(id, target) => self.on_compact_extra(id, target),
             Action::ShellMenu => self.show_full_context_menu(),
             Action::ShellExt(ext, id) => self.invoke_menu_ext(ext, id),
-            Action::Update(c) => self.update_choice(c),
             Action::Pref(i, value) => self.set_pref(i, value),
             Action::ThemePick(t, value) => self.pick_option(t, value),
             Action::CompareDirection(d) => self.set_compare_direction(d),

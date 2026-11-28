@@ -25,8 +25,12 @@ pub enum Kind {
     DefaultApp,
     /// 不是設定值：NTFS 索引服務是否已安裝（開關：開＝安裝、關＝確認後移除；下方顯示服務的狀態，見 zing-app 的 index.rs）
     IndexService,
-    /// 不是設定值：檢查更新（結果與按鈕：立即檢查、安裝、重新啟動，見 zing-app 的 update.rs）
-    UpdateCheck,
+    /// 不是設定值：「關於」的名稱與版本（「檢查更新」）、一句話介紹、更新的狀態（三列，見 zing-app 的 update.rs）
+    About,
+    /// 不是設定值：版本說明、原始碼、回報問題、授權的連結
+    AboutLinks,
+    /// 不是設定值：作者的其他專案（apex-code 的專案清單，讀不到時不顯示，見 zing-app 的 about.rs）
+    OtherProjects,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -83,6 +87,8 @@ const GENERAL: &str = tr_key!("一般");
 const LOOK: &str = tr_key!("外觀");
 const BAR: &str = tr_key!("命令列");
 const SYSTEM: &str = tr_key!("系統");
+/// 最後一頁（zoo-release 的 docs/UI.md：名稱與版本、更新、自動檢查、連結、作者的其他專案）
+const ABOUT: &str = tr_key!("關於");
 
 /// 設定對話框依 `group`（分頁）、`section`（分頁中的副標題）與這裡的順序排列
 pub const PREFS: &[Pref] = &[
@@ -156,15 +162,6 @@ pub const PREFS: &[Pref] = &[
         hint: tr_key!("下次開啟終端機時生效"),
         kind: Kind::Choice(SHELLS),
     },
-    Pref {
-        key: "update.check",
-        group: GENERAL,
-        section: tr_key!("更新"),
-        label: tr_key!("啟動時檢查新版本"),
-        hint: tr_key!("每天最多連線到 GitHub 一次；只在有功能更新（次版號以上）時提示"),
-        kind: Kind::Bool,
-    },
-    Pref { key: "", group: GENERAL, section: tr_key!("更新"), label: tr_key!("檢查更新"), hint: "", kind: Kind::UpdateCheck },
     // ---- 外觀
     Pref { key: "theme", group: LOOK, section: tr_key!("主題"), label: tr_key!("主題"), hint: "", kind: Kind::Theme },
     Pref { key: "", group: LOOK, section: tr_key!("主題"), label: tr_key!("自訂主題…"), hint: "", kind: Kind::Action("theme.edit") },
@@ -215,6 +212,11 @@ pub const PREFS: &[Pref] = &[
         kind: Kind::Action("config.edit"),
     },
     Pref { key: "", group: SYSTEM, section: tr_key!("設定檔"), label: tr_key!("歡迎畫面…"), hint: "", kind: Kind::Action("welcome.show") },
+    // ---- 關於
+    Pref { key: "", group: ABOUT, section: "", label: "", hint: "", kind: Kind::About },
+    Pref { key: "update.check", group: ABOUT, section: "", label: tr_key!("自動檢查更新"), hint: "", kind: Kind::Bool },
+    Pref { key: "", group: ABOUT, section: "", label: "", hint: "", kind: Kind::AboutLinks },
+    Pref { key: "", group: ABOUT, section: tr_key!("作者的其他專案"), label: "", hint: "", kind: Kind::OtherProjects },
 ];
 
 /// 設定的分類（`Pref::group`，依 `PREFS` 中第一次出現的順序）

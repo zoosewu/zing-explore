@@ -781,11 +781,11 @@ fn bar_button_pos(cmd: &str) -> Option<(f32, f32)> {
     .flatten()
 }
 
-/// 狀態列「有新版本」提示的中心
-fn update_indicator_pos() -> Option<(f32, f32)> {
+/// 新版本橫幅第 k 個目標（按鈕，最後可能是 ✕）的中心
+fn banner_pos(k: usize) -> Option<(f32, f32)> {
     with_app(|a| {
         a.layout = a.compute_layout();
-        a.layout.update_indicator.map(mid)
+        a.layout.banner.as_ref()?.targets.get(k).copied().map(mid)
     })
     .flatten()
 }
@@ -6264,130 +6264,155 @@ function smoke_auto() end
         move |c, a| expect("分頁", Some(tab_paths(a).join("|")), c.note("tabs_before").map(String::from)),
     ));
 
-    // ------------------------------------------------ 檢查新版本（隔離模式不連網：以 TEST_LATEST 提供最新版）
-    let available = |a: &App| match &a.update {
-        crate::update::Update::Available { version, .. } => Some(version.to_string()),
-        _ => None,
-    };
-    let update_row = |a: &App| -> Option<(usize, usize)> {
-        let i = zing_core::prefs::PREFS.iter().position(|p| p.kind == zing_core::prefs::Kind::UpdateCheck)?;
-        let k = a.settings_page()?.rows().iter().position(|r| *r == crate::prefspage::Row::Field(i))?;
-        Some((i, k))
-    };
-    let update_button_pos = move || {
+    // ------------------------------------------------ 更新與「關於」（隔離模式不連網：以 TEST_LATEST、TEST_PROJECTS 代替）
+    use crate::update::UpdateAction as UA;
+    let banner_text = |a: &App| a.update_banner().map(|b| b.text);
+    let about_tab = || zing_core::prefs::groups().iter().position(|g| *g == "關於");
+    // 「關於」頁第一個符合的列中第 n 個按鈕或連結的中心（與鍵盤目標相同）
+    let about_pos = |want: fn(&Row) -> bool, n: usize| {
         with_app(|a| {
-            let (i, k) = update_row(a)?;
+            let k = a.settings_page()?.rows().iter().position(want)?;
             a.side_reveal(k)?;
-            let list = a.settings_layout(a.layout.side_panel?).list;
-            let (row, _) = a.settings_row_rects(list, k, a.side_scroll());
-            a.field_button(i, row).map(|(b, _)| mid(b))
+            let panel = a.layout.side_panel?;
+            a.settings_targets(panel, crate::sidepanel::Line::Row(k)).get(n).map(|(_, r)| mid(*r))
         })
         .flatten()
     };
+    let is_title: fn(&Row) -> bool = |r| matches!(r, Row::AboutTitle(_));
+    let is_status: fn(&Row) -> bool = |r| matches!(r, Row::UpdateStatus(_));
     v.push(step(
-        "更新：「檢查更新」開啟設定，結果顯示在那一列、狀態列右側也顯示提示",
+        "更新：「檢查更新」開啟設定的「關於」，有功能更新時「關於」與主畫面的橫幅都顯示；也列出作者的其他專案",
         |_| {
-            *crate::update::TEST_LATEST.lock().unwrap() = Some("v99.1.0".into());
+            *crate::update::TEST_LATEST.lock().unwrap() = Some("99.1.0".into());
+            *crate::about::TEST_PROJECTS.lock().unwrap() = Some(vec![crate::about::Project {
+                id: "zoo-type".into(),
+                name: "Zoo Type".into(),
+                tagline: "輸入法".into(),
+                url: "https://github.com/zoosewu/zoo-type".into(),
+                cover: None,
+            }]);
             exec("update.check");
         },
         move |_, a| {
-            expect("設定", a.settings_page().map(|p| p.category), zing_core::prefs::groups().iter().position(|g| *g == "一般"))?;
-            expect("那一列", update_row(a).is_some(), true)?;
-            expect("新版本", available(a).as_deref(), Some("99.1.0"))?;
-            let (text, _) = a.update_row_text();
-            if !text.starts_with("有新版本 99.1.0") {
-                return Err(format!("那一列：{text}"));
-            }
-            expect("按鈕", a.update_button_label(), "下載並安裝")?;
-            expect("提示", a.update_indicator_text().as_deref(), Some("有新版本 99.1.0"))?;
+            expect("設定", a.settings_page().map(|p| p.category), about_tab())?;
+            let (text, error, actions) = a.about_status();
+            expect("關於", (text.as_str(), error, actions), ("有新版本 v99.1.0", false, vec![UA::Notes, UA::Install]))?;
+            let b = a.update_banner().ok_or("沒有橫幅")?;
+            expect("橫幅", (b.text.as_str(), b.actions, b.close), ("有新版本 v99.1.0", vec![UA::Notes, UA::Skip, UA::Install], true))?;
             a.layout = a.compute_layout();
-            expect("提示的位置", a.layout.update_indicator.is_some(), true)
+            expect("橫幅的目標", a.layout.banner.as_ref().map(|b| b.targets.len()), Some(4))?;
+            let rows = a.settings_page().map(|p| p.rows()).unwrap_or_default();
+            expect("其他專案的副標題", rows.contains(&Row::Section("作者的其他專案")), true)?;
+            let lines = rows.iter().filter(|r| matches!(r, Row::Project(_, 0, _))).count();
+            expect("其他專案的列", lines, crate::prefspage::PROJECT_LINES)
         },
     ));
-    v.push(step("截圖：設定的檢查更新", |_| {}, |c, _| screenshot(c, "33-檢查更新")));
-    v.push(step("更新：設定的「下載並安裝」（隔離模式不下載），Esc 關閉設定", move |c| {
-        click(c, "", update_button_pos());
-        key(c, "", VK_ESCAPE);
-    }, move |_, a| {
-        expect("狀態列", status(a).as_deref(), Some("效能與冒煙測試不安裝更新"))?;
-        expect("設定", a.settings_page().is_none(), true)
-    }));
-    v.push(step("更新：點提示開啟選單", |c| click(c, "", update_indicator_pos()), |_, a| {
-        let labels: Vec<String> = a.menu.as_ref().map(|m| m.levels[0].items.iter().map(|i| i.label.clone()).collect()).unwrap_or_default();
-        expect("選單", labels, ["下載並安裝 99.1.0", "版本說明", "", "略過這個版本", "不再檢查更新"].map(String::from).to_vec())
-    }));
-    v.push(step("截圖：更新提示與選單", |_| {}, |c, _| screenshot(c, "26-更新提示")));
-    v.push(step("更新：下載並安裝（隔離模式不下載）", |c| click(c, "", menu_item_pos(0, "下載並安裝 99.1.0")), move |_, a| {
-        expect("選單", a.menu.is_none(), true)?;
-        expect("狀態列", status(a).as_deref(), Some("效能與冒煙測試不安裝更新"))?;
-        expect("提示仍在", available(a).as_deref(), Some("99.1.0"))
-    }));
+    v.push(step("截圖：關於", |_| {}, |c, _| screenshot(c, "33-關於")));
     v.push(step(
-        "更新：略過這個版本",
-        |c| {
-            click(c, "", update_indicator_pos());
-            click(c, "", menu_item_pos(0, "略過這個版本"));
+        "更新：「關於」的「更新」（隔離模式不安裝），Esc 關閉設定",
+        move |c| {
+            click(c, "", about_pos(is_status, 1));
+            key(c, "", VK_ESCAPE);
         },
         move |_, a| {
-            expect("提示", a.update_indicator_text(), None)?;
-            let st = status(a).unwrap_or_default();
-            if st.contains("已略過 99.1.0") { Ok(()) } else { Err(format!("狀態列：{st}")) }
+            expect("狀態列", status(a).as_deref(), Some("效能與冒煙測試不安裝更新"))?;
+            expect("設定", a.settings_page().is_none(), true)
         },
     ));
+    v.push(step("截圖：新版本的橫幅", |_| {}, |c, _| screenshot(c, "26-更新橫幅")));
+    v.push(step("更新：橫幅的「略過此版本」記下 主.次、橫幅消失", |c| click(c, "", banner_pos(1)), move |_, a| {
+        expect("略過", a.update_state.as_ref().and_then(|s| s.skipped.clone()).as_deref(), Some("99.1"))?;
+        expect("橫幅", banner_text(a), None)
+    }));
     v.push(step(
-        "更新：啟動時的檢查只提示功能更新、不提示略過的版本",
+        "更新：只有功能更新顯示橫幅（修補版只在「關於」），略過涵蓋整個次版本",
         |_| {},
         move |_, a| {
-            let v = |s| zing_core::update::Version::parse(s);
-            let cur = zing_core::update::Version::current();
-            // 修補版、略過的次版本不提示；更新的次版本提示
-            a.on_update_checked(Ok(Some(format!("v{}.{}.{}", cur.major, cur.minor, cur.patch + 1))), None, false);
-            expect("修補版", a.update_indicator_text(), None)?;
-            a.on_update_checked(Ok(Some("v99.1.3".into())), v("99.1.0"), false);
-            expect("略過的次版本", a.update_indicator_text(), None)?;
-            a.on_update_checked(Ok(Some("v99.2.0".into())), v("99.1.0"), false);
-            expect("新的次版本", available(a).as_deref(), Some("99.2.0"))
+            let cur = crate::update::current();
+            let checked = |a: &mut App, latest: String| {
+                let mut s = a.update_state.clone().unwrap_or_default();
+                s.latest = Some(latest);
+                a.on_update_checked(s, None, false);
+            };
+            let patch = format!("{}.{}.{}", cur.major, cur.minor, cur.patch + 1);
+            checked(a, patch.clone());
+            expect("修補版的橫幅", banner_text(a), None)?;
+            expect("修補版的「關於」", a.about_status().0, format!("有新版本 v{patch}"))?;
+            checked(a, "99.1.3".into());
+            expect("略過的次版本", banner_text(a), None)?;
+            checked(a, "99.2.0".into());
+            expect("新的次版本", banner_text(a).as_deref(), Some("有新版本 v99.2.0"))
         },
     ));
+    let f10 = VIRTUAL_KEY(0x79);
     v.push(step(
-        "更新：不再檢查更新（關閉設定並收起提示）",
-        |c| {
-            click(c, "", update_indicator_pos());
-            click(c, "", menu_item_pos(0, "不再檢查更新"));
-        },
-        |_, a| {
-            expect("設定", a.config.update.check, false)?;
-            expect("提示", a.update_indicator_text(), None)
-        },
-    ));
-    v.push(step(
-        "更新：已是最新版本時，設定的「立即檢查」在那一列顯示結果",
+        "更新：F10 進入命令列、Tab 移到橫幅的第一個按鈕",
         move |c| {
-            let cur = zing_core::update::Version::current();
-            *crate::update::TEST_LATEST.lock().unwrap() = Some(format!("v{}.{}.{}", cur.major, cur.minor, cur.patch));
-            with_app(|a| a.open_settings_on(zing_core::prefs::Kind::UpdateCheck));
-            click(c, "", update_button_pos());
+            key(c, "", f10);
+            key(c, "", VK_TAB);
         },
         |_, a| {
-            let cur = zing_core::update::Version::current();
-            expect("那一列", a.update_row_text(), (format!("已是最新版本（{cur}）"), false))?;
-            expect("按鈕", a.update_button_label(), "立即檢查")?;
-            a.close_side_panels();
-            Ok(())
+            expect("命令列", a.bar_focus, None)?;
+            expect("橫幅", a.banner_focus, Some(0))
         },
     ));
     v.push(step(
-        "更新：還原設定（結束）",
+        "更新：End 移到 ✕、Enter（稍後）：這次執行不再顯示",
+        |c| {
+            key(c, "", VK_END);
+            key(c, "", VK_RETURN);
+        },
+        move |_, a| {
+            expect("橫幅", banner_text(a), None)?;
+            expect("焦點", a.banner_focus, None)
+        },
+    ));
+    v.push(step(
+        "更新：關閉自動檢查時不顯示橫幅",
+        |_| {
+            with_app(|a| {
+                a.banner_dismissed = false;
+                if let Some(i) = zing_core::prefs::PREFS.iter().position(|p| p.key == "update.check") {
+                    a.set_pref(i, "false".into());
+                }
+            });
+        },
+        move |_, a| {
+            expect("關閉時", banner_text(a), None)?;
+            if let Some(i) = zing_core::prefs::PREFS.iter().position(|p| p.key == "update.check") {
+                a.set_pref(i, "true".into());
+            }
+            expect("開啟時", banner_text(a).as_deref(), Some("有新版本 v99.2.0"))
+        },
+    ));
+    v.push(step(
+        "更新：已是最新版時，「關於」的「檢查更新」顯示上次檢查的時間",
+        move |c| {
+            *crate::update::TEST_LATEST.lock().unwrap() = Some(crate::update::current().to_string());
+            with_app(|a| a.open_settings_on(zing_core::prefs::Kind::About));
+            click(c, "", about_pos(is_title, 0));
+        },
+        move |_, a| {
+            let (text, error, actions) = a.about_status();
+            if !text.starts_with("已是最新版（上次檢查：今天 ") {
+                return Err(format!("關於：{text}"));
+            }
+            expect("錯誤與按鈕", (error, actions), (false, Vec::new()))?;
+            expect("橫幅", banner_text(a), None)
+        },
+    ));
+    v.push(step(
+        "更新：還原（結束）",
         |_| {
             *crate::update::TEST_LATEST.lock().unwrap() = None;
+            *crate::about::TEST_PROJECTS.lock().unwrap() = None;
             with_app(|a| {
-                if let Some(i) = zing_core::prefs::PREFS.iter().position(|p| p.key == "update.check") {
-                    a.set_pref(i, "true".into());
-                }
+                a.close_side_panels();
+                a.update_state = None;
                 a.status = None;
             });
         },
-        |_, a| expect("設定", a.config.update.check, true),
+        |_, a| expect("設定", (a.config.update.check, a.settings_page().is_none()), (true, true)),
     ));
 
     // ------------------------------------------------ 歡迎畫面（隔離模式不是第一次啟動：以命令開啟；設定只改記憶體）

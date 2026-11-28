@@ -191,8 +191,6 @@ jobs:
     with:
       name: zing-explore
       platforms: '{"windows-x86_64": "zing-explore-windows-x64.zip"}'
-      # 接入 zoo-release 的測試：只建草稿。確認測試 tag 的草稿後移除這一行
-      publish: false
     secrets: inherit
 
   version:

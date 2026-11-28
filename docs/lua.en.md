@@ -1157,7 +1157,7 @@ app.exit()
 
 ### `update.check()`
 
-Check for a new version now (regardless of the once-a-day limit and the setting; any newer version is shown, including patch releases and skipped versions)
+Check for a new version now and show the result on the About page in Settings (regardless of the once-a-day limit and the automatic check setting; patch releases and skipped versions are shown too)
 
 ```lua
 update.check()

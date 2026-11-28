@@ -34,5 +34,4 @@ pub mod testdir;
 pub mod text;
 pub mod textpreview;
 pub mod theme;
-pub mod update;
 pub mod volindex;

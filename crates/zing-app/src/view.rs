@@ -78,8 +78,16 @@ pub struct Layout {
     pub jobs: Option<Rect>,
     /// 狀態列上的檔案作業進度（面板收起時）
     pub jobs_indicator: Option<Rect>,
-    /// 狀態列上的「有新版本」（update.rs）
-    pub update_indicator: Option<Rect>,
+    /// 新版本的橫幅（命令列下方，update.rs）
+    pub banner: Option<BannerLayout>,
+}
+
+/// 新版本的橫幅：整條、每個目標（按鈕，最後可能是 ✕；依 `Banner::actions` 的順序）、下載進度
+#[derive(Clone, Debug, Default)]
+pub struct BannerLayout {
+    pub bar: Rect,
+    pub targets: Vec<Rect>,
+    pub progress: Option<Rect>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -125,6 +133,8 @@ pub enum Hit {
     ThemePanel,
     /// 設定對話框：列（`SettingsPage::rows` 的索引）、分頁、「關閉」、對話框其他位置；對話框外（點了關閉）
     SettingsRow(usize),
+    /// 一列中的第幾個按鈕或連結（「關於」頁：檢查更新、更新的狀態、連結）
+    SettingsPart(usize, usize),
     SettingsTab(usize),
     SettingsOutside,
     /// 確認對話框（confirm.rs）：按鈕（0 確認、1 取消）、卡片其他位置、卡片外（點了取消）
@@ -178,8 +188,9 @@ pub enum Hit {
     JobsPanel,
     /// 狀態列上的檔案作業進度
     JobsIndicator,
-    /// 狀態列上的「有新版本」
-    UpdateIndicator,
+    /// 新版本的橫幅：第幾個目標（按鈕，最後可能是 ✕）、橫幅的其他位置
+    Banner(usize),
+    BannerBar,
 }
 
 /// `App::frame` 怎麼畫
@@ -269,11 +280,6 @@ impl App {
             let tw = self.gfx.measure(&text, Font::Small) + 16.0;
             lay.jobs_indicator = Some(Rect::new(w - 8.0 - tw, lay.status.t, w - 4.0, lay.status.b));
         }
-        if let Some(text) = self.update_indicator_text() {
-            let r = lay.jobs_indicator.map_or(w - 4.0, |j| j.l - 4.0);
-            let tw = self.gfx.measure(&text, Font::Small) + 16.0;
-            lay.update_indicator = Some(Rect::new(r - tw, lay.status.t, r, lay.status.b));
-        }
 
         // 主體：樹狀列 + 窗格
         // 命令列（工具列下方）
@@ -281,14 +287,25 @@ impl App {
         if bar_h > 0.0 {
             lay.cmdbar = Some(self.layout_cmdbar(Rect::new(0.0, tb.b, w, tb.b + bar_h)));
         }
+        // 新版本的橫幅（命令列下方）
+        let banner_top = tb.b + bar_h;
+        let banner_h = match self.update_banner() {
+            Some(b) => {
+                let bl = self.layout_banner(Rect::new(0.0, banner_top, w, banner_top + self.banner_height()), &b);
+                let h = bl.bar.h();
+                lay.banner = Some(bl);
+                h
+            }
+            None => 0.0,
+        };
         let mut body_b = lay.status.t - jobs_h;
-        if let Some(th) = self.terminal_height(body_b - tb.b - bar_h - 120.0) {
+        if let Some(th) = self.terminal_height(body_b - tb.b - bar_h - banner_h - 120.0) {
             let top = body_b - th;
             lay.terminal = Some(Rect::new(0.0, top, w, body_b));
             lay.terminal_splitter = Some(Rect::new(0.0, top - SPLITTER_W / 2.0, w, top + SPLITTER_W / 2.0));
             body_b = top - 1.0;
         }
-        let body = Rect::new(0.0, tb.b + bar_h, w, body_b);
+        let body = Rect::new(0.0, banner_top + banner_h, w, body_b);
         let mut panes_area = body;
         let tree_visible = self.tree_visible && self.tree_side != TreeSide::Hidden;
         if tree_visible {
@@ -460,8 +477,8 @@ impl App {
         if let Some(h) = self.jobs_hit(lay, x, y) {
             return h;
         }
-        if lay.update_indicator.is_some_and(|r| r.contains(x, y)) {
-            return Hit::UpdateIndicator;
+        if let Some(b) = lay.banner.as_ref().filter(|b| b.bar.contains(x, y)) {
+            return b.targets.iter().position(|r| r.contains(x, y)).map_or(Hit::BannerBar, Hit::Banner);
         }
         if lay.toolbar.contains(x, y) {
             if let Some(i) = lay.nav.iter().position(|r| r.contains(x, y)) {
@@ -622,6 +639,7 @@ impl App {
         crate::perf::mark("begin_draw");
         self.paint_toolbar(&lay);
         self.paint_cmdbar(&lay);
+        self.paint_banner(&lay);
         if let Some(tr) = lay.tree {
             self.paint_tree(tr);
         }
@@ -1177,15 +1195,7 @@ impl App {
             left.push_str(&tr!("　計算資料夾大小（剩 {n} 個）", n = self.sizes.pending));
         }
         g.text(&left, Font::Small, Rect::new(12.0, s.t, s.r * 0.5, s.b), c.text_secondary);
-        // 「有新版本」一直顯示；其右側（檔案作業進度）照舊，左側的訊息與排序資訊讓出位置
-        let mut right_edge = s.r - 12.0;
-        if let (Some(r), Some(text)) = (lay.update_indicator, self.update_indicator_text()) {
-            if self.hover == Hit::UpdateIndicator {
-                g.fill_round(r.inset(0.0, 3.0), self.theme.metrics.radius, c.hover);
-            }
-            g.text(&text, Font::Small, Rect::new(r.l + 8.0, r.t, r.r, r.b), c.accent);
-            right_edge = r.l - 8.0;
-        }
+        let right_edge = s.r - 12.0;
         if let (Some(r), Some(text)) = (lay.jobs_indicator, self.jobs_indicator_text()) {
             if self.hover == Hit::JobsIndicator {
                 g.fill_round(r.inset(0.0, 3.0), self.theme.metrics.radius, c.hover);

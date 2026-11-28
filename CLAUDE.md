@@ -188,11 +188,13 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   （`ZING_I18N_MISSING=1` 列出缺少的條目）。不翻譯：記錄檔、測試、`guard::io` 的說明、協定字串（`indexproto::UNPARSABLE`）。
   隔離模式（效能、冒煙測試）固定用繁體中文；冒煙測試另有切換成英文、日文的步驟（截圖 `14-英文介面`、`15-日文介面`）。
 - 設定（`prefspage.rs`，命令 `settings.open`）：視窗中央的對話框（`Layout::side_dialog`，沿用右側面板的機制、位置在中央；
-  對話框外點不到、點了關閉，面板沒處理的按鍵不往下傳）。上方是分頁（`Pref::group`：一般、外觀、命令列、系統），
+  對話框外點不到、點了關閉，面板沒處理的按鍵不往下傳）。上方是分頁（`Pref::group`：一般、外觀、命令列、系統、關於），
   分頁中依副標題（`Pref::section`）分組，順序依 `PREFS`。從這裡開出的編輯器（主題、命令列、快速鍵）記住分頁
   （`App::side_return`），完成或 Esc 經 `App::leave_side_editor` 回到原本的分頁。不是設定值的項目也放在這裡、結果顯示在那一列：
   NTFS 索引服務是開關（`Kind::IndexService`：開＝安裝、關＝確認後移除，下方一列是服務狀態 `App::index_note`），
-  檢查更新是 `Kind::UpdateCheck`（結果 `update_row_text`、按鈕依狀態是立即檢查／安裝／取消／重新啟動）；
+  「關於」頁（最後一頁，依 zoo-release 的 docs/UI.md）：`Kind::About` 展開成名稱與版本（「檢查更新」）、介紹、更新的狀態
+  （`App::about_status`，文字與按鈕）三列，`Kind::AboutLinks` 是連結，`Kind::OtherProjects` 是作者的其他專案（about.rs，
+  進入這一頁時讀 apex-code 的專案清單，讀不到就不顯示）；一列中有多個按鈕或連結時以 `Hit::SettingsPart` 區分；
   命令 `index.status`、`update.check` 開啟設定並捲到那一列（`open_settings_on`），不只在狀態列顯示。項目定義在
   `zing_core::prefs::PREFS`，新增設定時同步加上 `Config::pref_value`／
   `set_pref`；改變後的副作用只寫在 `App::apply_config`（比較新舊設定，設定頁與 `config.reload` 共用）。寫回 config.toml 只改那一行（`prefs::write_pref`，保留註解），改不了（行內表、
@@ -223,12 +225,16 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
   鍵盤（`Focus::Side`：開啟面板或按 Tab 進入）：面板只提供一行中可按的目標（`side_targets`，命中與位置），
   ↑↓←→、Home／End、Enter／空白鍵、焦點框都在 sidepanel.rs；改了面板的命中（`*_hit`）就同步改 `*_targets`，
   冒煙測試「每一行的鍵盤目標與滑鼠命中一致」會檢查。
-- 檢查新版本與自動更新（`update.rs`，規則在 `zing_core::update`）：第一幀之後在背景執行緒讀紀錄，距上次超過 24 小時才以
-  WinHTTP 查 `/releases/latest` 的轉址（不用 GitHub API）；只在次版號以上較新時提示（`update.check` 命令連修補版也提示）。
-  安裝：下載指定標籤的壓縮檔與 `.sha256`、核對、以系統的 tar.exe 解壓縮（只用相對路徑，tar 以 ANSI 字碼頁讀參數），
+- 檢查新版本與自動更新（`update.rs`，依 zoo-release 的 docs/UPDATE.md、docs/UI.md；版本比較、提示規則、簽章與 sha256 驗證用
+  `zoo-update`）：讀最新 Release 的 `latest.json`（`/releases/latest/download/`，不用 GitHub API）。第一個視窗在第一幀之後讀紀錄、
+  1 分鐘後第一次自動檢查，之後每小時看一次是否距上次成功檢查滿 24 小時（`TIMER_UPDATE`）；設定 `update.check`（「關於」的
+  「自動檢查更新」）關閉時只有手動檢查。主版或次版較新、沒有略過（記 主.次）時，命令列下方顯示橫幅（`App::update_banner`：
+  版本說明、略過此版本、更新、✕；下載中、已下載、失敗也在這裡；鍵盤：命令列按 Tab、沒有命令列時 F10），修補版只顯示在「關於」。
+  安裝：重新讀 `latest.json`，不降版、下載網址必須是本 repo 的 Release，下載到記憶體後驗證簽章（必須）與 sha256，
+  以系統的 tar.exe 解壓縮（只用相對路徑，tar 以 ANSI 字碼頁讀參數），
   先全部複製成程式旁的 `.new`，再把現有的改名成 `.old`（執行中的 exe 只能改名）、`.new` 換上，失敗就還原；下次啟動刪 `.old`。
-  重新啟動照一般方式關閉視窗，訊息迴圈結束後才啟動新版（`update::relaunch`）。winhttp.dll、bcrypt.dll 延遲載入（build.rs）。
-  隔離模式不連網、不寫檔，冒煙測試以 `update::TEST_LATEST` 提供最新版；連網的測試：
+  重新啟動照一般方式關閉視窗，訊息迴圈結束後才啟動新版（`update::relaunch`）。winhttp.dll 延遲載入（build.rs）。
+  隔離模式不連網、不寫檔，冒煙測試以 `update::TEST_LATEST`、`about::TEST_PROJECTS` 代替；連網的測試：
   `cargo test -p zing-app latest_release -- --ignored --nocapture`；下載最新版安裝到暫存資料夾（整條安裝流程）：
   `cargo test -p zing-app install_latest_release -- --ignored --nocapture`。Release 壓縮檔的內容（檔名、平放在最上層）改變時同步修改這裡。
 - 設為預設的檔案總管（`defaultapp.rs`）：只寫 `HKCU\Software\Classes`（`Directory`、`Drive` 的預設動作 `zing-explore`
@@ -346,7 +352,8 @@ cargo bench -p zing-core --bench core         # 動到排序／篩選／列舉�
     `thumbs\`（外部命令產生的縮圖 PNG，上限 256 MB，見 `thumbs.rs`；Windows 的縮圖只放記憶體，所有視窗合計上限 64 MB）、
     `custom-thumbs\`（手動指定的縮圖，檔名是「磁碟區序號-NTFS 檔案 ID」：鍵只在這台電腦有意義，所以不放在程式旁）、
     `slow-menu-extensions.tsv`（讓右鍵選單變慢的第三方擴充功能，7 天後失效重新量，見 `shellext.rs`）、
-    `update.tsv`（上次檢查新版本的時間、當時的最新版、略過的版本，見 `update.rs`）、
+    `update.json`（上次成功檢查的時間、當時的最新版、略過的 主.次，`zoo_update::UpdateState`，見 `update.rs`）、
+    `projects\`（「關於」頁的作者的其他專案與封面，一天內沿用，見 `about.rs`）、
     `update\`（下載中的更新，安裝完成或失敗後刪除）。
   - 索引服務：執行檔安裝時複製到 `%ProgramFiles%\zing-explore\zing-index.exe`（以 LocalSystem 執行的程式不能放在一般使用者
     可修改的位置）；快照（`<磁碟區序號>.zidx`）與 `index.log` 放在服務帳號的 `%LOCALAPPDATA%`，即

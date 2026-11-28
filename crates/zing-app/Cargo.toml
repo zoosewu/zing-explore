@@ -18,6 +18,10 @@ mlua = { version = "0.11", features = ["lua54", "vendored"] }
 zing-core.workspace = true
 toml.workspace = true
 serde.workspace = true
+# 更新檢查與驗證（latest.json、版本比較、提示規則、簽章與 sha256），zoosewu 各 app 共用：https://github.com/zoosewu/zoo-release
+zoo-update = { git = "https://github.com/zoosewu/zoo-release", tag = "v1.0.0" }
+# 「關於」頁的作者的其他專案（apex-code 的 projects.json：略過不認得的欄位）
+serde_json = "1"
 windows-core = "0.62"
 windows-numerics = "0.3"
 
@@ -40,7 +44,6 @@ features = [
     "Win32_Networking_WinHttp",
     "Win32_Security",
     "Win32_Security_Authorization",
-    "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_Storage_Xps",
     "Win32_System_Com",

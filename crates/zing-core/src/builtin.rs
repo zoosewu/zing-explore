@@ -182,7 +182,7 @@ builtins! {
     ConfigReload, OTHER, None => spec("config.reload", &[], tr_key!("重新載入設定"), "config.reload()");
     ScriptReload, OTHER, Some("sync") => spec("script.reload", &[], tr_key!("重新載入 Lua 腳本"), "script.reload()");
     AppExit, OTHER, None => spec("app.exit", &[], tr_key!("結束程式"), "app.exit()");
-    UpdateCheck, OTHER, None => spec("update.check", &[], tr_key!("立即檢查新版本（不受每天一次與設定的限制；有任何較新的版本都提示，包括修補版與略過的版本）"), "update.check()");
+    UpdateCheck, OTHER, None => spec("update.check", &[], tr_key!("立即檢查新版本，結果顯示在設定的「關於」（不受每天一次與自動檢查設定的限制；修補版與略過的版本也顯示）"), "update.check()");
     WelcomeShow, OTHER, None => spec("welcome.show", &[], tr_key!("開啟歡迎畫面（第一次啟動時顯示的常用設定）"), "welcome.show()");
     ListUp, LIST, None => spec("cursor.up", &[tr_key!("opts? {extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取")], tr_key!("清單：焦點向上移動並選取（縮圖檢視中左右是一格、上下是一列）"), "cursor.up{ extend = true }");
     ListDown, LIST, None => spec("cursor.down", &[tr_key!("opts? {extend?: boolean, keep?: boolean} extend 延伸選取（Shift）；keep 只移動焦點、不改選取（Ctrl）；兩者都有時延伸並保留原本的選取")], tr_key!("清單：焦點向下移動並選取（縮圖檢視中左右是一格、上下是一列）"), "cursor.down{ extend = true }");

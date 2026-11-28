@@ -359,10 +359,16 @@ impl App {
             .collect()
     }
 
-    /// F10：進入或離開命令列
+    /// F10：進入或離開命令列（沒有命令列時進入新版本的橫幅）
     pub fn cmdbar_focus_toggle(&mut self) {
+        if self.banner_focus.take().is_some() {
+            return self.invalidate();
+        }
         if self.bar_focus.take().is_none() {
             self.bar_focus = self.bar_focusable().first().copied();
+            if self.bar_focus.is_none() {
+                self.enter_banner();
+            }
             self.show_bar_tip();
         } else {
             self.hide_tip();
@@ -419,7 +425,12 @@ impl App {
                 self.invalidate();
             }
             0x0D | 0x20 | 0x28 => self.bar_activate(),
-            0x1B | 0x79 | 0x09 => self.leave_cmdbar(),
+            0x1B | 0x79 => self.leave_cmdbar(),
+            // Tab：移到新版本的橫幅（沒有橫幅就離開命令列）
+            0x09 => {
+                self.leave_cmdbar();
+                self.enter_banner();
+            }
             _ => {
                 self.leave_cmdbar();
                 return false;

@@ -155,12 +155,14 @@ pub enum Msg {
     TerminalExited { generation: u64 },
     TerminalFailed { generation: u64, error: String },
     TerminalPaste(String),
-    /// 檢查新版本的結果：最新版的標籤（沒有任何 Release 時為 None）、略過的版本；`manual` 為 update.check 命令
-    UpdateChecked { latest: Result<Option<String>, String>, skipped: Option<zing_core::update::Version>, manual: bool },
+    /// 更新檢查的紀錄（啟動時讀到的、檢查後的）與檢查失敗的原因；`manual`：update.check 命令、「關於」頁的按鈕
+    UpdateChecked { state: Box<zoo_update::UpdateState>, error: Option<String>, manual: bool },
+    /// 「關於」頁的作者的其他專案（about.rs；讀不到時是空的）
+    OtherProjects(Vec<crate::about::Project>),
     /// 下載更新的進度（0–100）
     UpdateProgress { percent: u32 },
-    /// 更新安裝完成（Ok(false)：途中取消）
-    UpdateInstalled(Result<bool, String>),
+    /// 更新安裝完成、取消或沒有這個平台的檔案
+    UpdateInstalled(Result<crate::update::Installed, String>),
     /// 是否為預設的檔案總管（defaultapp.rs）；`toggled`：使用者切換的結果（顯示訊息）
     DefaultApp { result: Result<crate::defaultapp::Status, String>, toggled: bool },
     /// 其他程式要 zing 開啟的資料夾（shellwin.rs 的 Navigate、BrowseObject）

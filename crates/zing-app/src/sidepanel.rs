@@ -97,6 +97,7 @@ impl Hit {
                 | Hit::ThemeLink(_)
                 | Hit::ThemePanel
                 | Hit::SettingsRow(_)
+                | Hit::SettingsPart(..)
                 | Hit::SettingsTab(_)
                 | Hit::SettingsButton(_)
                 | Hit::SettingsPanel
@@ -126,6 +127,7 @@ impl Hit {
             | Hit::ThemeSlider(k)
             | Hit::ThemeDelete(k)
             | Hit::SettingsRow(k)
+            | Hit::SettingsPart(k, _)
             | Hit::BarEditRow(k)
             | Hit::BarEditPart(k, _)
             | Hit::KeysRow(k)

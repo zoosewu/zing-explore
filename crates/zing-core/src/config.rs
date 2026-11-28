@@ -112,7 +112,7 @@ impl Default for TerminalConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateConfig {
-    /// 啟動時檢查新版本（距上次檢查超過 24 小時才連線，見 `update`）
+    /// 自動檢查更新（啟動 1 分鐘後與之後每 24 小時，見 zing-app 的 update.rs）
     pub check: bool,
 }
 

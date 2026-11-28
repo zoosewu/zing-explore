@@ -406,12 +406,8 @@ impl App {
             Hit::JobCancel(id) => self.job_cancel(id),
             Hit::JobsClear => self.jobs_clear(),
             Hit::JobsClose | Hit::JobsIndicator => self.jobs_toggle(),
-            Hit::UpdateIndicator => {
-                if let Some(r) = self.layout.update_indicator {
-                    self.open_update_menu(r);
-                }
-            }
-            Hit::None | Hit::PaletteRow(_) | Hit::Palette | Hit::JobsPanel => {}
+            Hit::Banner(k) => self.banner_click(k),
+            Hit::None | Hit::PaletteRow(_) | Hit::Palette | Hit::JobsPanel | Hit::BannerBar => {}
             // 右側面板的命中在 match 之前已交給 side_click
             _ => {}
         }
@@ -730,9 +726,9 @@ impl App {
             self.keys_key(vk, mods);
             return true;
         }
-        // 彈出清單：下拉選單、歡迎畫面、命令列（F10）。按鍵先找 popup 情境的命令（ui.* 交給 App::ui）；
-        // 命令列沒有處理的（例如 Tab）照樣往下找全域的快速鍵
-        if self.menu.is_some() || self.welcome.is_some() || self.bar_focus.is_some() {
+        // 彈出清單：下拉選單、歡迎畫面、命令列（F10）、新版本的橫幅。按鍵先找 popup 情境的命令（ui.* 交給 App::ui）；
+        // 命令列沒有處理的照樣往下找全域的快速鍵
+        if self.menu.is_some() || self.welcome.is_some() || self.bar_focus.is_some() || self.banner_focus.is_some() {
             match self.popup_key(chord, Scope::Popup) {
                 PopupKey::Cmd(cmd) => {
                     if self.popup_command(&cmd) {
@@ -758,7 +754,12 @@ impl App {
                 self.suppress_char = true;
                 return self.welcome_key(vk, mods.shift);
             }
-            if self.cmdbar_key(vk) {
+            if self.banner_focus.is_some() {
+                if self.banner_key(vk) {
+                    self.suppress_char = true;
+                    return true;
+                }
+            } else if self.cmdbar_key(vk) {
                 self.suppress_char = true;
                 return true;
             }

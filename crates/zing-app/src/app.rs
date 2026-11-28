@@ -61,6 +61,8 @@ pub const TIMER_MENU_PREPARE: usize = 15;
 pub const TIMER_KEY_MENU_PREPARE: usize = 16;
 /// scripts 資料夾的 .lua 改變後停一下才重新載入（script.rs）
 pub const TIMER_SCRIPT_RELOAD: usize = 17;
+/// 自動檢查更新（update.rs：啟動 1 分鐘後，之後每小時看一次是否已滿 24 小時）
+pub const TIMER_UPDATE: usize = 18;
 
 /// 右鍵選單的自訂項目
 pub const MENU_NEW_TAB: u32 = shell::EXTRA_ID_BASE + 1;
@@ -245,8 +247,16 @@ pub struct App {
     pub perf: Option<Perf>,
     /// 效能或冒煙測試：使用預設設定、不讀寫使用者的工作階段
     pub isolated: bool,
-    /// 新版本的提示與下載（update.rs）
+    /// 更新的下載與安裝（update.rs）
     pub update: crate::update::Update,
+    /// 更新檢查的紀錄（上次檢查、最新版、略過的 主.次；第一個視窗啟動時在背景讀取，還沒讀到時為 None）
+    pub update_state: Option<zoo_update::UpdateState>,
+    /// 手動檢查中、失敗（「關於」頁）
+    pub update_check: crate::update::CheckStatus,
+    /// 橫幅按了 ✕（這次執行期間不再顯示）
+    pub banner_dismissed: bool,
+    /// 鍵盤焦點在橫幅的第幾個目標（按鈕、✕）
+    pub banner_focus: Option<usize>,
     /// 是否為預設的檔案總管（defaultapp.rs，登錄在背景讀取；還沒讀到時為 None）
     pub default_app: Option<crate::defaultapp::Status>,
     /// 登記到 ShellWindows（shellwin.rs，設為預設的檔案總管時）
@@ -258,8 +268,6 @@ pub struct App {
     /// NTFS 索引服務是否已安裝（背景查詢，None 是還不知道）與狀態的說明（設定的開關下方）：設定與歡迎畫面共用
     pub index_installed: Option<bool>,
     pub index_note: Option<(String, bool)>,
-    /// 設定的「檢查更新」那一列顯示的結果（立即檢查之後）
-    pub update_note: Option<(String, bool)>,
     /// 檔案作業的復原、重做（undo.rs）：重做的是（說明, 原本的作業）
     pub undo_stack: Vec<crate::undo::Undo>,
     pub redo_stack: Vec<(String, crate::shell::FileOp)>,
@@ -420,7 +428,10 @@ impl App {
             confirm: None,
             index_installed: None,
             index_note: None,
-            update_note: None,
+            update_state: None,
+            update_check: Default::default(),
+            banner_dismissed: false,
+            banner_focus: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             side_return: None,
@@ -1306,7 +1317,8 @@ impl App {
             Msg::IndexStatus { text, error } => self.on_index_status(text, error),
             Msg::ScriptsChanged => self.on_scripts_changed(),
             Msg::CrumbFolders { folder, names } => self.on_crumb_folders(folder, names),
-            Msg::UpdateChecked { latest, skipped, manual } => self.on_update_checked(latest, skipped, manual),
+            Msg::UpdateChecked { state, error, manual } => self.on_update_checked(*state, error, manual),
+            Msg::OtherProjects(list) => self.on_other_projects(list),
             Msg::UpdateProgress { percent } => self.on_update_progress(percent),
             Msg::UpdateInstalled(result) => self.on_update_installed(result),
             Msg::DefaultApp { result, toggled } => self.on_default_app(result, toggled),
@@ -1838,8 +1850,8 @@ impl App {
             // 關閉所有視窗；最後一個關閉的視窗照常詢問進行中的檔案作業
             Cmd::AppExit => crate::hub::close_all(),
             Cmd::UpdateCheck => {
-                // 結果顯示在設定的「檢查更新」那一列
-                self.open_settings_on(zing_core::prefs::Kind::UpdateCheck);
+                // 結果顯示在設定的「關於」頁
+                self.open_settings_on(zing_core::prefs::Kind::About);
                 self.check_update_now();
             }
             Cmd::WelcomeShow => self.open_welcome(),
@@ -1961,10 +1973,6 @@ impl App {
         // 下次游標停住時以新的設定重新準備右鍵選單
         if self.config.context_menu != old.context_menu {
             self.menu_prepared = None;
-        }
-        // 關掉更新檢查：收起還沒處理的提示（下載中、已安裝的不動）
-        if !self.config.update.check && matches!(self.update, crate::update::Update::Available { .. }) {
-            self.update = crate::update::Update::None;
         }
         self.invalidate();
     }

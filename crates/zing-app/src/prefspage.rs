@@ -13,6 +13,9 @@
 //! - 指定的分頁（`Kind::Tabs`）：點一下改成目前開著的分頁。設為預設的檔案總管（`Kind::DefaultApp`）：開關顯示登錄的狀態
 //!   （開啟設定頁時在背景讀取），切換在背景寫入登錄（`defaultapp.rs`）。
 //! - 其他設定（工具列按鈕、縮圖產生器、快速鍵…）以列出的命令開啟對應的編輯器。
+//! - 最後一頁「關於」（zoo-release 的 docs/UI.md）：名稱、版本與「檢查更新」、一句話介紹、更新的狀態與它的按鈕
+//!   （update.rs 的 `about_status`）、自動檢查更新、連結（版本說明・原始碼・回報問題・授權）、作者的其他專案
+//!   （about.rs，進入這一頁時讀取，讀不到就不顯示）。一列中有多個按鈕或連結時以 `Hit::SettingsPart` 區分。
 
 use zing_core::prefs::{BUILTIN_THEMES, Kind, PREFS, choice_label, groups, toml_literal};
 
@@ -23,6 +26,7 @@ use crate::services::Msg;
 use crate::settings;
 use crate::shellext::SlowExt;
 use crate::sidepanel::{Line, footer_buttons, row_rect};
+use crate::update::UpdateAction;
 use crate::view::Hit;
 use crate::window;
 
@@ -41,7 +45,12 @@ pub struct SettingsPage {
     pub user_themes: Vec<String>,
     /// 緩慢的右鍵選單擴充功能（進入有表格的分類時在背景讀取）
     pub slow: Vec<SlowExt>,
+    /// 作者的其他專案（進入「關於」時讀取，about.rs）
+    pub projects: Vec<crate::about::Project>,
 }
+
+/// 其他專案每個佔幾列（封面與名稱、介紹）
+pub const PROJECT_LINES: usize = 3;
 
 /// 面板中的一列
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -57,6 +66,14 @@ pub enum Row {
     SlowHead(usize),
     Slow(usize, usize),
     SlowEmpty(usize),
+    /// 「關於」（`Kind::About` 的欄位）：名稱與版本（「檢查更新」）、一句話介紹、更新的狀態（文字與按鈕）
+    AboutTitle(usize),
+    AboutTagline(usize),
+    UpdateStatus(usize),
+    /// 連結：版本說明、原始碼、回報問題、授權（`Kind::AboutLinks`）
+    Links(usize),
+    /// 作者的其他專案（`Kind::OtherProjects`）：第 p 個專案的第 n 列（0–2）
+    Project(usize, usize, usize),
 }
 
 pub struct PanelLayout {
@@ -89,11 +106,30 @@ impl SettingsPage {
         let mut out = Vec::new();
         let mut section = "";
         for (i, p) in PREFS.iter().enumerate().filter(|(_, p)| p.group == *group) {
+            // 沒有其他專案（讀不到、還沒讀到）時整個區塊不顯示，連副標題
+            if p.kind == Kind::OtherProjects && self.projects.is_empty() {
+                continue;
+            }
             if p.section != section {
                 section = p.section;
                 if !section.is_empty() {
                     out.push(Row::Section(section));
                 }
+            }
+            match p.kind {
+                Kind::About => {
+                    out.extend([Row::AboutTitle(i), Row::AboutTagline(i), Row::UpdateStatus(i)]);
+                    continue;
+                }
+                Kind::AboutLinks => {
+                    out.push(Row::Links(i));
+                    continue;
+                }
+                Kind::OtherProjects => {
+                    out.extend((0..self.projects.len()).flat_map(|k| (0..PROJECT_LINES).map(move |n| Row::Project(i, k, n))));
+                    continue;
+                }
+                _ => {}
             }
             out.push(Row::Field(i));
             if p.kind == Kind::IndexService {
@@ -189,6 +225,9 @@ impl App {
             let (n, persist) = (self.notifier.clone(), !self.isolated);
             self.pool.spawn(move || n.send(Msg::SlowMenuExts(crate::shellext::slow_list(persist))));
         }
+        if PREFS.iter().any(|p| Some(p.group) == group && p.kind == Kind::OtherProjects) {
+            self.load_other_projects();
+        }
         self.invalidate();
     }
 
@@ -231,15 +270,78 @@ impl App {
         Rect::new(row.r - 4.0 - w, row.t + 2.0, row.r - 4.0, row.b - 2.0)
     }
 
-    /// 只有右端的按鈕可以按的欄位（指定的分頁、檢查更新）：按鈕的位置與文字
+    /// 只有右端的按鈕可以按的欄位（指定的分頁）：按鈕的位置與文字
     pub fn field_button(&self, i: usize, row: Rect) -> Option<(Rect, &'static str)> {
         let label = match PREFS[i].kind {
             Kind::Tabs => USE_CURRENT_TABS,
-            Kind::UpdateCheck => self.update_button_label(),
             _ => return None,
         };
         Some((self.row_button(row, label), label))
     }
+
+    /// 列右端由右往左排的按鈕（`labels` 是原文，依顯示的順序）
+    fn right_buttons(&self, row: Rect, labels: &[&'static str]) -> Vec<Rect> {
+        let mut right = row.r - 4.0;
+        let mut out: Vec<Rect> = labels
+            .iter()
+            .rev()
+            .map(|l| {
+                let w = self.gfx.measure(zing_core::i18n::tr(l), Font::Text) + 24.0;
+                let r = Rect::new(right - w, row.t + 2.0, right, row.b - 2.0);
+                right -= w + 6.0;
+                r
+            })
+            .collect();
+        out.reverse();
+        out
+    }
+
+    /// 「關於」的連結：（文字, 網址）
+    fn about_links() -> [(String, String); 4] {
+        let repo = format!("https://github.com/{}", crate::update::REPO);
+        [
+            (tr!("版本說明").into(), format!("{repo}/releases")),
+            (tr!("原始碼").into(), repo.clone()),
+            (tr!("回報問題").into(), format!("{repo}/issues")),
+            (tr!("授權 {license}", license = crate::update::LICENSE), format!("{repo}/blob/master/LICENSE")),
+        ]
+    }
+
+    /// 連結之間的分隔
+    const LINK_SEP: &'static str = "  ·  ";
+
+    /// 一列中可以按的部分（按鈕、連結）的位置；依 `Hit::SettingsPart` 的順序
+    fn settings_parts(&self, row: Row, rr: Rect) -> Vec<Rect> {
+        match row {
+            Row::AboutTitle(_) => vec![self.row_button(rr, UpdateAction::Check.label())],
+            Row::UpdateStatus(_) => {
+                let labels: Vec<&'static str> = self.about_status().2.iter().map(|a| a.label()).collect();
+                self.right_buttons(rr, &labels)
+            }
+            Row::Links(_) => {
+                let sep = self.gfx.measure(Self::LINK_SEP, Font::Text);
+                let mut x = rr.l + 8.0;
+                Self::about_links()
+                    .iter()
+                    .map(|(t, _)| {
+                        let w = self.gfx.measure(t, Font::Text);
+                        let r = Rect::new(x, rr.t, x + w, rr.b);
+                        x += w + sep;
+                        r
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// 其他專案的卡片（第一列起佔 `PROJECT_LINES` 列）與封面的位置
+    fn project_card(&self, first: Rect) -> (Rect, Rect) {
+        let card = Rect::new(first.l, first.t, first.r, first.t + self.row_h() * PROJECT_LINES as f32);
+        let h = card.h() - 12.0;
+        (card, Rect::new(card.l + 8.0, card.t + 6.0, card.l + 8.0 + (h * 1.6).round(), card.b - 6.0))
+    }
+
 
     /// 緩慢的擴充功能表格的欄：名稱、類型、耗時、開關的左緣
     fn slow_columns(list: Rect) -> [f32; 4] {
@@ -275,6 +377,14 @@ impl App {
                     }
                     Some(Row::Field(_)) => return Hit::SettingsRow(k),
                     Some(Row::Slow(..)) if self.slow_table_enabled() => return Hit::SettingsRow(k),
+                    // 其他專案：卡片的任何一列都是第一列（鍵盤目標也在第一列）
+                    Some(Row::Project(_, _, n)) => return Hit::SettingsRow(k - n),
+                    Some(&row @ (Row::AboutTitle(_) | Row::UpdateStatus(_) | Row::Links(_))) => {
+                        let (rr, _) = self.settings_row_rects(pl.list, k, page.scroll);
+                        if let Some(n) = self.settings_parts(row, rr).iter().position(|r| r.contains(x, y)) {
+                            return Hit::SettingsPart(k, n);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -297,6 +407,13 @@ impl App {
                     }
                     Some(Row::Field(_)) => vec![(Hit::SettingsRow(k), rr)],
                     Some(Row::Slow(..)) if self.slow_table_enabled() => vec![(Hit::SettingsRow(k), rr)],
+                    // 其他專案：整張卡片是一個目標（在第一列）
+                    Some(Row::Project(_, _, 0)) => vec![(Hit::SettingsRow(k), self.project_card(rr).0)],
+                    // 「檢查更新」停用時沒有目標
+                    Some(Row::AboutTitle(_)) if !self.can_check_update() => Vec::new(),
+                    Some(&row @ (Row::AboutTitle(_) | Row::UpdateStatus(_) | Row::Links(_))) => {
+                        self.settings_parts(row, rr).into_iter().enumerate().map(|(n, r)| (Hit::SettingsPart(k, n), r)).collect()
+                    }
                     _ => Vec::new(),
                 }
             }
@@ -336,9 +453,13 @@ impl App {
                         }
                         Kind::DefaultApp => self.toggle_default_app(),
                         Kind::IndexService => self.toggle_index_service(),
-                        Kind::UpdateCheck => self.update_button_click(),
-                        Kind::SlowList => {}
+                        Kind::SlowList | Kind::About | Kind::AboutLinks | Kind::OtherProjects => {}
                     },
+                    Some(Row::Project(_, p, _)) => {
+                        if let Some(url) = page.projects.get(p).map(|p| p.url.clone()) {
+                            crate::services::launch(&self.notifier, url, None, None, None, crate::services::Show::Normal);
+                        }
+                    }
                     Some(Row::Slow(i, e)) if self.slow_table_enabled() => {
                         let Some(clsid) = page.slow.get(e).map(|e| e.clsid.clone()) else { return };
                         let mut allow = self.config.context_menu.allow_slow.clone();
@@ -349,6 +470,23 @@ impl App {
                             None => allow.push(clsid),
                         }
                         self.set_pref(i, allow.join(","));
+                    }
+                    _ => {}
+                }
+            }
+            Hit::SettingsPart(k, n) => {
+                let Some(page) = self.settings_page() else { return };
+                match page.rows().get(k) {
+                    Some(Row::AboutTitle(_)) => self.check_update_now(),
+                    Some(Row::UpdateStatus(_)) => {
+                        if let Some(&a) = self.about_status().2.get(n) {
+                            self.update_action(a);
+                        }
+                    }
+                    Some(Row::Links(_)) => {
+                        if let Some((_, url)) = Self::about_links().into_iter().nth(n) {
+                            crate::services::launch(&self.notifier, url, None, None, None, crate::services::Show::Normal);
+                        }
                     }
                     _ => {}
                 }
@@ -419,6 +557,20 @@ impl App {
         });
     }
 
+    /// 按鈕；停用時（`enabled` 為 false）文字為次要色、沒有游標停住的底色
+    fn paint_button_state(&self, b: Rect, label: &'static str, main: bool, hot: bool, enabled: bool) {
+        if enabled {
+            return self.paint_button(b, label, main, hot);
+        }
+        let c = &self.theme.color;
+        let radius = self.theme.metrics.radius;
+        self.gfx.fill_round(b, radius, c.background);
+        self.gfx.stroke_round(b, radius, c.border, 1.0);
+        let text = zing_core::i18n::tr(label);
+        let w = self.gfx.measure(text, Font::Text);
+        self.gfx.text(text, Font::Text, Rect::new(b.l + (b.w() - w) / 2.0, b.t, b.r, b.b), c.text_secondary);
+    }
+
     /// 開關：軌道與圓鈕（`enabled` 為 false 時灰階）；回傳軌道的右緣
     pub fn paint_switch(&self, rr: Rect, l: f32, on: bool, enabled: bool) -> f32 {
         let c = &self.theme.color;
@@ -467,7 +619,9 @@ impl App {
         g.push_clip(pl.list);
         for (k, row) in page.rows().iter().enumerate() {
             let (rr, value) = self.settings_row_rects(pl.list, k, page.scroll);
-            if rr.b < pl.list.t || rr.t > pl.list.b {
+            // 其他專案的卡片從第一列畫到第三列
+            let extra = if matches!(row, Row::Project(_, _, 0)) { self.row_h() * (PROJECT_LINES - 1) as f32 } else { 0.0 };
+            if rr.b + extra < pl.list.t || rr.t > pl.list.b {
                 continue;
             }
             let hover = self.hover == Hit::SettingsRow(k);
@@ -542,13 +696,6 @@ impl App {
                             let label = if on { tr!("開") } else { tr!("關") };
                             g.text(label, Font::Text, Rect::new(right + 8.0, rr.t, vr.r, rr.b), c.text_secondary);
                         }
-                        Kind::UpdateCheck => {
-                            if let Some((button, label)) = self.field_button(i, rr) {
-                                let (text, error) = self.update_row_text();
-                                g.text(&text, Font::Text, Rect::new(vr.l, rr.t, button.l - 8.0, rr.b), if error { c.error } else { c.text_secondary });
-                                self.paint_button(button, label, false, hover);
-                            }
-                        }
                         Kind::DefaultApp => {
                             let on = self.default_app == Some(crate::defaultapp::Status::On);
                             let right = self.paint_switch(rr, vr.l, on, self.default_app.is_some());
@@ -556,7 +703,7 @@ impl App {
                             g.text(label, Font::Text, Rect::new(right + 8.0, rr.t, vr.r, rr.b), c.text_secondary);
                         }
                         Kind::Action(_) => g.text("›", Font::Text, Rect::new(rr.r - 18.0, rr.t, rr.r, rr.b), c.text_secondary),
-                        Kind::SlowList => {}
+                        Kind::SlowList | Kind::About | Kind::AboutLinks | Kind::OtherProjects => {}
                     }
                 }
                 Row::SlowHead(_) => {
@@ -584,6 +731,58 @@ impl App {
                     let msg = tr!("目前沒有偵測到緩慢的擴充功能");
                     g.text(msg, Font::Small, Rect::new(rr.l + 8.0, rr.t, rr.r - 6.0, rr.b), c.text_secondary);
                 }
+                Row::AboutTitle(_) => {
+                    let name = "zing-explore";
+                    let w = g.measure(name, Font::Bold);
+                    g.text(name, Font::Bold, Rect::new(rr.l + 8.0, rr.t, rr.r, rr.b), c.text);
+                    let version = format!("v{}", crate::update::current());
+                    g.text(&version, Font::Text, Rect::new(rr.l + 8.0 + w + 10.0, rr.t, rr.r, rr.b), c.text_secondary);
+                    let b = self.settings_parts(*row, rr)[0];
+                    self.paint_button_state(b, UpdateAction::Check.label(), false, self.hover == Hit::SettingsPart(k, 0), self.can_check_update());
+                }
+                Row::AboutTagline(_) => {
+                    g.text(tr!("輕量、快速、可自訂的 Windows 11 檔案總管"), Font::Text, Rect::new(rr.l + 8.0, rr.t, rr.r, rr.b), c.text_secondary)
+                }
+                Row::UpdateStatus(_) => {
+                    let (text, error, actions) = self.about_status();
+                    let buttons = self.settings_parts(*row, rr);
+                    let right = buttons.first().map_or(rr.r - 6.0, |b| b.l - 8.0);
+                    g.text(&text, Font::Text, Rect::new(rr.l + 8.0, rr.t, right, rr.b), if error { c.error } else { c.text });
+                    for (n, (b, a)) in buttons.iter().zip(&actions).enumerate() {
+                        self.paint_button(*b, a.label(), a.primary(), self.hover == Hit::SettingsPart(k, n));
+                    }
+                }
+                Row::Links(_) => {
+                    let parts = self.settings_parts(*row, rr);
+                    for (n, (r, (text, _))) in parts.iter().zip(Self::about_links()).enumerate() {
+                        // 連結用一般的文字色（強調色只表示狀態）；游標停住時加底線
+                        let hot = self.hover == Hit::SettingsPart(k, n);
+                        g.text(&text, Font::Text, *r, if hot { c.text } else { c.text_secondary });
+                        if hot {
+                            g.hline(r.l, r.r, (r.t + r.h() / 2.0 + self.theme.font.size * 0.75).round(), c.text);
+                        }
+                        if n + 1 < parts.len() {
+                            g.text(Self::LINK_SEP, Font::Text, Rect::new(r.r, rr.t, rr.r, rr.b), c.text_secondary);
+                        }
+                    }
+                }
+                Row::Project(_, p, 0) => {
+                    let Some(proj) = page.projects.get(p) else { continue };
+                    let (card, cover) = self.project_card(rr);
+                    if hover {
+                        g.fill_round(card, radius, c.hover);
+                    }
+                    g.fill_round(cover, radius, c.surface);
+                    if let Some(px) = &proj.cover {
+                        g.keyed_image(&format!("about-cover:{}", proj.id), px, cover, 1.0);
+                    }
+                    g.stroke_round(cover, radius, c.border, 1.0);
+                    let x = cover.r + 14.0;
+                    let rh = self.row_h();
+                    g.text(&proj.name, Font::Bold, Rect::new(x, card.t + 4.0, card.r - 8.0, card.t + 4.0 + rh), c.text);
+                    g.text(&proj.tagline, Font::Text, Rect::new(x, card.t + 4.0 + rh, card.r - 8.0, card.b - 4.0), c.text_secondary);
+                }
+                Row::Project(..) => {}
             }
         }
         g.pop_clip();

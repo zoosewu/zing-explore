@@ -143,6 +143,9 @@ impl App {
         if self.welcome.is_some() {
             return self.welcome_key(vk, shift);
         }
+        if self.banner_focus.is_some() {
+            return self.banner_key(vk);
+        }
         if self.bar_focus.is_some() {
             return self.cmdbar_key(vk);
         }

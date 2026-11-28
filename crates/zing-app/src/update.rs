@@ -1,35 +1,47 @@
-//! 檢查新版本與自動更新（版號與提示規則見 `zing_core::update`）。
+//! 檢查新版本與自動更新，依 zoo-release 的規範（docs/UPDATE.md、docs/UI.md）；判斷與驗證用 `zoo_update`。
 //!
-//! - 檢查：啟動時（第一幀之後）在背景執行緒讀紀錄（`%LOCALAPPDATA%\zing-explore\update.tsv`），距上次超過 24 小時
-//!   才以 WinHTTP 向 GitHub 查最新版（`/releases/latest` 不跟隨轉址，從 Location 讀出標籤），否則沿用紀錄中的最新版。
-//!   值得提示時狀態列右側常駐「有新版本」，點了開選單（安裝、版本說明、略過這個版本、不再檢查）。
-//!   設定 `update.check` 關閉時不檢查；`update.check` 命令（設定的「檢查更新」）立即檢查，有任何較新的版本都提示
-//!   （含修補版、略過的版本），結果顯示在設定的那一列（`update_note`），按鈕依狀態是立即檢查、安裝、取消、重新啟動。
-//! - 安裝：下載這個版本的壓縮檔與 .sha256 到 `%LOCALAPPDATA%\zing-explore\update`，核對雜湊後以系統的 tar.exe
-//!   解壓縮（只用相對路徑：tar 以 ANSI 字碼頁讀參數，使用者名稱可能不是 ASCII），再把每個檔案先複製成程式旁的
+//! - 檢查：讀 GitHub 上最新 Release 的 `latest.json`（`/releases/latest/download/`，不經 GitHub API）。
+//!   第一個視窗在第一幀之後讀紀錄（`%LOCALAPPDATA%\zing-explore\update.json`，`zoo_update::UpdateState`）並清掉上次
+//!   更新留下的檔案；啟動 1 分鐘後、之後每小時看一次，距上次成功檢查滿 24 小時才連線（`TIMER_UPDATE`）。
+//!   設定 `update.check`（「關於」頁的「自動檢查更新」）關閉時只有手動檢查。自動檢查失敗不顯示，下次再試。
+//! - 提示：主版或次版較新、沒有略過時，主畫面上方（命令列下方）顯示橫幅（`update_banner`）：版本說明、略過此版本
+//!   （記下 主.次）、更新、✕（這次執行不再顯示）；下載中、已下載、失敗也顯示在橫幅。修補版只顯示在「關於」頁。
+//!   鍵盤：命令列按 Tab（沒有命令列時 F10）進入橫幅，←→ 移動、Enter 執行、Esc 離開（`banner_key`）。
+//! - 「關於」頁（設定的最後一頁，prefspage.rs）：名稱、版本與「檢查更新」，狀態（`about_status`）與它的按鈕。
+//! - 安裝：重新讀 `latest.json`，版本必須比目前新（不降版）、下載網址必須是本 repo 的 Release；下載到記憶體，
+//!   驗證簽章（必須）與 sha256，寫成 `%LOCALAPPDATA%\zing-explore\update\update.zip`，以系統的 tar.exe 解壓縮
+//!   （只用相對路徑：tar 以 ANSI 字碼頁讀參數，使用者名稱可能不是 ASCII），再把每個檔案先複製成程式旁的
 //!   `<名稱>.new`；全部成功後把現有的檔案改名成 `<名稱>.old`（執行中的 exe 可以改名、不能覆蓋）、`.new` 改成正式的名稱，
 //!   途中失敗就還原。下次啟動時刪除 `.old`（其他還在執行的 zing 用著的刪不掉，留到再下次）。
 //!   zing-index.exe 一起換新；新版 zing 啟動時依 `SERVICE_VERSION` 以 UAC 更新已安裝的服務（index.rs）。
+//!   `latest.json` 沒有這個平台的檔案時改為開啟 Release 頁面。
 //! - 重新啟動：照一般方式關閉視窗（儲存工作階段），訊息迴圈結束後才啟動新的 zing.exe（`relaunch`），
 //!   新程序讀到的才是存好的工作階段。
-//! - 網路與檔案都在背景執行緒；WinHTTP 與 bcrypt.dll 延遲載入（build.rs），不影響啟動時間。
+//! - 網路與檔案都在背景執行緒；WinHTTP 延遲載入（build.rs），不影響啟動時間。
 //! - 隔離模式（效能、冒煙測試）不連網、不寫檔；冒煙測試以 `TEST_LATEST` 提供最新版。
 
 use std::ffi::c_void;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use zing_core::text::wide_z;
-use zing_core::update::{self as upd, State, Version};
+use zoo_update::{Manifest, UpdateState, Version, keys};
 
 use crate::app::App;
-use crate::gfx::Rect;
-use crate::menu::{Action, MenuItem};
+use crate::gfx::{Font, Rect};
 use crate::services::{Msg, Show};
+use crate::view::Hit;
 
-/// 冒煙測試：有值時不連網，以這個標籤當作最新版
+/// 本專案的 GitHub repo（Release、latest.json、連結）
+pub const REPO: &str = "zoosewu/zing-explore";
+/// 「關於」頁顯示的授權
+pub const LICENSE: &str = "AGPL-3.0";
+/// 啟動後多久第一次自動檢查；之後每隔多久看一次是否已滿 24 小時
+pub const FIRST_CHECK_MS: u32 = 60_000;
+pub const RECHECK_MS: u32 = 60 * 60_000;
+
+/// 冒煙測試：有值時不連網，以這個版本（`99.1.0`）當作最新版
 #[cfg(feature = "smoke")]
 pub static TEST_LATEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -39,26 +51,88 @@ static RESTART: AtomicBool = AtomicBool::new(false);
 /// 程式旁會被更新換掉的檔案的前綴：清理 `.old`、`.new` 時只動這些，不碰使用者放在旁邊的其他檔案
 const OWN_FILES: &[&str] = &["zing", "LICENSE"];
 
+/// 這個執行檔的版本
+pub fn current() -> Version {
+    Version::parse(env!("CARGO_PKG_VERSION")).expect("Cargo.toml 的版號格式")
+}
+
+/// 下載與安裝的進度
 #[derive(Default)]
 pub enum Update {
     #[default]
-    None,
-    /// 有新版本，等使用者決定
-    Available { tag: String, version: Version },
-    Downloading { tag: String, version: Version, percent: u32, cancel: Arc<AtomicBool> },
+    Idle,
+    Downloading { version: Version, percent: u32, cancel: Arc<AtomicBool> },
     /// 已換好檔案，重新啟動後生效
-    Ready { tag: String, version: Version },
+    Ready { version: Version },
+    Failed { version: Option<Version>, reason: String },
 }
 
-/// 狀態列提示的選單項目
+/// 檢查的狀態（「關於」頁）
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CheckStatus {
+    #[default]
+    Idle,
+    Checking,
+    /// 手動檢查失敗（自動檢查失敗不顯示）
+    Failed,
+}
+
+/// 橫幅與「關於」頁的按鈕
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Choice {
-    Install,
+pub enum UpdateAction {
+    /// 版本說明（Release 頁面）
     Notes,
+    /// 略過此版本（記下 主.次）
     Skip,
-    Disable,
+    Install,
+    /// ✕：這次執行期間不再顯示
+    Later,
     Cancel,
     Restart,
+    /// 手動下載（Release 頁面）
+    Manual,
+    /// 檢查更新
+    Check,
+    /// 檢查失敗後重試
+    Retry,
+}
+
+impl UpdateAction {
+    /// 按鈕的文字（原文）
+    pub fn label(self) -> &'static str {
+        match self {
+            UpdateAction::Notes => tr_key!("版本說明"),
+            UpdateAction::Skip => tr_key!("略過此版本"),
+            UpdateAction::Install => tr_key!("更新"),
+            UpdateAction::Later => tr_key!("稍後"),
+            UpdateAction::Cancel => tr_key!("取消"),
+            UpdateAction::Restart => tr_key!("立即重新啟動"),
+            UpdateAction::Manual => tr_key!("手動下載"),
+            UpdateAction::Check => tr_key!("檢查更新"),
+            UpdateAction::Retry => tr_key!("重試"),
+        }
+    }
+
+    /// 主要按鈕（強調色）
+    pub fn primary(self) -> bool {
+        matches!(self, UpdateAction::Install | UpdateAction::Restart)
+    }
+}
+
+/// 主畫面的橫幅：文字、進度（下載中）、按鈕、是否有 ✕
+pub struct Banner {
+    pub text: String,
+    pub progress: Option<u32>,
+    pub actions: Vec<UpdateAction>,
+    pub close: bool,
+}
+
+/// 安裝的結果
+pub enum Installed {
+    Done(Version),
+    Canceled,
+    /// latest.json 沒有這個平台的檔案：改為開啟 Release 頁面
+    NoAsset(Version),
 }
 
 fn now_secs() -> u64 {
@@ -70,40 +144,53 @@ fn local_dir() -> Option<PathBuf> {
 }
 
 fn state_path() -> Option<PathBuf> {
-    local_dir().map(|d| d.join("update.tsv"))
+    local_dir().map(|d| d.join("update.json"))
 }
 
-fn read_state() -> State {
+fn read_state() -> UpdateState {
     zing_core::guard::io("讀取更新檢查紀錄");
-    state_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| State::parse(&s)).unwrap_or_default()
+    // v0.6 以前的紀錄（格式不同、略過的是整個版本號）：不沿用，下次檢查重新記
+    if let Some(old) = local_dir().map(|d| d.join("update.tsv")) {
+        let _ = std::fs::remove_file(old);
+    }
+    state_path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
-fn write_state(s: &State) {
+fn write_state(s: &UpdateState) {
     zing_core::guard::io("寫入更新檢查紀錄");
-    if let Some(p) = state_path() {
+    if let (Some(p), Ok(text)) = (state_path(), serde_json::to_string_pretty(s)) {
         let _ = p.parent().map(std::fs::create_dir_all);
-        let _ = std::fs::write(p, s.to_text());
+        let _ = std::fs::write(p, text);
     }
 }
 
-/// 背景：清掉上次更新留下的 `.old`／`.new`，再依紀錄或向 GitHub 取得最新版的標籤。
-/// `force`：不管距上次多久都連線。回傳（最新版或錯誤, 略過的版本）
-fn check(force: bool) -> (Result<Option<String>, String>, Option<Version>) {
-    cleanup(&crate::settings::app_dir());
-    let mut st = read_state();
-    let now = now_secs();
-    if !force && !st.due(now) {
-        return (Ok(st.latest.clone()), st.skipped);
+/// `zoo_update` 的錯誤 → 介面上的原因（docs/UI.md 的用詞）
+fn reason(e: zoo_update::Error) -> String {
+    use zoo_update::Error;
+    match e {
+        Error::Signature | Error::SignatureFormat | Error::PublicKey => tr!("簽章驗證失敗").into(),
+        Error::Sha256 => tr!("下載的檔案與雜湊不符").into(),
+        Error::Url(url) => tr!("下載網址不是 zing-explore 的 Release：{url}", url),
+        Error::Manifest(_) => tr!("latest.json 的格式不對").into(),
+        Error::Io(e) => e,
     }
-    match http::latest_tag() {
-        Ok(tag) => {
-            st.last_check = now;
-            st.latest = tag.clone();
+}
+
+fn fetch_manifest() -> Result<Manifest, String> {
+    let text = http::get_bytes(&zoo_update::manifest_url(REPO))?;
+    Manifest::parse(&String::from_utf8_lossy(&text)).map_err(reason)
+}
+
+/// 背景：連線檢查，成功時記下時間與最新版。回傳（紀錄, 錯誤）
+fn check() -> (UpdateState, Option<String>) {
+    let mut st = read_state();
+    match fetch_manifest() {
+        Ok(m) => {
+            st.record_check(now_secs(), &m);
             write_state(&st);
-            (Ok(tag), st.skipped)
+            (st, None)
         }
-        // 失敗時不記時間：下次啟動再試
-        Err(e) => (Err(e), st.skipped),
+        Err(e) => (st, Some(e)),
     }
 }
 
@@ -122,27 +209,29 @@ fn cleanup(dir: &Path) {
     }
 }
 
-/// 背景：下載、核對、解壓縮並換掉 `dst`（程式旁）的檔案。Ok(false) 表示途中取消
-fn install(tag: &str, dst: &Path, cancel: &AtomicBool, progress: &dyn Fn(u32)) -> Result<bool, String> {
+/// 背景：讀 latest.json、下載、驗證、解壓縮並換掉 `dst`（程式旁）的檔案
+fn install(dst: &Path, cancel: &AtomicBool, progress: &dyn Fn(u32)) -> Result<Installed, String> {
     zing_core::guard::io("下載並安裝更新");
+    let manifest = fetch_manifest()?;
+    let version = manifest.version().ok_or_else(|| tr!("latest.json 的格式不對").to_string())?;
+    if version <= current() {
+        return Err(tr!("{version} 沒有比目前的版本新", version = format!("v{version}")));
+    }
+    let Some(asset) = manifest.asset(zoo_update::current_platform()) else { return Ok(Installed::NoAsset(version)) };
+    asset.check_url(REPO).map_err(reason)?;
+    let Some(data) = http::download(&asset.url, cancel, progress)? else { return Ok(Installed::Canceled) };
+    asset.verify(&data, keys::ALL).map_err(reason)?;
     let work = local_dir().ok_or_else(|| tr!("找不到 %LOCALAPPDATA%").to_string())?.join("update");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(work.join("files")).map_err(|e| tr!("無法建立 {dir}：{e}", dir = work.display(), e))?;
     let result = (|| {
-        let sha = http::get_text(&upd::asset_url(tag, &format!("{}.sha256", upd::ASSET)))?;
-        let want = upd::parse_sha256(&sha).ok_or_else(|| tr!("雜湊檔的格式不對").to_string())?;
-        let Some(got) = http::download(&upd::asset_url(tag, upd::ASSET), &work.join("update.zip"), cancel, progress)? else {
-            return Ok(false);
-        };
-        if got != want {
-            return Err(tr!("下載的檔案與雜湊不符，已放棄").into());
-        }
+        std::fs::write(work.join("update.zip"), &data).map_err(|e| tr!("無法建立 {dir}：{e}", dir = work.display(), e))?;
         extract(&work)?;
         if cancel.load(Ordering::Relaxed) {
-            return Ok(false);
+            return Ok(Installed::Canceled);
         }
         replace_files(&work.join("files"), dst)?;
-        Ok(true)
+        Ok(Installed::Done(version))
     })();
     let _ = std::fs::remove_dir_all(&work);
     result
@@ -246,187 +335,203 @@ pub fn relaunch() {
 }
 
 impl App {
-    /// 啟動時（第一幀之後）：清理上次更新留下的檔案，依設定檢查新版本
+    /// 第一個視窗的第一幀之後：讀紀錄、清理上次更新留下的檔案，1 分鐘後第一次自動檢查（`on_update_timer`）
     pub fn startup_update(&mut self) {
         if self.isolated {
             return;
         }
-        let enabled = self.config.update.check;
         let n = self.notifier.clone();
         std::thread::spawn(move || {
-            if enabled {
-                let (latest, skipped) = check(false);
-                n.send(Msg::UpdateChecked { latest, skipped, manual: false });
-            } else {
-                cleanup(&crate::settings::app_dir());
-            }
+            cleanup(&crate::settings::app_dir());
+            n.send(Msg::UpdateChecked { state: Box::new(read_state()), error: None, manual: false });
+        });
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), crate::app::TIMER_UPDATE, FIRST_CHECK_MS, None);
+        }
+    }
+
+    /// `TIMER_UPDATE`：之後每小時看一次；開著自動檢查、距上次成功檢查滿 24 小時才連線
+    pub fn on_update_timer(&mut self) {
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), crate::app::TIMER_UPDATE, RECHECK_MS, None);
+        }
+        let due = self.update_state.as_ref().is_some_and(|s| UpdateState { auto_check: self.config.update.check, ..s.clone() }.check_due(now_secs()));
+        if !due || self.update_check == CheckStatus::Checking || !matches!(self.update, Update::Idle) {
+            return;
+        }
+        let n = self.notifier.clone();
+        std::thread::spawn(move || {
+            let (state, error) = check();
+            n.send(Msg::UpdateChecked { state: Box::new(state), error, manual: false });
         });
     }
 
-    /// 立即檢查（命令 update.check、設定的「檢查更新」）：結果顯示在設定的那一列
+    /// 立即檢查（命令 update.check、「關於」頁的「檢查更新」「重試」）：結果顯示在「關於」頁
     pub fn check_update_now(&mut self) {
-        if matches!(self.update, Update::Downloading { .. } | Update::Ready { .. }) {
+        if self.update_check == CheckStatus::Checking || matches!(self.update, Update::Downloading { .. } | Update::Ready { .. }) {
             return;
         }
         let n = self.notifier.clone();
         #[cfg(feature = "smoke")]
-        if let Some(tag) = TEST_LATEST.lock().unwrap().clone() {
-            n.send(Msg::UpdateChecked { latest: Ok(Some(tag)), skipped: None, manual: true });
-            return;
-        }
-        if self.isolated {
-            self.update_note = Some((tr!("效能與冒煙測試不檢查更新").to_string(), false));
+        if let Some(v) = TEST_LATEST.lock().unwrap().clone() {
+            let mut state = self.update_state.clone().unwrap_or_default();
+            state.record_check(now_secs(), &Manifest { version: v, ..Default::default() });
+            n.send(Msg::UpdateChecked { state: Box::new(state), error: None, manual: true });
+            self.update_check = CheckStatus::Checking;
             return self.invalidate();
         }
-        self.update_note = Some((tr!("正在檢查…").to_string(), false));
+        if self.isolated {
+            self.update_check = CheckStatus::Failed;
+            return self.invalidate();
+        }
+        self.update_check = CheckStatus::Checking;
         self.invalidate();
         std::thread::spawn(move || {
-            let (latest, skipped) = check(true);
-            n.send(Msg::UpdateChecked { latest, skipped, manual: true });
+            let (state, error) = check();
+            n.send(Msg::UpdateChecked { state: Box::new(state), error, manual: true });
         });
     }
 
-    pub fn on_update_checked(&mut self, latest: Result<Option<String>, String>, skipped: Option<Version>, manual: bool) {
-        if matches!(self.update, Update::Downloading { .. } | Update::Ready { .. }) {
-            return;
-        }
-        // 自動檢查之後關掉了設定：不再提示
-        if !manual && !self.config.update.check {
-            return;
-        }
-        let current = Version::current();
-        let latest = match latest {
-            Ok(tag) => tag.and_then(|t| Version::parse(&t).map(|v| (t, v))),
-            Err(e) => {
-                if manual {
-                    self.update_note = Some((tr!("無法檢查更新：{e}", e), true));
-                    self.invalidate();
-                }
-                return;
-            }
-        };
-        match latest {
-            // 手動檢查：有任何較新的版本都提示
-            Some((tag, version)) if (manual && version > current) || upd::worth_prompting(current, version, skipped) => {
-                self.update_note = None;
-                self.update = Update::Available { tag, version };
-            }
-            _ => {
-                if manual {
-                    self.update_note = Some((tr!("已是最新版本（{current}）", current), false));
-                }
-                self.update = Update::None;
+    pub fn on_update_checked(&mut self, state: UpdateState, error: Option<String>, manual: bool) {
+        // 略過的版本可能在檢查途中改了：以畫面上的為準
+        let skipped = self.update_state.as_ref().and_then(|s| s.skipped.clone());
+        self.update_state = Some(UpdateState { skipped: skipped.or(state.skipped.clone()), ..state });
+        if manual {
+            self.update_check = if error.is_some() { CheckStatus::Failed } else { CheckStatus::Idle };
+            // 手動檢查的失敗記在「關於」頁；原因只在狀態列（UI.md 的狀態只寫「無法檢查更新」）
+            if let Some(e) = error {
+                self.set_status(tr!("無法檢查更新：{e}", e), true);
             }
         }
         self.invalidate();
     }
 
-    /// 狀態列右側的提示（沒有新版本時為 None）
-    pub fn update_indicator_text(&self) -> Option<String> {
+    /// 最新版（紀錄中的；還沒有紀錄時為 None）
+    pub fn latest_version(&self) -> Option<Version> {
+        self.update_state.as_ref().and_then(|s| s.latest_version())
+    }
+
+    /// 主畫面的橫幅；不顯示時為 None
+    pub fn update_banner(&self) -> Option<Banner> {
+        let banner = |text: String, actions: Vec<UpdateAction>, close: bool| Some(Banner { text, progress: None, actions, close });
         match &self.update {
-            Update::None => None,
-            Update::Available { version, .. } => Some(tr!("有新版本 {version}", version)),
-            Update::Downloading { percent, .. } => Some(tr!("正在下載更新 {percent}%", percent)),
-            Update::Ready { version, .. } => Some(tr!("已更新到 {version}：重新啟動", version)),
-        }
-    }
-
-    /// 設定的「檢查更新」那一列：說明（目前的狀態或上次檢查的結果）與是否為錯誤
-    pub fn update_row_text(&self) -> (String, bool) {
-        let current = Version::current();
-        match &self.update {
-            Update::Available { version, .. } => (tr!("有新版本 {version}（目前 {current}）", version, current), false),
-            Update::Downloading { percent, .. } => (tr!("正在下載更新 {percent}%", percent), false),
-            Update::Ready { version, .. } => (tr!("已安裝 {version}，重新啟動後生效", version), false),
-            Update::None => self.update_note.clone().unwrap_or_else(|| (tr!("目前版本 {current}", current), false)),
-        }
-    }
-
-    /// 那一列的按鈕（原文）：依狀態是立即檢查、下載並安裝、取消、重新啟動
-    pub fn update_button_label(&self) -> &'static str {
-        match &self.update {
-            Update::None => tr_key!("立即檢查"),
-            Update::Available { .. } => tr_key!("下載並安裝"),
-            Update::Downloading { .. } => tr_key!("取消"),
-            Update::Ready { .. } => tr_key!("重新啟動"),
-        }
-    }
-
-    pub fn update_button_click(&mut self) {
-        match &self.update {
-            Update::None => self.check_update_now(),
-            Update::Available { .. } => self.update_choice(Choice::Install),
-            Update::Downloading { .. } => self.update_choice(Choice::Cancel),
-            Update::Ready { .. } => self.update_choice(Choice::Restart),
-        }
-    }
-
-    /// 點狀態列的提示：開啟選單
-    pub fn open_update_menu(&mut self, anchor: Rect) {
-        let item = |label: String, c: Choice| MenuItem::new(label, Action::Update(c));
-        let items = match &self.update {
-            Update::None => return,
-            Update::Available { version, .. } => vec![
-                item(tr!("下載並安裝 {version}", version), Choice::Install),
-                item(tr!("版本說明").into(), Choice::Notes),
-                MenuItem::separator(),
-                item(tr!("略過這個版本").into(), Choice::Skip),
-                item(tr!("不再檢查更新").into(), Choice::Disable),
-            ],
-            Update::Downloading { .. } => vec![item(tr!("取消更新").into(), Choice::Cancel)],
-            Update::Ready { .. } => vec![item(tr!("立即重新啟動").into(), Choice::Restart), item(tr!("版本說明").into(), Choice::Notes)],
-        };
-        self.open_menu(items, anchor);
-    }
-
-    pub fn update_choice(&mut self, c: Choice) {
-        let (tag, version) = match &self.update {
-            Update::Available { tag, version } | Update::Downloading { tag, version, .. } | Update::Ready { tag, version } => {
-                (tag.clone(), *version)
+            Update::Downloading { version, percent, .. } => Some(Banner {
+                text: tr!("正在下載 {version}", version = format!("v{version}")),
+                progress: Some(*percent),
+                actions: vec![UpdateAction::Cancel],
+                close: false,
+            }),
+            Update::Ready { version } => {
+                banner(tr!("{version} 已下載，重新啟動後完成更新", version = format!("v{version}")), vec![UpdateAction::Restart], false)
             }
-            Update::None => return,
-        };
-        match c {
-            Choice::Install => self.start_install(tag, version),
-            Choice::Notes => crate::services::launch(&self.notifier, upd::release_page(&tag), None, None, None, Show::Normal),
-            Choice::Skip => {
-                self.update = Update::None;
-                self.set_status(tr!("已略過 {version}，之後的功能更新照常提示", version), false);
+            Update::Failed { reason, .. } if !self.banner_dismissed => {
+                banner(tr!("更新失敗：{reason}", reason), vec![UpdateAction::Manual], true)
+            }
+            Update::Failed { .. } => None,
+            Update::Idle => {
+                let st = self.update_state.as_ref()?;
+                let v = st.latest_version()?;
+                (self.config.update.check && !self.banner_dismissed && st.should_show_banner(current())).then_some(())?;
+                banner(
+                    tr!("有新版本 {version}", version = format!("v{v}")),
+                    vec![UpdateAction::Notes, UpdateAction::Skip, UpdateAction::Install],
+                    true,
+                )
+            }
+        }
+    }
+
+    /// 「關於」頁的狀態列：文字、是否為錯誤、按鈕
+    pub fn about_status(&self) -> (String, bool, Vec<UpdateAction>) {
+        match &self.update {
+            Update::Downloading { version, percent, .. } => {
+                return (format!("{}  {percent}%", tr!("正在下載 {version}", version = format!("v{version}"))), false, vec![UpdateAction::Cancel]);
+            }
+            Update::Ready { version } => {
+                return (tr!("{version} 已下載，重新啟動後完成更新", version = format!("v{version}")), false, vec![UpdateAction::Restart]);
+            }
+            Update::Failed { reason, .. } => return (tr!("更新失敗：{reason}", reason), true, vec![UpdateAction::Manual]),
+            Update::Idle => {}
+        }
+        match self.update_check {
+            CheckStatus::Checking => return (tr!("檢查中…").into(), false, Vec::new()),
+            CheckStatus::Failed => return (tr!("無法檢查更新").into(), true, vec![UpdateAction::Retry]),
+            CheckStatus::Idle => {}
+        }
+        let Some(st) = &self.update_state else { return (String::new(), false, Vec::new()) };
+        match st.availability(current()).version() {
+            Some(v) => (tr!("有新版本 {version}", version = format!("v{v}")), false, vec![UpdateAction::Notes, UpdateAction::Install]),
+            None => match st.last_check {
+                Some(t) => {
+                    let time = zing_core::format::relative_local(t, now_secs());
+                    (format!("{}（{}）", tr!("已是最新版"), tr!("上次檢查：{time}", time)), false, Vec::new())
+                }
+                None => (String::new(), false, Vec::new()),
+            },
+        }
+    }
+
+    /// 「檢查更新」按鈕可以按（檢查中、下載中、已下載時停用）
+    pub fn can_check_update(&self) -> bool {
+        self.update_check != CheckStatus::Checking && matches!(self.update, Update::Idle | Update::Failed { .. })
+    }
+
+    pub fn update_action(&mut self, a: UpdateAction) {
+        let latest = self.latest_version();
+        match a {
+            UpdateAction::Notes | UpdateAction::Manual => {
+                let version = match &self.update {
+                    Update::Failed { version, .. } => *version,
+                    _ => latest,
+                };
+                crate::services::launch(&self.notifier, zoo_update::release_page_url(REPO, version), None, None, None, Show::Normal);
+            }
+            UpdateAction::Skip => {
+                let Some(v) = latest else { return };
+                let Some(st) = self.update_state.as_mut() else { return };
+                st.skip(v);
                 if !self.isolated {
+                    let skipped = st.skipped.clone();
                     std::thread::spawn(move || {
                         let mut st = read_state();
-                        st.skipped = Some(version);
+                        st.skipped = skipped;
                         write_state(&st);
                     });
                 }
             }
-            Choice::Disable => {
-                self.update = Update::None;
-                if let Some(i) = zing_core::prefs::PREFS.iter().position(|p| p.key == "update.check") {
-                    self.set_pref(i, "false".into());
+            UpdateAction::Install => self.start_install(),
+            UpdateAction::Later => {
+                self.banner_dismissed = true;
+                if matches!(self.update, Update::Failed { .. }) {
+                    self.update = Update::Idle;
                 }
-                self.set_status(tr!("已關閉更新檢查（可在設定頁重新開啟）"), false);
             }
-            Choice::Cancel => {
+            UpdateAction::Cancel => {
                 if let Update::Downloading { cancel, .. } = &self.update {
                     cancel.store(true, Ordering::Relaxed);
                 }
             }
-            Choice::Restart => self.restart_for_update(),
+            UpdateAction::Restart => self.restart_for_update(),
+            UpdateAction::Check | UpdateAction::Retry => self.check_update_now(),
         }
+        self.leave_banner_if_gone();
         self.invalidate();
     }
 
-    fn start_install(&mut self, tag: String, version: Version) {
+    fn start_install(&mut self) {
+        if matches!(self.update, Update::Downloading { .. } | Update::Ready { .. }) {
+            return;
+        }
         if self.isolated {
             return self.set_status(tr!("效能與冒煙測試不安裝更新"), false);
         }
+        let Some(version) = self.latest_version() else { return };
         let cancel = Arc::new(AtomicBool::new(false));
-        self.update = Update::Downloading { tag: tag.clone(), version, percent: 0, cancel: cancel.clone() };
+        self.update = Update::Downloading { version, percent: 0, cancel: cancel.clone() };
         let n = self.notifier.clone();
         std::thread::spawn(move || {
             let progress = |percent| n.send(Msg::UpdateProgress { percent });
-            let result = install(&tag, &crate::settings::app_dir(), &cancel, &progress);
+            let result = install(&crate::settings::app_dir(), &cancel, &progress);
             n.send(Msg::UpdateInstalled(result));
         });
     }
@@ -438,22 +543,21 @@ impl App {
         }
     }
 
-    pub fn on_update_installed(&mut self, result: Result<bool, String>) {
-        let Update::Downloading { tag, version, .. } = std::mem::take(&mut self.update) else { return };
-        match result {
-            Ok(true) => {
-                self.set_status(tr!("已安裝 {version}，重新啟動後生效", version), false);
-                self.update = Update::Ready { tag, version };
+    pub fn on_update_installed(&mut self, result: Result<Installed, String>) {
+        let Update::Downloading { version, .. } = std::mem::take(&mut self.update) else { return };
+        self.update = match result {
+            Ok(Installed::Done(v)) => Update::Ready { version: v },
+            Ok(Installed::Canceled) => Update::Idle,
+            Ok(Installed::NoAsset(v)) => {
+                crate::services::launch(&self.notifier, zoo_update::release_page_url(REPO, Some(v)), None, None, None, Show::Normal);
+                Update::Idle
             }
-            Ok(false) => {
-                self.set_status(tr!("已取消更新"), false);
-                self.update = Update::Available { tag, version };
+            Err(reason) => {
+                self.banner_dismissed = false;
+                Update::Failed { version: Some(version), reason }
             }
-            Err(e) => {
-                self.set_status(tr!("更新失敗：{e}", e), true);
-                self.update = Update::Available { tag, version };
-            }
-        }
+        };
+        self.leave_banner_if_gone();
         self.invalidate();
     }
 
@@ -466,20 +570,135 @@ impl App {
         // 所有視窗照一般方式關閉，最後一個結束後才啟動新版
         crate::hub::close_all();
     }
+
+    pub fn banner_height(&self) -> f32 {
+        (self.row_h() + 14.0).round()
+    }
+
+    /// 橫幅的版面：文字在左，按鈕由右往左排（主要按鈕在最右、✕ 之前），下載中時文字後面是進度條
+    pub fn layout_banner(&self, bar: Rect, b: &Banner) -> crate::view::BannerLayout {
+        let h = (bar.h() - 10.0).max(18.0);
+        let (t, bt) = (bar.t + (bar.h() - h) / 2.0, bar.t + (bar.h() + h) / 2.0);
+        let mut right = bar.r - 8.0;
+        let close = b.close.then(|| {
+            let r = Rect::new(right - h, t, right, bt);
+            right -= h + 6.0;
+            r
+        });
+        let mut targets: Vec<Rect> = b
+            .actions
+            .iter()
+            .rev()
+            .map(|a| {
+                let w = self.gfx.measure(zing_core::i18n::tr(a.label()), Font::Text) + 24.0;
+                let r = Rect::new(right - w, t, right, bt);
+                right -= w + 6.0;
+                r
+            })
+            .collect();
+        targets.reverse();
+        targets.extend(close);
+        let progress = b.progress.map(|_| {
+            let l = 16.0 + self.gfx.measure(&b.text, Font::Text) + 16.0;
+            Rect::new(l, bar.t + bar.h() / 2.0 - 3.0, (l + 180.0).min(right - 60.0), bar.t + bar.h() / 2.0 + 3.0)
+        });
+        crate::view::BannerLayout { bar, targets, progress }
+    }
+
+    pub fn paint_banner(&self, lay: &crate::view::Layout) {
+        let (Some(bl), Some(b)) = (lay.banner.as_ref(), self.update_banner()) else { return };
+        let c = &self.theme.color;
+        let g = &self.gfx;
+        let radius = self.theme.metrics.radius.max(4.0);
+        // 強調色的淡色（與選取相同的做法：疊在背景上，文字維持一般的顏色）
+        g.fill(bl.bar, c.background);
+        g.fill(bl.bar, c.accent.with_alpha(0x2a));
+        g.hline(0.0, bl.bar.r, bl.bar.b - 1.0, c.border);
+        let text_r = bl.targets.first().map_or(bl.bar.r, |t| t.l - 8.0);
+        g.text(&b.text, Font::Text, Rect::new(bl.bar.l + 16.0, bl.bar.t, text_r, bl.bar.b), c.text);
+        if let (Some(p), Some(pct)) = (bl.progress, b.progress) {
+            g.fill_round(p, 3.0, c.border);
+            g.fill_round(Rect::new(p.l, p.t, p.l + p.w() * pct.min(100) as f32 / 100.0, p.b), 3.0, c.accent);
+            g.text(&format!("{pct}%"), Font::Small, Rect::new(p.r + 8.0, bl.bar.t, p.r + 60.0, bl.bar.b), c.text_secondary);
+        }
+        for (k, r) in bl.targets.iter().enumerate() {
+            let hot = self.hover == Hit::Banner(k);
+            match b.actions.get(k) {
+                Some(a) => self.paint_button(*r, a.label(), a.primary(), hot),
+                None => {
+                    if hot {
+                        g.fill_round(*r, radius, c.hover);
+                    }
+                    g.text(crate::gfx::glyph::CLOSE, Font::GlyphSmall, *r, c.text_secondary);
+                }
+            }
+            if self.banner_focus == Some(k) {
+                g.stroke_round(r.inset(-2.0, -2.0), radius, c.accent, 2.0);
+            }
+        }
+    }
+
+    /// 點了橫幅的第 k 個目標（按鈕或 ✕）
+    pub fn banner_click(&mut self, k: usize) {
+        let Some(b) = self.update_banner() else { return };
+        self.update_action(b.actions.get(k).copied().unwrap_or(UpdateAction::Later));
+    }
+
+    /// 命令列按 Tab、沒有命令列時按 F10：鍵盤焦點移到橫幅的第一個按鈕；沒有橫幅時回傳 false
+    pub fn enter_banner(&mut self) -> bool {
+        if self.update_banner().is_none() {
+            return false;
+        }
+        self.banner_focus = Some(0);
+        self.invalidate();
+        true
+    }
+
+    fn leave_banner_if_gone(&mut self) {
+        let n = self.update_banner().map_or(0, |b| b.actions.len() + b.close as usize);
+        if self.banner_focus.is_some_and(|f| f >= n) {
+            self.banner_focus = (n > 0).then_some(0);
+        }
+    }
+
+    /// 焦點在橫幅時的按鍵（目標依序是按鈕、✕）；不是橫幅的按鍵就離開、回傳 false（照常處理）
+    pub fn banner_key(&mut self, vk: u16) -> bool {
+        let Some(b) = self.update_banner() else {
+            self.banner_focus = None;
+            return false;
+        };
+        let n = b.actions.len() + b.close as usize;
+        let f = self.banner_focus.unwrap_or(0).min(n.saturating_sub(1));
+        match vk {
+            0x25 => self.banner_focus = Some((f + n - 1) % n),
+            0x27 => self.banner_focus = Some((f + 1) % n),
+            0x24 => self.banner_focus = Some(0),
+            0x23 => self.banner_focus = Some(n - 1),
+            0x0D | 0x20 => {
+                let a = b.actions.get(f).copied().unwrap_or(UpdateAction::Later);
+                self.update_action(a);
+            }
+            0x1B | 0x79 | 0x09 => self.banner_focus = None,
+            _ => {
+                self.banner_focus = None;
+                self.invalidate();
+                return false;
+            }
+        }
+        self.invalidate();
+        true
+    }
 }
 
-/// 以 WinHTTP 取得 GitHub 的資料（只用 https；系統的 Proxy 設定）
-mod http {
+/// 以 WinHTTP 取得 GitHub 的資料（只用 https；跟隨轉址；系統的 Proxy 設定）
+pub mod http {
     use super::*;
     use windows::Win32::Networking::WinHttp::*;
-    use windows::Win32::Security::Cryptography::{
-        BCRYPT_HASH_HANDLE, BCRYPT_SHA256_ALG_HANDLE, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash, BCryptHashData,
-    };
     use windows::core::{PCWSTR, w};
 
-    /// 壓縮檔、文字檔的大小上限（防止伺服器送來不合理的內容）
+    /// 下載的大小上限（防止伺服器送來不合理的內容）
     const MAX_DOWNLOAD: u64 = 64 << 20;
-    const MAX_TEXT: usize = 64 << 10;
+    const MAX_SMALL: usize = 4 << 20;
 
     struct Handle(*mut c_void);
 
@@ -503,11 +722,9 @@ mod http {
 
     fn last_error() -> String {
         let e = windows::core::Error::from_thread();
-        // WinHTTP 的錯誤碼（12xxx）系統訊息表沒有，常見的自己翻
+        // WinHTTP 的錯誤碼（12xxx）系統訊息表沒有：連不上的都是「無法連線」（docs/UI.md 的用詞）
         match e.code().0 as u32 & 0xFFFF {
-            12002 => tr!("連線逾時").into(),
-            12007 => tr!("找不到伺服器（沒有網路？）").into(),
-            12029 | 12030 => tr!("無法連線到伺服器").into(),
+            12002 | 12007 | 12029 | 12030 => tr!("無法連線").into(),
             code => {
                 let m = e.message();
                 if m.is_empty() { tr!("WinHTTP 錯誤 {code}", code) } else { m }
@@ -519,7 +736,7 @@ mod http {
         if h.is_null() { Err(last_error()) } else { Ok(Handle(h)) }
     }
 
-    fn open(url: &str, follow: bool) -> Result<Request, String> {
+    fn open(url: &str) -> Result<Request, String> {
         let rest = url.strip_prefix("https://").ok_or_else(|| tr!("只支援 https：{url}", url))?;
         let (host, path) = match rest.split_once('/') {
             Some((h, p)) => (h, format!("/{p}")),
@@ -541,10 +758,6 @@ mod http {
                 std::ptr::null(),
                 WINHTTP_FLAG_SECURE,
             ))?;
-            if !follow {
-                let never = WINHTTP_OPTION_REDIRECT_POLICY_NEVER.to_ne_bytes();
-                WinHttpSetOption(Some(req.0), WINHTTP_OPTION_REDIRECT_POLICY, Some(&never)).map_err(|_| last_error())?;
-            }
             WinHttpSendRequest(req.0, None, None, 0, 0, 0).map_err(|_| last_error())?;
             WinHttpReceiveResponse(req.0, std::ptr::null_mut()).map_err(|_| last_error())?;
             let status = number_header(&req.0, WINHTTP_QUERY_STATUS_CODE).unwrap_or(0) as u32;
@@ -578,42 +791,32 @@ mod http {
         tr!("伺服器回應 HTTP {status}", status)
     }
 
-    /// 最新版的標籤；還沒有任何 Release 時為 None
-    pub fn latest_tag() -> Result<Option<String>, String> {
-        zing_core::guard::io("向 GitHub 查詢最新版");
-        let r = open(&upd::latest_url(), false)?;
-        match r.status {
-            301 | 302 | 303 | 307 | 308 => {
-                let loc = string_header(&r.req.0, WINHTTP_QUERY_LOCATION).unwrap_or_default();
-                Ok(upd::tag_from_location(&loc).map(String::from))
-            }
-            200 | 404 => Ok(None),
-            s => Err(bad_status(s)),
-        }
-    }
-
-    pub fn get_text(url: &str) -> Result<String, String> {
-        zing_core::guard::io("下載文字檔");
-        let r = open(url, true)?;
+    /// 小檔案（latest.json、專案清單、封面）的內容
+    pub fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
+        zing_core::guard::io("下載檔案");
+        let r = open(url)?;
         if r.status != 200 {
             return Err(bad_status(r.status));
         }
         let mut out = Vec::new();
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 16 << 10];
         loop {
             let n = read(&r, &mut buf)?;
-            if n == 0 || out.len() > MAX_TEXT {
+            if n == 0 {
                 break;
+            }
+            if out.len() + n > MAX_SMALL {
+                return Err(tr!("檔案太大（{total} 位元組）", total = out.len() + n));
             }
             out.extend_from_slice(&buf[..n]);
         }
-        Ok(String::from_utf8_lossy(&out).into_owned())
+        Ok(out)
     }
 
-    /// 下載到 `path`，回傳內容的 SHA-256；取消時為 None。`progress` 收到 0–100（每變一個百分點一次）
-    pub fn download(url: &str, path: &Path, cancel: &AtomicBool, progress: &dyn Fn(u32)) -> Result<Option<[u8; 32]>, String> {
+    /// 下載到記憶體；取消時為 None。`progress` 收到 0–100（每變一個百分點一次）
+    pub fn download(url: &str, cancel: &AtomicBool, progress: &dyn Fn(u32)) -> Result<Option<Vec<u8>>, String> {
         zing_core::guard::io("下載更新");
-        let r = open(url, true)?;
+        let r = open(url)?;
         if r.status != 200 {
             return Err(bad_status(r.status));
         }
@@ -621,10 +824,9 @@ mod http {
         if total > MAX_DOWNLOAD {
             return Err(tr!("檔案太大（{total} 位元組）", total));
         }
-        let mut file = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
-        let hash = Sha256::new().ok_or_else(|| tr!("無法計算雜湊").to_string())?;
+        let mut out = Vec::with_capacity(total as usize);
         let mut buf = vec![0u8; 64 << 10];
-        let (mut got, mut last) = (0u64, u32::MAX);
+        let mut last = u32::MAX;
         loop {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(None);
@@ -633,83 +835,37 @@ mod http {
             if n == 0 {
                 break;
             }
-            got += n as u64;
+            out.extend_from_slice(&buf[..n]);
+            let got = out.len() as u64;
             if got > MAX_DOWNLOAD {
                 return Err(tr!("檔案太大（{total} 位元組）", total = got));
             }
-            hash.update(&buf[..n]);
-            file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
             let pct = (got * 100).checked_div(total).map_or(0, |p| p.min(100) as u32);
             if pct != last {
                 last = pct;
                 progress(pct);
             }
         }
-        if total > 0 && got != total {
-            return Err(tr!("下載不完整（{got}／{total} 位元組）", got, total));
+        if total > 0 && out.len() as u64 != total {
+            return Err(tr!("下載不完整（{got}／{total} 位元組）", got = out.len(), total));
         }
-        file.flush().map_err(|e| e.to_string())?;
-        Ok(Some(hash.finish()))
-    }
-
-    struct Sha256(BCRYPT_HASH_HANDLE);
-
-    impl Sha256 {
-        fn new() -> Option<Self> {
-            let mut h = BCRYPT_HASH_HANDLE::default();
-            unsafe { BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, &mut h, None, None, 0) }.ok().ok()?;
-            Some(Sha256(h))
-        }
-
-        fn update(&self, data: &[u8]) {
-            unsafe {
-                let _ = BCryptHashData(self.0, data, 0);
-            }
-        }
-
-        fn finish(self) -> [u8; 32] {
-            let mut out = [0u8; 32];
-            unsafe {
-                let _ = BCryptFinishHash(self.0, &mut out, 0);
-            }
-            out
-        }
-    }
-
-    impl Drop for Sha256 {
-        fn drop(&mut self) {
-            unsafe {
-                let _ = BCryptDestroyHash(self.0);
-            }
-        }
+        Ok(Some(out))
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
 
-        #[test]
-        fn sha256_known_value() {
-            let h = Sha256::new().unwrap();
-            h.update(b"ab");
-            h.update(b"c");
-            let hex: String = h.finish().iter().map(|b| format!("{b:02x}")).collect();
-            assert_eq!(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-        }
-
         /// 實際連到 GitHub：`cargo test -p zing-app latest_release -- --ignored --nocapture`
         #[test]
         #[ignore]
         fn latest_release() {
-            println!("{:?}", latest_tag());
-            // 有 Release 的專案：不跟隨轉址，讀出標籤
-            let r = open("https://github.com/LuaLS/lua-language-server/releases/latest", false).unwrap();
-            let loc = string_header(&r.req.0, WINHTTP_QUERY_LOCATION).unwrap_or_default();
-            println!("{} {loc}", r.status);
-            assert!(upd::tag_from_location(&loc).is_some(), "{loc}");
-            // 跟隨轉址（github.com → raw.githubusercontent.com）並讀完內容
-            let text = get_text(&format!("https://github.com/{}/raw/master/LICENSE", upd::REPO)).unwrap();
-            assert!(text.contains("MIT License"), "{text}");
+            // 跟隨轉址（github.com → objects.githubusercontent.com）並讀完內容
+            let m = fetch_manifest().expect("讀取 latest.json");
+            println!("最新版 {}：{:?}", m.version, m.platforms.keys().collect::<Vec<_>>());
+            assert!(m.version().is_some(), "{}", m.version);
+            let asset = m.asset(zoo_update::current_platform()).expect("沒有這個平台的檔案");
+            asset.check_url(REPO).unwrap();
         }
     }
 }
@@ -730,19 +886,22 @@ mod tests {
         std::fs::read_to_string(p).unwrap_or_default()
     }
 
-    /// 從 GitHub 下載最新的 Release 安裝到暫存資料夾（舊的 zing.exe 改名成 .old）：檢查轉址取得標籤、下載、
-    /// 雜湊核對、解壓縮、替換整條路。`cargo test -p zing-app install_latest_release -- --ignored --nocapture`
+    /// 從 GitHub 下載最新的 Release 安裝到暫存資料夾（舊的 zing.exe 改名成 .old）：latest.json、下載、
+    /// 簽章與雜湊、解壓縮、替換整條路。目前的版本要比最新版舊（測試的建置是 Cargo.toml 的版本）。
+    /// `cargo test -p zing-app install_latest_release -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn install_latest_release() {
-        let tag = http::latest_tag().expect("查詢最新版").expect("沒有 Release");
-        println!("最新版：{tag}");
         let d = dir("install");
         let app = d.join("app");
         std::fs::write(app.join("zing.exe"), "舊版").unwrap();
         let cancel = AtomicBool::new(false);
         let last = std::cell::Cell::new(0);
-        assert_eq!(install(&tag, &app, &cancel, &|p| last.set(p)), Ok(true));
+        match install(&app, &cancel, &|p| last.set(p)) {
+            Ok(Installed::Done(v)) => println!("已安裝 {v}"),
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("沒有安裝"),
+        }
         let exe = std::fs::read(app.join("zing.exe")).unwrap();
         assert_eq!(&exe[..2], b"MZ", "換上的不是執行檔");
         assert!(exe.len() > 1 << 20, "執行檔太小：{}", exe.len());
@@ -846,5 +1005,16 @@ mod tests {
         left.sort();
         assert_eq!(left, ["my.new", "notes.old"]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn current_version_parses() {
+        assert_eq!(current().to_string(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn error_reasons_use_ui_wording() {
+        assert_eq!(reason(zoo_update::Error::Signature), tr!("簽章驗證失敗"));
+        assert_eq!(reason(zoo_update::Error::SignatureFormat), tr!("簽章驗證失敗"));
     }
 }

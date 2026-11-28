@@ -1222,6 +1222,9 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
                 crate::app::TIMER_THEME_WATCH => {
                     with_app(|a| a.on_theme_watch_timer());
                 }
+                crate::app::TIMER_UPDATE => {
+                    with_app(|a| a.on_update_timer());
+                }
                 crate::app::TIMER_SCRIPT_RELOAD => {
                     with_app(|a| a.on_script_reload_timer());
                 }

@@ -69,6 +69,11 @@ impl App {
                 let tip = level.items.get(i)?.tip.clone()?;
                 Some((TipText { title: tip, key: None, detail: None }, self.menu_item_rect(level, i)))
             }
+            // 新版本橫幅的 ✕（按鈕有文字，不需要提示）
+            Hit::Banner(k) if self.update_banner().is_some_and(|b| k == b.actions.len()) => Some((
+                TipText { title: tr!("稍後").into(), key: None, detail: None },
+                *lay.banner.as_ref()?.targets.get(k)?,
+            )),
             Hit::TabNew(p) => Some((self.tip_text(tr!("新增分頁"), "tab.new", false), lay.panes.get(p)?.tab_new)),
             Hit::TabClose(p, t) => Some((self.tip_text(tr!("關閉分頁"), "tab.close", false), *lay.panes.get(p)?.tab_close.get(t)?)),
             Hit::ThemeRow(k) => {
